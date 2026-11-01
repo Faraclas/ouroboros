@@ -3,8 +3,8 @@
 // These cases drive the real createChatInstance through the shared DOM fixture.
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { installDom, restoreDom } from './chat_dom_fixture.js'; // first: it neutralizes the Node 26 localStorage warning
 import { createChatInstance } from '../modules/chat.js';
-import { installDom, restoreDom } from './chat_dom_fixture.js';
 
 const TS = '2026-09-12T12:00:00.000Z';
 const row = (id, text) => ({

@@ -89,7 +89,7 @@ def _tools_found() -> list[str]:
         bundled_ok = bool(bundled) and node_runtime_health(bundled, timeout_sec=3).healthy
     node_usable = path_node_ok or bundled_ok
     tools = []
-    for tool in ["git", "python3", "python", "pip", "npm", "node", "claude"]:
+    for tool in ["git", "python3", "python", "pip", "npm", "node", "claude", "rg", "cargo", "rustc", "emerge", "pkgcheck"]:
         located = shutil.which(tool)
         if tool == "node":
             if node_health is not None and node_health.healthy:

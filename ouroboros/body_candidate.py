@@ -379,6 +379,19 @@ def bind(ctx: Any, row: Dict[str, Any]) -> Dict[str, Any]:
     return bound
 
 
+def reattribute(ctx: Any) -> None:
+    """Re-add an already bound candidate to the lineage baseline (idempotent, evidence only)."""
+    try:
+        if not is_bound(ctx):
+            return
+        row = find(owner_id(ctx))
+        if row is None:
+            return
+        _attribute_surface(ctx, pathlib.Path(str(row["path"])), row)
+    except Exception:
+        log.debug("candidate re-attribution failed", exc_info=True)
+
+
 def _attribute_surface(ctx: Any, candidate: pathlib.Path, row: Dict[str, Any]) -> None:
     """Append the candidate to this lineage's mutation baseline as a late surface (evidence only).
 
@@ -478,6 +491,7 @@ def _forget_missing(row: Dict[str, Any]) -> None:
 
 def _prepare_locked(ctx: Any, resume: str) -> Dict[str, Any]:
     if is_bound(ctx) and not resume:
+        reattribute(ctx)  # restore() may have bound before the host baseline existed
         return {**descriptor(ctx), "state": "bound"}
     refusal = _refusal_before_prepare(ctx)
     if refusal is not None:

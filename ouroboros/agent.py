@@ -849,6 +849,8 @@ class OuroborosAgent:
             route_choice.bind_task_route(ctx, task_metadata, presence=bool(task.get("_presence_turn")))
         startup_wake = subagent_bootstrap.bootstrap_before_context(ctx, task, dispatch)
         self._capture_mutation_baseline(task, task_metadata)
+        # restore() bound the candidate before the baseline existed; add its surface now.
+        body_candidate.reattribute(ctx)
         self._emit_typing_start()
         canonical_drive = pathlib.Path(task.get("budget_drive_root") or self.env.budget_drive_root or self.env.drive_root)
         review_env = self.env if canonical_drive.resolve(strict=False) == self.env.drive_root.resolve(strict=False) else replace(self.env, drive_root=canonical_drive)

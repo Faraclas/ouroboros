@@ -1,3 +1,17 @@
+// Node 25+ warns on console.error the first time globalThis.localStorage is read without
+// --localstorage-file, and web modules read it while being imported (claudexor_status_store).
+// Import this fixture BEFORE those modules so the warning never lands in a test's console hook.
+if (Object.getOwnPropertyDescriptor(globalThis, 'localStorage')?.get) {
+    const local = new Map();
+    Object.defineProperty(globalThis, 'localStorage', {
+        value: {
+            getItem: (key) => local.get(key) ?? null,
+            setItem: (key, value) => local.set(key, String(value)),
+            removeItem: (key) => local.delete(key),
+        },
+        configurable: true, writable: true,
+    });
+}
 export class ClassList {
     constructor(node) { this.node = node; this.names = new Set(); }
     add(...names) { names.forEach((name) => this.names.add(name)); this.sync(); }
