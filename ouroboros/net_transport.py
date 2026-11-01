@@ -146,11 +146,26 @@ def requests_verify_kwargs() -> Dict[str, Any]:
     return {"verify": bundle} if bundle else {}
 
 
+def copilot_compatible_headers(base_url: Any, api_key: Any = "") -> Dict[str, str]:
+    """Return GitHub Copilot API headers when ``base_url`` targets ``githubcopilot.com``."""
+    if "githubcopilot.com" not in str(base_url or "").lower():
+        return {}
+    key = str(api_key or "").strip()
+    return {
+        "Editor-Version": "vscode/1.104.1",
+        "User-Agent": "HermesAgent/1.0",
+        "Copilot-Integration-Id": "copilot-developer-cli" if key.startswith("github_pat_") else "vscode-chat",
+        "Openai-Intent": "conversation-edits",
+        "x-initiator": "agent",
+    }
+
+
 def remote_httpx_transport(
     async_client: bool = False,
     *,
     trust_env: bool = True,
     limits: Optional[Any] = None,
+    httpx_mod: Optional[Any] = None,
 ):
     """Build the shared keepalive (Async)HTTPTransport.
 
@@ -160,7 +175,8 @@ def remote_httpx_transport(
     never reaches ``create_ssl_context`` — the no-proxy clients pass
     ``trust_env=False`` to keep SSL_CERT_FILE/SSL_CERT_DIR env isolation.
     """
-    import httpx
+    if httpx_mod is None:
+        import httpx as httpx_mod
 
     from ouroboros.platform_layer import tcp_keepalive_socket_options
 
@@ -171,7 +187,7 @@ def remote_httpx_transport(
     kwargs.update(verify_kwargs())
     if limits is not None:
         kwargs["limits"] = limits
-    transport_cls = httpx.AsyncHTTPTransport if async_client else httpx.HTTPTransport
+    transport_cls = httpx_mod.AsyncHTTPTransport if async_client else httpx_mod.HTTPTransport
     try:
         return transport_cls(**kwargs)
     except TypeError:
@@ -184,16 +200,17 @@ def remote_httpx_transport(
         return transport_cls(**kwargs)
 
 
-def _sdk_pool_limits():
+def _sdk_pool_limits(httpx_mod: Optional[Any] = None):
     """openai-SDK-equivalent pool limits for long-lived clients.
 
     An explicit transport ignores the Client-level limits, silently
     downgrading the SDK's 1000/100 pool to the httpx 100/20 defaults — and a
     self-inflicted PoolTimeout would then read as a transport outage.
     """
-    import httpx
+    if httpx_mod is None:
+        import httpx as httpx_mod
 
-    return httpx.Limits(
+    return httpx_mod.Limits(
         max_connections=1000, max_keepalive_connections=100, keepalive_expiry=5.0
     )
 
@@ -240,12 +257,13 @@ def keepalive_http_client(async_client: bool = False):
         # default construction (no keepalive tuning) rather than failing the
         # LLM client construction over a tuning concern.
         return None
+    sdk_httpx = _openai_httpx_module()
     # Proxy-routed installs keep SDK default construction (env proxy mounts
     # survive only without an explicit transport) and receive the trust bundle
     # through ``verify``; everyone else gets it on the keepalive transport.
     kwargs: Dict[str, Any] = (
         verify_kwargs() if proxied
-        else {"transport": remote_httpx_transport(async_client, limits=_sdk_pool_limits())}
+        else {"transport": remote_httpx_transport(async_client, limits=_sdk_pool_limits(sdk_httpx), httpx_mod=sdk_httpx)}
     )
     try:
         return cls(**kwargs)
@@ -321,19 +339,31 @@ def _keyless_client_class(base, async_client: bool):
     return client
 
 
+def _openai_httpx_module():
+    import importlib
+    import openai
+
+    cls = getattr(openai, "DefaultHttpxClient", None)
+    if cls is not None and cls.__bases__:
+        pkg = cls.__bases__[0].__module__.split(".")[0]
+        return importlib.import_module(pkg)
+    import httpx
+    return httpx
+
+
 def make_no_proxy_client(target: Dict[str, Any], timeout: Any) -> Tuple[Any, Any]:
     """Per-call OpenAI client fully isolated from proxy/SSL environment.
 
     ``timeout`` is the caller's explicit per-call bound (an ``httpx.Timeout``
     or a float); no default is applied here.
     """
-    import httpx
+    httpx_mod = _openai_httpx_module()
 
-    http_client = httpx.Client(
+    http_client = httpx_mod.Client(
         trust_env=False,
         mounts={},
         timeout=timeout,
-        transport=remote_httpx_transport(trust_env=False),
+        transport=remote_httpx_transport(trust_env=False, httpx_mod=httpx_mod),
     )
     oa_client = openai_client_class(target)(
         api_key=str(target.get("api_key") or ""),
@@ -350,13 +380,13 @@ def make_no_proxy_async_client(target: Dict[str, Any], timeout: Any) -> Tuple[An
 
     ``timeout`` is the caller's explicit per-call bound, as above.
     """
-    import httpx
+    httpx_mod = _openai_httpx_module()
 
-    http_client = httpx.AsyncClient(
+    http_client = httpx_mod.AsyncClient(
         trust_env=False,
         mounts={},
         timeout=timeout,
-        transport=remote_httpx_transport(async_client=True, trust_env=False),
+        transport=remote_httpx_transport(async_client=True, trust_env=False, httpx_mod=httpx_mod),
     )
     oa_client = openai_client_class(target, async_client=True)(
         api_key=str(target.get("api_key") or ""),

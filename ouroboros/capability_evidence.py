@@ -851,8 +851,9 @@ def _openai_compatible_metadata_window(
 
         if api_key is None:
             api_key = _route_api_key(model)
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        from ouroboros.net_transport import verify_kwargs
+        from ouroboros.net_transport import copilot_compatible_headers, verify_kwargs
+        headers = {**copilot_compatible_headers(base_url, api_key),
+                   **({"Authorization": f"Bearer {api_key}"} if api_key else {})}
         resp = httpx.get(str(base_url).rstrip("/") + "/models", headers=headers, timeout=5.0, **verify_kwargs())
         resp.raise_for_status()
         payload = resp.json()

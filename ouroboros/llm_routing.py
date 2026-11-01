@@ -191,7 +191,9 @@ def _kind_target(provider: str, get: Any, connection: str, configured: Any, *,
             keyless = not api_key and compatible_endpoint_configured(setting)
         # A pair configured without a key is the endpoint's no-auth setting; its
         # transport sends no credential (net_transport.openai_client_class).
-        return {"api_key": api_key, "base_url": base_url, "keyless": keyless, "default_headers": {}, **_DIRECT_LANE}
+        from ouroboros.net_transport import copilot_compatible_headers
+        return {"api_key": api_key, "base_url": base_url, "keyless": keyless,
+                "default_headers": copilot_compatible_headers(base_url, api_key), **_DIRECT_LANE}
     return {
         "api_key": get("api_key", "") if connection or api_key_override is None else api_key_override,
         "base_url": openrouter_base_url,
@@ -561,14 +563,15 @@ class _ProviderRoutingMixin:
 
     @staticmethod
     def _no_proxy_timeout(read_timeout: Optional[float] = None):
-        import httpx
         from ouroboros.config import get_llm_transport_read_timeout_sec
+        from ouroboros.net_transport import _openai_httpx_module
 
+        httpx_mod = _openai_httpx_module()
         read_write = (
             float(read_timeout) if read_timeout and read_timeout > 0
             else get_llm_transport_read_timeout_sec()
         )
-        return httpx.Timeout(connect=30.0, read=read_write, write=read_write, pool=30.0)
+        return httpx_mod.Timeout(connect=30.0, read=read_write, write=read_write, pool=30.0)
 
     @classmethod
     def _make_no_proxy_client(cls, target: Dict[str, Any], timeout: Optional[float] = None):

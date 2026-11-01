@@ -129,7 +129,10 @@ async def _fetch_openai_compatible_model_catalog(
     if not api_root:
         return []
 
-    headers = {"Authorization": f"Bearer {api_key}"} if str(api_key or "").strip() else None
+    from ouroboros.net_transport import copilot_compatible_headers
+    base_headers = copilot_compatible_headers(api_root, api_key)
+    headers = ({**base_headers, "Authorization": f"Bearer {api_key}"} if str(api_key or "").strip()
+               else (base_headers or None))
     response = await client.get(
         f"{api_root}/models",
         headers=headers,
@@ -145,10 +148,18 @@ async def _fetch_openai_compatible_model_catalog(
                                 source=f"the {provider_label} /models catalog", api_key=api_key if headers else "")
 
     models: list[dict[str, str]] = []
+    is_copilot = "githubcopilot.com" in api_root.lower()
     for item in raw_models:
         model_id = str(item.get("id", "") or "").strip()
         if not model_id:
             continue
+        if is_copilot:
+            caps = item.get("capabilities")
+            if isinstance(caps, dict) and str(caps.get("type") or "").strip().lower() == "embeddings":
+                continue
+            endpoints = item.get("supported_endpoints")
+            if isinstance(endpoints, list) and endpoints and "/chat/completions" not in endpoints:
+                continue
         models.append(
             _build_model_catalog_entry(
                 provider_id,
