@@ -1,0 +1,579 @@
+"""Build ATIF (Agent Trajectory Interchange Format) trajectories for TB trials.
+
+Harbor Hub leaderboard static validation requires every passing trial to carry
+``agent/trajectory.json`` (ATIF, schema ``ATIF-v1.7``). This module reconstructs
+an honest trajectory from the artifacts the installed adapter already writes:
+
+- ``agent/instruction.txt``                        -> the user step
+- ``agent/ouroboros-data/logs/tools.jsonl``        -> tool calls + observations
+- ``agent/ouroboros-data/state/dialog.sqlite``    -> narration and final answer;
+  host progress notes as ``system`` steps
+- ``agent/ouroboros-task-result.json``             -> final answer fallback
+- ``agent/ouroboros-data/state/usage.sqlite``     -> physical subtree totals
+  (``state/usage_attempts.jsonl`` for artifacts written before the usage store)
+- ``agent/ouroboros-run-summary.json``             -> root id + legacy fallback cost
+- ``agent/ouroboros-data/logs/events.jsonl``       -> legacy fallback tokens, version
+
+IMPORTANT: stdlib-only. The same builder runs inside task containers (where
+harbor is not installed) and host-side in the offline converter. Nothing here
+invents content: every step is derived verbatim from the recorded logs.
+
+ATIF constraints honored (see harbor ``models/trajectories``):
+- ``step_id`` strictly sequential starting at 1;
+- ``observation.results[].source_call_id`` only references a ``tool_call`` of
+  the SAME step;
+- agent-only fields never appear on user or system steps;
+- no extra keys (harbor models are ``extra="forbid"``).
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import runpy
+import sqlite3
+from contextlib import closing, contextmanager
+from pathlib import Path
+from typing import Any
+
+ATIF_SCHEMA_VERSION = "ATIF-v1.7"
+_PREVIEW_LIMIT = 20_000
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return rows
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _read_jsonl_chain(data_dir: Path, name: str, archive_prefix: str) -> list[dict[str, Any]]:
+    """Read ``logs/<name>`` plus its rotated ``archive/<prefix>_*.jsonl`` chain.
+
+    The runtime rotates events.jsonl and tools.jsonl into ``archive/`` once they
+    cross ~800KB. Rotation is suppressed in sentinel-marked isolated benchmark
+    roots, but not every harness writes the sentinel — so the trajectory builder
+    must read the full chain (oldest archive first, then live) rather than assume
+    a from-birth single file. File telemetry goes through here: a live-only
+    read of a rotated log publishes a trajectory missing its early tool calls,
+    which is a FALSE trajectory, not a short one."""
+    rows: list[dict[str, Any]] = []
+    try:
+        archives = sorted((data_dir / "archive").glob(f"{archive_prefix}_*.jsonl"))
+    except OSError:
+        archives = []
+    for path in archives:
+        rows.extend(_read_jsonl(path))
+    rows.extend(_read_jsonl(data_dir / "logs" / name))
+    return rows
+
+
+@contextmanager
+def _open_dialogue(path: Path):
+    """Read an exported trial store without importing the application or mutating it."""
+    with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+        conn.execute("BEGIN")
+        yield conn
+
+
+def _dialogue_rows(data_dir: Path, stream: str, *, task_id: str = "", final: bool = False) -> list[dict[str, Any]]:
+    """Address the trial's task/tree in SQL; unknown import coverage refuses conversion.
+
+    Older artifacts without a task id request their whole trial stream. Frozen
+    JSONL is never a fallback: pre-store artifacts need the explicit dialogue
+    import before this read-only converter can certify their trajectory.
+    """
+    path = data_dir / "state/dialog.sqlite"
+    if not path.exists():
+        if ((data_dir / f"logs/{stream}.jsonl").exists()
+                or next((data_dir / "archive").glob(f"{stream}_*.jsonl"), None) is not None):
+            raise RuntimeError("Dialogue history is not imported; run the dialogue import on the trial data first")
+        return []
+    with _open_dialogue(path) as conn:
+        if conn.execute("PRAGMA user_version").fetchone()[0] != 2:
+            raise RuntimeError("Unsupported dialogue store schema in trial artifacts")
+        incomplete = conn.execute("SELECT state FROM import_ledger WHERE stream=? AND state IN ('pending', 'mismatch') "
+                                  "LIMIT 1", (stream,)).fetchone()
+        if incomplete:
+            raise RuntimeError("A dialogue segment could not be imported" if incomplete[0] == "mismatch"
+                               else "Dialogue history is still importing")
+        if conn.execute("SELECT 1 FROM skipped WHERE stream=? LIMIT 1", (stream,)).fetchone():
+            raise RuntimeError("Dialogue history has recorded invalid intervals")
+        query = "SELECT seq, body FROM dialogue" + (" INDEXED BY dialogue_task" if task_id else "")
+        query, params = query + " WHERE stream=?", [stream]
+        if task_id:
+            query += " AND task_id=?"
+            params.append(task_id)
+            if not final:
+                query += " UNION SELECT seq, body FROM dialogue INDEXED BY dialogue_root WHERE stream=? AND root_task_id=?"
+                params.extend((stream, task_id))
+        if final:
+            query += " AND direction='out' AND kind IS NULL AND json_type(body, '$.text')='text' ORDER BY seq DESC LIMIT 1"
+        else:
+            query += " ORDER BY seq"
+        return [json.loads(body) for _seq, body in conn.execute(query, params)]
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(_read_text(path) or "{}")
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _store_final_rows(path: Path) -> list[dict[str, Any]] | None:
+    """Every attempt's current row from the usage store (read-only, stdlib)."""
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        records = conn.execute(
+            "SELECT attempt_id, root_task_id, kind, state, prompt_tokens, completion_tokens, cached_tokens,"
+            " cost_usd, cost_final FROM attempts").fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    names = ("attempt_id", "root_task_id", "kind", "state", "prompt_tokens", "completion_tokens",
+             "cached_tokens", "cost_usd", "cost_final")
+    rows = [dict(zip(names, record)) for record in records]
+    for row in rows:
+        row["cost_final"] = bool(row["cost_final"])
+    return rows
+
+
+def _journal_final_rows(path: Path) -> list[dict[str, Any]] | None:
+    """The last row of every attempt in a pre-store journal; ``None`` when torn."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    final_by_attempt: dict[str, dict[str, Any]] = {}
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            return None
+        if not isinstance(row, dict) or not str(row.get("attempt_id") or ""):
+            return None
+        final_by_attempt[str(row["attempt_id"])] = row
+    return list(final_by_attempt.values())
+
+
+def _physical_metrics(agent_dir: Path) -> dict[str, Any] | None:
+    """Replay final physical attempts for this trial's root task.
+
+    The physical-attempt ledger is the monetary/token authority.  A corrupt or
+    quarantined ledger is never partially projected; callers then use the
+    legacy events + run-summary fallback for pre-ledger artifacts.
+    """
+    agent_dir = Path(agent_dir)
+    state_dir = agent_dir / "ouroboros-data" / "state"
+    if (state_dir / "usage_attempts.quarantine.jsonl").exists():
+        return None
+    summary = _read_json(agent_dir / "ouroboros-run-summary.json")
+    root_task_id = str(summary.get("task_id") or "").strip()
+    if not root_task_id:
+        return None
+    if (state_dir / "usage.sqlite").is_file():
+        final_rows = _store_final_rows(state_dir / "usage.sqlite")
+    elif (state_dir / "usage_attempts.jsonl").is_file():
+        final_rows = _journal_final_rows(state_dir / "usage_attempts.jsonl")
+    else:
+        return None
+    if final_rows is None:
+        return None
+
+    rows = [
+        row
+        for row in final_rows
+        if str(row.get("root_task_id") or "") == root_task_id
+        and str(row.get("kind") or "attempt") not in {"legacy_metadata", "legacy_delta"}
+    ]
+    if not rows:
+        return None
+
+    token_totals: dict[str, int] = {}
+    for field in ("prompt_tokens", "completion_tokens", "cached_tokens"):
+        try:
+            token_totals[field] = sum(max(0, int(row.get(field) or 0)) for row in rows)
+        except (TypeError, ValueError):
+            return None
+
+    cost = 0.0
+    cost_final = True
+    for row in rows:
+        state = str(row.get("state") or "")
+        if state == "released":
+            continue
+        if state != "settled":
+            cost_final = False
+            continue
+        try:
+            value = float(row.get("cost_usd"))
+        except (TypeError, ValueError):
+            cost_final = False
+            continue
+        if value < 0 or not math.isfinite(value):
+            cost_final = False
+            continue
+        cost += value
+        if row.get("cost_final") is not True:
+            cost_final = False
+
+    return {
+        "cost_usd": round(cost, 12) if cost_final else None,
+        "prompt_tokens": token_totals["prompt_tokens"],
+        "completion_tokens": token_totals["completion_tokens"],
+        "cached_tokens": token_totals["cached_tokens"],
+        "cost_final": cost_final,
+        "accounting_authority": "physical_attempt_ledger",
+    }
+
+
+def _sync_run_summary(agent_dir: Path, metrics: dict[str, Any]) -> None:
+    """Project one authoritative metric set into the Harbor compatibility file."""
+    path = Path(agent_dir) / "ouroboros-run-summary.json"
+    summary = _read_json(path)
+    summary.update(metrics)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _clip(text: str, limit: int = _PREVIEW_LIMIT) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n… [truncated, {len(text) - limit} chars omitted]"
+
+
+def _json_safe(value: Any) -> Any:
+    """Best-effort conversion to JSON-serializable structures."""
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        if isinstance(value, dict):
+            return {str(k): _json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_json_safe(v) for v in value]
+        return repr(value)
+
+
+def _detect_version(events: list[dict[str, Any]]) -> str | None:
+    for row in events:
+        if row.get("type") == "startup_verification":
+            sync = (row.get("checks") or {}).get("version_sync") or {}
+            version = sync.get("version_file")
+            if isinstance(version, str) and version:
+                return version
+    return None
+
+
+def _final_answer(agent_dir: Path) -> str:
+    task_id = str(_read_json(agent_dir / "ouroboros-run-summary.json").get("task_id") or "")
+    chat = _dialogue_rows(agent_dir / "ouroboros-data", "chat", task_id=task_id, final=True)
+    for row in reversed(chat):
+        if row.get("type"):
+            # Typed structural rows (quiz/links/document/photo/video,
+            # proactive_message, project lifecycle) are deliveries, never the
+            # task's final answer.
+            continue
+        if row.get("direction") == "out" and isinstance(row.get("text"), str):
+            return row["text"]
+    try:
+        record = json.loads(_read_text(agent_dir / "ouroboros-task-result.json") or "{}")
+    except ValueError:
+        record = {}
+    for key in ("final_answer", "result"):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _tool_call_steps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """ONE row per logical tool call (#1316), shaped like a settlement row.
+
+    A call's ``tool_call_started`` / ``tool_call`` / ``tool_call_timeout`` rows share
+    one ``invocation_id``; a legacy row without it stands alone. What the model SAW
+    is the step: a call whose wait ended shows the timeout text at the timeout's
+    position (a late settlement is only noted); a call with only a start is kept
+    as an unknown outcome, never dropped and never read as a failure. A logged
+    start rides along as ``_started_ts``: the call is placed there, before what
+    its own execution emitted."""
+    calls: dict[str, dict[str, dict[str, Any]]] = {}
+    order: list[Any] = []
+    for row in rows:
+        kind = row.get("type")
+        if kind not in ("tool_call", "tool_call_started", "tool_call_timeout"):
+            continue
+        invocation_id = str(row.get("invocation_id") or "")
+        if not invocation_id:
+            if kind == "tool_call":
+                order.append(row)
+            continue
+        if invocation_id not in calls:
+            calls[invocation_id] = {}
+            order.append(invocation_id)
+        held = calls[invocation_id].get(kind)
+        # A duplicate settlement never replaces a real result with a host_error row.
+        if held is None or (kind == "tool_call" and held.get("status") == "host_error"
+                            and row.get("status") != "host_error"):
+            calls[invocation_id][kind] = row
+    out: list[dict[str, Any]] = []
+    for item in order:
+        if isinstance(item, dict):
+            out.append(item)
+            continue
+        call = calls[item]
+        started, settled, waited = (call.get(k) for k in ("tool_call_started", "tool_call", "tool_call_timeout"))
+        placed = {"_started_ts": started["ts"]} if started and started.get("ts") else {}
+        if waited is not None:
+            text = str(waited.get("result_preview") or "")
+            if settled is not None:
+                text += (f"\n[the worker also settled (status={settled.get('status')} "
+                         f"is_error={bool(settled.get('is_error'))}), but the model saw only this timeout]")
+            out.append({**waited, **placed, "status": "timeout", "is_error": True, "result_preview": text})
+        elif settled is not None:
+            out.append({**settled, **placed})
+        else:
+            out.append({**(started or {}), "status": "unknown", "is_error": False,
+                        "result_preview": "(no outcome recorded: host processing began; "
+                                          "neither a result nor a wait end was logged)"})
+    return out
+
+
+def _host_authored(row: dict[str, Any]) -> bool:
+    """A progress note the host wrote about the run, not the model's own speech.
+
+    ``narration`` is the note's typed voice: the worker stamps it on every frame,
+    ``True`` only for the model's round narration, and the send seam defaults
+    every other sender to ``False`` (the supervisor's HOST_NARRATION toasts
+    included). A row written before that fact falls back to its typed ``role``;
+    an untyped legacy row keeps the agent reading."""
+    if "narration" in row:
+        return row.get("narration") is not True
+    return row.get("role") == "system"
+
+
+def build_trajectory(
+    agent_dir: Path,
+    *,
+    agent_name: str = "Ouroboros",
+    agent_version: str | None = None,
+    model_name: str | None = None,
+) -> dict[str, Any]:
+    """Build an ATIF trajectory dict from a Harbor trial ``agent/`` directory."""
+    agent_dir = Path(agent_dir)
+    data_dir = agent_dir / "ouroboros-data"
+    task_id = str(_read_json(agent_dir / "ouroboros-run-summary.json").get("task_id") or "")
+    events = _read_jsonl_chain(data_dir, "events.jsonl", "events")
+    tool_rows = _tool_call_steps(_read_jsonl_chain(data_dir, "tools.jsonl", "tools"))
+    narration_rows = [
+        r
+        for r in _dialogue_rows(data_dir, "progress", task_id=task_id)
+        if r.get("type") == "send_message" and isinstance(r.get("text"), str)
+    ]
+
+    steps: list[dict[str, Any]] = []
+
+    instruction = _read_text(agent_dir / "instruction.txt").strip()
+    steps.append(
+        {
+            "step_id": 1,
+            "source": "user",
+            "message": instruction or "(instruction.txt missing)",
+        }
+    )
+
+    # Merge narration and tool calls chronologically, a call at its logged start;
+    # narration since the last tool call becomes the message of the step wrapping
+    # the next tool call.
+    merged: list[tuple[str, str, dict[str, Any]]] = []
+    for row in narration_rows:
+        merged.append((str(row.get("ts") or ""), "narration", row))
+    for row in tool_rows:
+        merged.append((str(row.get("_started_ts") or row.get("ts") or ""), "tool_call", row))
+    merged.sort(key=lambda item: item[0])
+
+    call_counter = 0
+    pending_narration: list[str] = []
+    pending_ts = ""
+    for ts, kind, row in merged:
+        if kind == "narration" and _host_authored(row):
+            if pending_narration:
+                # The model's words before this host line stay before it, as their own step.
+                said: dict[str, Any] = {"step_id": len(steps) + 1, "source": "agent",
+                                        "message": _clip("\n\n".join(pending_narration))}
+                if pending_ts:
+                    said["timestamp"] = pending_ts
+                steps.append(said)
+                pending_narration = []
+            # Kept where it happened, as the host's line: never the model's message.
+            note: dict[str, Any] = {"step_id": len(steps) + 1, "source": "system", "message": _clip(row["text"])}
+            if ts:
+                note["timestamp"] = ts
+            steps.append(note)
+            continue
+        if kind == "narration":
+            pending_narration.append(row["text"])
+            pending_ts = ts
+            continue
+        call_counter += 1
+        call_id = f"call_{call_counter}"
+        preview = row.get("result_preview")
+        content = preview if isinstance(preview, str) else json.dumps(_json_safe(preview))
+        if row.get("is_error") or (row.get("status") not in (None, "ok")):
+            content = f"[status={row.get('status')} is_error={bool(row.get('is_error'))}]\n{content}"
+        step: dict[str, Any] = {
+            "step_id": len(steps) + 1,
+            "source": "agent",
+            "message": _clip("\n\n".join(pending_narration)),
+            "tool_calls": [
+                {
+                    "tool_call_id": call_id,
+                    "function_name": str(row.get("tool") or "unknown_tool"),
+                    "arguments": _json_safe(row.get("args") or {}),
+                }
+            ],
+            "observation": {
+                "results": [
+                    {"source_call_id": call_id, "content": _clip(content)}
+                ]
+            },
+        }
+        if row.get("ts"):
+            step["timestamp"] = str(row["ts"])  # what the model saw, when it saw it (#1316)
+        steps.append(step)
+        pending_narration = []
+
+    final_parts = list(pending_narration)
+    answer = _final_answer(agent_dir)
+    if answer:
+        final_parts.append(answer)
+    steps.append(
+        {
+            "step_id": len(steps) + 1,
+            "source": "agent",
+            "message": _clip("\n\n".join(final_parts)) or "(no final message recorded)",
+        }
+    )
+
+    physical = _physical_metrics(agent_dir)
+    token_evidence = None
+    if physical is not None:
+        prompt_tokens = int(physical["prompt_tokens"])
+        completion_tokens = int(physical["completion_tokens"])
+        cached_tokens = int(physical["cached_tokens"])
+        saw_usage = True
+        total_cost = physical.get("cost_usd")
+    else:
+        # Load the pure shared reader without importing the application package:
+        # this script also runs directly in uploaded source trees, stdlib-only.
+        summarize_tokens = runpy.run_path(str(
+            Path(__file__).resolve().parents[3] / "ouroboros" / "event_token_totals.py"
+        ))["event_token_totals"]
+        usage_rows = [row for row in events if row.get("type") == "llm_usage"]
+        token_evidence = summarize_tokens(usage_rows)
+        saw_usage = bool(usage_rows)
+        prompt_tokens = token_evidence["prompt_tokens"]["total"]
+        completion_tokens = token_evidence["completion_tokens"]["total"]
+        cached_tokens = token_evidence["cached_tokens"]["total"]
+
+        total_cost: float | None = None
+        summary = _read_json(agent_dir / "ouroboros-run-summary.json")
+        cost = summary.get("cost_usd")
+        if isinstance(cost, (int, float)):
+            total_cost = float(cost)
+
+    final_metrics: dict[str, Any] = {"total_steps": len(steps)}
+    if saw_usage:
+        final_metrics["total_prompt_tokens"] = prompt_tokens
+        final_metrics["total_completion_tokens"] = completion_tokens
+        final_metrics["total_cached_tokens"] = cached_tokens
+        if token_evidence is not None:
+            # ATIF's declared extra field carries partial lower bounds and the
+            # fourth counter; unknown totals stay null in its standard fields.
+            final_metrics["extra"] = {"event_token_evidence": token_evidence}
+    if total_cost is not None:
+        final_metrics["total_cost_usd"] = total_cost
+
+    agent_block: dict[str, Any] = {
+        "name": agent_name,
+        "version": agent_version or _detect_version(events) or "unknown",
+    }
+    if model_name:
+        agent_block["model_name"] = model_name
+
+    return {
+        "schema_version": ATIF_SCHEMA_VERSION,
+        "agent": agent_block,
+        "steps": steps,
+        "final_metrics": final_metrics,
+    }
+
+
+def write_trajectory(agent_dir: Path, trajectory: dict[str, Any]) -> Path:
+    agent_dir = Path(agent_dir)
+    out = agent_dir / "trajectory.json"
+    out.write_text(
+        json.dumps(trajectory, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    physical = _physical_metrics(agent_dir)
+    if physical is not None:
+        _sync_run_summary(agent_dir, physical)
+    return out
+
+
+def main() -> int:
+    """In-container / standalone CLI: build one trial's trajectory.json."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Build ATIF trajectory for one trial")
+    parser.add_argument("agent_dir", type=Path, help="trial agent/ directory")
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--agent-name", default="Ouroboros")
+    parser.add_argument("--agent-version", default=None)
+    args = parser.parse_args()
+
+    trajectory = build_trajectory(
+        args.agent_dir,
+        agent_name=args.agent_name,
+        agent_version=args.agent_version,
+        model_name=args.model,
+    )
+    out = write_trajectory(args.agent_dir, trajectory)
+    print(json.dumps({
+        "trajectory_path": str(out),
+        "steps": len(trajectory["steps"]),
+        "physical_metrics": _physical_metrics(args.agent_dir) or {},
+    }, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

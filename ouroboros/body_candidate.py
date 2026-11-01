@@ -22,13 +22,7 @@ transition of an exact reviewed candidate commit into the serving checkout.
 
 from __future__ import annotations
 
-import hashlib
-import logging
-import os
-import pathlib
-import subprocess
-import threading
-import time
+import hashlib, logging, os, pathlib, subprocess, threading, time
 from typing import Any, Dict, List, Optional
 
 from ouroboros import subagent_worktrees as _wt
@@ -61,17 +55,14 @@ def _metadata(ctx: Any) -> Dict[str, Any]:
     metadata = getattr(ctx, "task_metadata", None)
     return metadata if isinstance(metadata, dict) else {}
 
-
 def owner_id(ctx: Any) -> str:
     """The task lineage that owns a candidate: the root task, else this task."""
     return str(_metadata(ctx).get("root_task_id") or getattr(ctx, "task_id", "") or "").strip()
-
 
 def descriptor(ctx: Any) -> Dict[str, Any]:
     """The candidate this context is bound to, or ``{}``."""
     value = _metadata(ctx).get("body_candidate")
     return value if isinstance(value, dict) and value.get("path") else {}
-
 
 def is_bound(ctx: Any) -> bool:
     return bool(descriptor(ctx)) and getattr(ctx, "serving_repo_dir", None) is not None
@@ -382,16 +373,11 @@ def bind(ctx: Any, row: Dict[str, Any]) -> Dict[str, Any]:
 def reattribute(ctx: Any) -> None:
     """Re-add an already bound candidate to the lineage baseline (idempotent, evidence only)."""
     try:
-        if not is_bound(ctx):
-            return
-        row = find(owner_id(ctx))
-        if row is None:
-            return
-        _attribute_surface(ctx, pathlib.Path(str(row["path"])), row)
+        row = find(owner_id(ctx)) if is_bound(ctx) else None
+        if row is not None:
+            _attribute_surface(ctx, pathlib.Path(str(row["path"])), row)
     except Exception:
         log.debug("candidate re-attribution failed", exc_info=True)
-
-
 def _attribute_surface(ctx: Any, candidate: pathlib.Path, row: Dict[str, Any]) -> None:
     """Append the candidate to this lineage's mutation baseline as a late surface (evidence only).
 

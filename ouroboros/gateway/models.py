@@ -158,7 +158,7 @@ async def _fetch_openai_compatible_model_catalog(
             if isinstance(caps, dict) and str(caps.get("type") or "").strip().lower() == "embeddings":
                 continue
             endpoints = item.get("supported_endpoints")
-            if isinstance(endpoints, list) and endpoints and "/chat/completions" not in endpoints:
+            if isinstance(endpoints, list) and endpoints and not ({"/chat/completions", "/responses"} & set(endpoints)):
                 continue
         models.append(
             _build_model_catalog_entry(

@@ -160,6 +160,322 @@ def copilot_compatible_headers(base_url: Any, api_key: Any = "") -> Dict[str, st
     }
 
 
+_COPILOT_RESPONSES_MODEL_PREFIXES = ("gpt-5.3", "gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6", "mai-code")
+_COPILOT_EFFORT_MAP = {
+    "minimal": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "xhigh",
+    "ultra": "xhigh",
+}
+
+
+def _copilot_uses_responses_api(model: str) -> bool:
+    m = str(model or "").strip().lower()
+    return m.startswith(_COPILOT_RESPONSES_MODEL_PREFIXES)
+
+
+def _copilot_chat_to_responses_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    model = str(payload.get("model") or "")
+    out: Dict[str, Any] = {"model": model}
+    input_items = []
+    for msg in payload.get("messages") or []:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "user")
+        raw_content = msg.get("content")
+        content_val: Any = ""
+        if isinstance(raw_content, str):
+            content_val = raw_content
+        elif isinstance(raw_content, list):
+            has_image = any(isinstance(b, dict) and b.get("type") == "image_url" for b in raw_content)
+            if not has_image:
+                content_val = "".join(
+                    b if isinstance(b, str) else str(b.get("text") or "")
+                    for b in raw_content
+                    if isinstance(b, (str, dict))
+                )
+            else:
+                blocks = []
+                text_type = "output_text" if role == "assistant" else "input_text"
+                for b in raw_content:
+                    if isinstance(b, str):
+                        blocks.append({"type": text_type, "text": b})
+                    elif isinstance(b, dict):
+                        btype = b.get("type")
+                        if btype == "text":
+                            blocks.append({"type": text_type, "text": str(b.get("text") or "")})
+                        elif btype == "image_url":
+                            img = b.get("image_url")
+                            url_str = img.get("url") if isinstance(img, dict) else str(img or "")
+                            if url_str:
+                                blocks.append({"type": "input_image", "image_url": url_str})
+                content_val = blocks
+        if role in ("system", "developer", "user"):
+            input_items.append({"role": role, "content": content_val})
+        elif role == "assistant":
+            if content_val:
+                input_items.append({"role": "assistant", "content": content_val})
+            for idx, tc in enumerate(msg.get("tool_calls") or []):
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                input_items.append({
+                    "type": "function_call",
+                    "call_id": str(tc.get("id") or f"call_{idx}"),
+                    "name": str(fn.get("name") or ""),
+                    "arguments": str(fn.get("arguments") or "{}"),
+                })
+        elif role == "tool":
+            out_str = content_val if isinstance(content_val, str) else json.dumps(content_val)
+            input_items.append({
+                "type": "function_call_output",
+                "call_id": str(msg.get("tool_call_id") or "call_0"),
+                "output": out_str,
+            })
+    out["input"] = input_items
+
+    raw_tools = payload.get("tools")
+    if isinstance(raw_tools, list) and raw_tools:
+        resp_tools = []
+        for t in raw_tools:
+            if not isinstance(t, dict):
+                continue
+            if t.get("type") == "function" and isinstance(t.get("function"), dict):
+                fn = t["function"]
+                resp_tools.append({
+                    "type": "function",
+                    "name": str(fn.get("name") or ""),
+                    "description": str(fn.get("description") or ""),
+                    "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+                })
+            else:
+                resp_tools.append(t)
+        if resp_tools:
+            out["tools"] = resp_tools
+
+    tc = payload.get("tool_choice")
+    if isinstance(tc, dict) and tc.get("type") == "function" and isinstance(tc.get("function"), dict):
+        out["tool_choice"] = {"type": "function", "name": str(tc["function"].get("name") or "")}
+    elif tc is not None:
+        out["tool_choice"] = tc
+
+    max_tok = payload.get("max_completion_tokens") or payload.get("max_tokens")
+    if isinstance(max_tok, int) and max_tok > 0:
+        out["max_output_tokens"] = max(16, max_tok)
+
+    eff = payload.get("reasoning_effort")
+    if not eff and isinstance(payload.get("reasoning"), dict):
+        eff = payload["reasoning"].get("effort")
+    mapped_eff = _COPILOT_EFFORT_MAP.get(str(eff or "").strip().lower())
+    if mapped_eff:
+        out["reasoning"] = {"effort": mapped_eff}
+
+    rf = payload.get("response_format")
+    if isinstance(rf, dict) and rf.get("type"):
+        if rf["type"] == "json_object":
+            out["text"] = {"format": {"type": "json_object"}}
+        elif rf["type"] == "json_schema" and isinstance(rf.get("json_schema"), dict):
+            js = rf["json_schema"]
+            out["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": str(js.get("name") or "response"),
+                    "schema": js.get("schema") or {},
+                    "strict": bool(js.get("strict", False)),
+                }
+            }
+    return out
+
+
+def _copilot_responses_to_chat_completion(rjson: Dict[str, Any], requested_model: str) -> Dict[str, Any]:
+    import time
+
+    text_parts = []
+    reasoning_parts = []
+    tool_calls = []
+    for idx, item in enumerate(rjson.get("output") or []):
+        if not isinstance(item, dict):
+            continue
+        itype = item.get("type")
+        if itype == "message":
+            for c in item.get("content") or []:
+                if isinstance(c, dict) and c.get("type") in ("output_text", "text"):
+                    text_parts.append(str(c.get("text") or ""))
+        elif itype == "function_call":
+            tool_calls.append({
+                "id": str(item.get("call_id") or item.get("id") or f"call_{idx}"),
+                "type": "function",
+                "function": {
+                    "name": str(item.get("name") or ""),
+                    "arguments": str(item.get("arguments") or "{}"),
+                },
+            })
+        elif itype == "reasoning":
+            for s in item.get("summary") or []:
+                if isinstance(s, dict) and s.get("text"):
+                    reasoning_parts.append(str(s["text"]))
+
+    content_text = "".join(text_parts) if text_parts else None
+    if content_text is None and not tool_calls:
+        content_text = ""
+    message: Dict[str, Any] = {"role": "assistant", "content": content_text}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    if reasoning_parts:
+        message["reasoning_content"] = "\n".join(reasoning_parts)
+
+    finish_reason = "tool_calls" if tool_calls else ("length" if rjson.get("status") == "incomplete" else "stop")
+    u = rjson.get("usage") if isinstance(rjson.get("usage"), dict) else {}
+    in_tok = int(u.get("input_tokens") or 0)
+    out_tok = int(u.get("output_tokens") or 0)
+    tot_tok = int(u.get("total_tokens") or (in_tok + out_tok))
+    in_det = u.get("input_tokens_details") if isinstance(u.get("input_tokens_details"), dict) else {}
+    out_det = u.get("output_tokens_details") if isinstance(u.get("output_tokens_details"), dict) else {}
+
+    return {
+        "id": str(rjson.get("id") or "chatcmpl-copilot-responses"),
+        "object": "chat.completion",
+        "created": int(rjson.get("created_at") or time.time()),
+        "model": str(rjson.get("model") or requested_model),
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": finish_reason,
+        }],
+        "usage": {
+            "prompt_tokens": in_tok,
+            "completion_tokens": out_tok,
+            "total_tokens": tot_tok,
+            "prompt_tokens_details": {"cached_tokens": int(in_det.get("cached_tokens") or 0)},
+            "completion_tokens_details": {"reasoning_tokens": int(out_det.get("reasoning_tokens") or 0)},
+        },
+    }
+
+
+def _copilot_chat_completion_to_sse(chat_comp: Dict[str, Any]) -> bytes:
+    import json
+
+    choice = (chat_comp.get("choices") or [{}])[0]
+    msg = dict(choice.get("message") or {"role": "assistant", "content": ""})
+    if "tool_calls" in msg:
+        msg["tool_calls"] = [
+            {**tc, "index": idx} for idx, tc in enumerate(msg["tool_calls"])
+        ]
+    chunk = {
+        "id": chat_comp.get("id"),
+        "object": "chat.completion.chunk",
+        "created": chat_comp.get("created"),
+        "model": chat_comp.get("model"),
+        "choices": [{
+            "index": 0,
+            "delta": msg,
+            "finish_reason": choice.get("finish_reason") or "stop",
+        }],
+        "usage": chat_comp.get("usage"),
+    }
+    return f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode("utf-8")
+
+
+def _wrap_copilot_responses_transport(base_transport: Any, httpx_mod: Any, async_client: bool) -> Any:
+    import json
+
+    def _prepare(request: Any):
+        if request.method != "POST" or "githubcopilot.com" not in request.url.host.lower():
+            return None
+        if not request.url.path.endswith("/chat/completions"):
+            return None
+        try:
+            body_bytes = request.read()
+            payload = json.loads(body_bytes)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        model = str(payload.get("model") or "")
+        if not _copilot_uses_responses_api(model):
+            return None
+        was_stream = bool(payload.get("stream"))
+        new_payload = _copilot_chat_to_responses_payload(payload)
+        new_bytes = json.dumps(new_payload).encode("utf-8")
+        new_path = request.url.path[:-len("/chat/completions")] + "/responses"
+        new_url = request.url.copy_with(path=new_path)
+        headers = dict(request.headers)
+        headers["content-length"] = str(len(new_bytes))
+        headers["accept"] = "application/json"
+        new_req = httpx_mod.Request(
+            method="POST",
+            url=new_url,
+            headers=headers,
+            content=new_bytes,
+            extensions=request.extensions,
+        )
+        return new_req, model, was_stream
+
+    def _convert_response(resp: Any, raw_bytes: bytes, request: Any, model: str, was_stream: bool):
+        if resp.status_code != 200:
+            return httpx_mod.Response(
+                status_code=resp.status_code,
+                headers=resp.headers,
+                content=raw_bytes,
+                request=request,
+            )
+        rjson = json.loads(raw_bytes)
+        chat_comp = _copilot_responses_to_chat_completion(rjson, model)
+        if was_stream:
+            sse_bytes = _copilot_chat_completion_to_sse(chat_comp)
+            return httpx_mod.Response(
+                status_code=200,
+                headers={"content-type": "text/event-stream; charset=utf-8"},
+                content=sse_bytes,
+                request=request,
+            )
+        out_bytes = json.dumps(chat_comp).encode("utf-8")
+        return httpx_mod.Response(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            content=out_bytes,
+            request=request,
+        )
+
+    if async_client:
+        if not hasattr(base_transport, "handle_async_request"):
+            return base_transport
+        orig_async = base_transport.handle_async_request
+
+        async def _handle_async_request(request: Any):
+            prep = _prepare(request)
+            if prep is None:
+                return await orig_async(request)
+            new_req, model, was_stream = prep
+            resp = await orig_async(new_req)
+            raw_bytes = await resp.aread()
+            await resp.aclose()
+            return _convert_response(resp, raw_bytes, request, model, was_stream)
+
+        base_transport.handle_async_request = _handle_async_request
+        return base_transport
+
+    if not hasattr(base_transport, "handle_request"):
+        return base_transport
+    orig_sync = base_transport.handle_request
+
+    def _handle_request(request: Any):
+        prep = _prepare(request)
+        if prep is None:
+            return orig_sync(request)
+        new_req, model, was_stream = prep
+        resp = orig_sync(new_req)
+        raw_bytes = resp.read()
+        resp.close()
+        return _convert_response(resp, raw_bytes, request, model, was_stream)
+
+    base_transport.handle_request = _handle_request
+    return base_transport
+
+
 def remote_httpx_transport(
     async_client: bool = False,
     *,
@@ -189,7 +505,7 @@ def remote_httpx_transport(
         kwargs["limits"] = limits
     transport_cls = httpx_mod.AsyncHTTPTransport if async_client else httpx_mod.HTTPTransport
     try:
-        return transport_cls(**kwargs)
+        transport = transport_cls(**kwargs)
     except TypeError:
         # httpx < 0.25 has no ``socket_options`` parameter; the dependency pin
         # is a bare ``httpx``, so such a venv is legal. Rebuild without the
@@ -197,7 +513,8 @@ def remote_httpx_transport(
         # call at client construction — same guard shape as the openai
         # Default-client getattr fallback below.
         kwargs.pop("socket_options", None)
-        return transport_cls(**kwargs)
+        transport = transport_cls(**kwargs)
+    return _wrap_copilot_responses_transport(transport, httpx_mod, async_client)
 
 
 def _sdk_pool_limits(httpx_mod: Optional[Any] = None):
@@ -341,13 +658,22 @@ def _keyless_client_class(base, async_client: bool):
 
 def _openai_httpx_module():
     import importlib
+    import httpx
     import openai
 
+    if (
+        getattr(httpx.Client, "__module__", "").split(".")[0] != "httpx"
+        or getattr(httpx.AsyncClient, "__module__", "").split(".")[0] != "httpx"
+        or getattr(httpx.HTTPTransport, "__module__", "").split(".")[0] != "httpx"
+        or getattr(httpx.AsyncHTTPTransport, "__module__", "").split(".")[0] != "httpx"
+    ):
+        return httpx
     cls = getattr(openai, "DefaultHttpxClient", None)
-    if cls is not None and cls.__bases__:
-        pkg = cls.__bases__[0].__module__.split(".")[0]
-        return importlib.import_module(pkg)
-    import httpx
+    bases = getattr(cls, "__bases__", None)
+    if bases:
+        pkg = bases[0].__module__.split(".")[0]
+        if pkg in ("httpx", "httpx2"):
+            return importlib.import_module(pkg)
     return httpx
 
 
