@@ -1,0 +1,1400 @@
+import { refreshModelCatalog, watchAccountModelCatalog } from './settings_catalog.js';
+export { accountCatalogRefreshKey } from './settings_catalog.js';
+import { getNotifier } from './notifications.js';
+import { mountDesktopShell } from './desktop_shell.js';
+import { bindEffortSegments, syncEffortSegments, readCustomSecretDraft, collectCustomSecretDraft, paintSettingsFieldErrors, setButtonBusy, settingsWriteFailure } from './settings_controls.js';
+import { bindLocalModelControls } from './settings_local_model.js';
+import { bindAutostartControl } from './settings_autostart.js';
+import { applyMcpSettings, collectMcpSettings, initMcpSettings, mcpDraftSnapshot, validateMcpSettings } from './mcp_settings.js';
+import {
+    applySubagentsSettings,
+    availableSubagentsPreviewPayload,
+    collectSubagentsSettings,
+    initSubagentsSection,
+    noteSubagentsSaveAttempt,
+    reloadReviewPool,
+    reloadSubagentsSection,
+    subagentSettingsFingerprint,
+    validateSubagentsDraft,
+    setSubagentsProcessingPreference,
+    setSubagentsSourceContext,
+} from './subagents_settings.js';
+import { initHarnessAccounts } from './harness_accounts.js';
+import { openConfirmDialog } from './confirm_dialog.js';
+import { confirmAndSendRestart } from './chat_activity.js';
+import { PROVIDER_SECRET_KEYS, SECRET_KEYS, bindSecretInputs, bindSettingsTabs, renderSettingsPage } from './settings_ui.js';
+import { connectionReferencesText, createConnectionsEditor } from './settings_connections.js';
+import { showToast } from './toast.js';
+import { escapeHtmlAttr as escapeHtml } from './utils.js';
+import { apiClient, apiFetch, cleanExtensionRoute, extensionRoutePath } from './api_client.js';
+import { claudexorStatus } from './claudexor_status_store.js';
+import { createModelRolesEditor } from './model_roles.js';
+import { PROCESSING_PREFERENCE_KEY } from './route_editor_primitives.js';
+import { collectSafeFieldValues, normalizeTone, renderSafeField, setInlineStatus, revealNewRow } from './ui_helpers.js';
+import { extensionActionStatus } from './extension_status_text.js';
+import { bindLanguageSettings } from './settings_language.js';
+import { mountInterfaceSize } from './interface_size.js';
+import { resetSecretReveals } from './settings_secrets.js';
+import { syncPolicyState } from './settings_policy.js';
+import { applySafetySettings, bindSafetySettings, checkerSaveEffect, checkerTabsText, safetyOwnerDraft, saveSafetyChecker, saveSafetyOwnerChanges } from './settings_safety.js';
+import { applyConsciousnessSettings, bindConsciousnessSettings } from './settings_consciousness.js';
+
+let markSettingsDirty = () => {};
+// Keys that already have their input (Secrets, Accounts): a skill's request never draws a second one.
+const BASE_SECRET_KEYS = new Set([...SECRET_KEYS.map(([key]) => key), ...PROVIDER_SECRET_KEYS]);
+const pendingExtensionSettings = new Set();
+let setupContract = {};
+
+const INPUT_FIELDS = [
+    ['s-openai-base-url', 'OPENAI_BASE_URL'], ['s-openai-compatible-base-url', 'OPENAI_COMPATIBLE_BASE_URL'], ['s-cloudru-base-url', 'CLOUDRU_FOUNDATION_MODELS_BASE_URL'],
+    ['s-gigachat-scope', 'GIGACHAT_SCOPE'], ['s-gigachat-user', 'GIGACHAT_USER'], ['s-gigachat-base-url', 'GIGACHAT_BASE_URL'], ['s-gigachat-verify-ssl', 'GIGACHAT_VERIFY_SSL_CERTS'],
+    ['s-minimax-region', 'MINIMAX_REGION'],
+    ['s-zai-plan', 'ZAI_PLAN'],
+    ['s-server-host', 'OUROBOROS_SERVER_HOST', '127.0.0.1'],
+    // No review route is authored here: the review pool is the Reviewer mark
+    // on the Available subagents rows.
+    ['s-skills-repo-path', 'OUROBOROS_SKILLS_REPO_PATH'],
+    ['s-extra-ca-bundle', 'OUROBOROS_EXTRA_CA_BUNDLE'],
+    ['s-clawhub-registry-url', 'OUROBOROS_CLAWHUB_REGISTRY_URL'], ['s-websearch-source', 'OUROBOROS_WEBSEARCH_BACKEND', 'auto'], ['s-websearch-model', 'OUROBOROS_WEBSEARCH_MODEL'], ['s-gh-repo', 'GITHUB_REPO'],
+    ['s-local-source', 'LOCAL_MODEL_SOURCE'], ['s-local-filename', 'LOCAL_MODEL_FILENAME'], ['s-local-chat-format', 'LOCAL_MODEL_CHAT_FORMAT'],
+    ['s-subagent-worktree-root', 'OUROBOROS_SUBAGENT_WORKTREE_ROOT'], ['s-subagent-projects-root', 'OUROBOROS_SUBAGENT_PROJECTS_ROOT'],
+    ['s-evo-budget', 'OUROBOROS_POST_TASK_EVOLUTION_BUDGET_USD', '0'],
+    ['s-consciousness-daily-usd', 'OUROBOROS_CONSCIOUSNESS_DAILY_USD', '20'],  // float: NUMBER_FIELDS would truncate 20.5 to 20
+    ['s-evo-objective', 'OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE', ''],
+    // Optional task bounds: a positive integer or "unlimited" (SSOT: ouroboros/settings_scales.py); a blank is refused by the server.
+    ['s-max-rounds', 'OUROBOROS_MAX_ROUNDS', 'unlimited'], ['s-task-lifetime', 'OUROBOROS_TASK_ABS_CEILING_SEC', 'unlimited'],
+];
+const VALUE_FIELDS = [
+    // Effort is not a Settings draft: the range is edited in the chat composer alone, and Settings has no effort section.
+    ['s-consciousness-autonomy', 'OUROBOROS_CONSCIOUSNESS_AUTONOMY', 'act'],
+    ['s-review-enforcement', 'OUROBOROS_REVIEW_ENFORCEMENT', 'advisory'], ['s-task-review-mode', 'OUROBOROS_TASK_REVIEW_MODE', 'auto'], ['s-runtime-mode', 'OUROBOROS_RUNTIME_MODE', 'advanced'],
+    // Shared paid-review-cycle cap (result review / commit gate / skill review; plan asks stand outside it);
+    // the ∞ segment saves the string "unlimited" (SSOT: ouroboros/review_cycles.py).
+    ['s-review-max-cycles', 'OUROBOROS_REVIEW_MAX_CYCLES', '2'],
+    ['s-update-channel', 'OUROBOROS_UPDATE_CHANNEL', 'stable'],
+    ['s-context-mode', 'OUROBOROS_CONTEXT_MODE', 'max'], ['s-image-input-mode', 'OUROBOROS_IMAGE_INPUT_MODE', 'auto'],
+    ['s-prompt-cache-ttl', 'OUROBOROS_PROMPT_CACHE_TTL', '1h'],
+];
+const NUMBER_FIELDS = [
+    ['s-workers', 'OUROBOROS_MAX_WORKERS', 10], ['s-presence-max-active', 'OUROBOROS_PRESENCE_MAX_ACTIVE', 2], ['s-active-subagents', 'OUROBOROS_MAX_ACTIVE_SUBAGENTS_PER_ROOT', 6], ['s-subagent-depth', 'OUROBOROS_MAX_SUBAGENT_DEPTH', 3, true],
+    ['s-tool-timeout', 'OUROBOROS_TOOL_TIMEOUT_SEC', 600], ['s-local-port', 'LOCAL_MODEL_PORT', 8766], ['s-local-gpu-layers', 'LOCAL_MODEL_N_GPU_LAYERS', -1, true],
+    ['s-local-ctx', 'LOCAL_MODEL_CONTEXT_LENGTH', 16384], ['s-gc-retention-days', 'OUROBOROS_GC_RETENTION_DAYS', 7],
+    ['s-bg-wakeup-min', 'OUROBOROS_BG_WAKEUP_MIN', 900], ['s-bg-wakeup-max', 'OUROBOROS_BG_WAKEUP_MAX', 14400],
+    ['s-consciousness-max-tasks', 'OUROBOROS_CONSCIOUSNESS_MAX_TASKS', 2, true],  // 0 = never starts tasks: a choice, not unset
+];
+
+function setupModelSlots() {
+    return Array.isArray(setupContract.modelSlots) ? setupContract.modelSlots : [];
+}
+
+function byId(id) {
+    return document.getElementById(id);
+}
+
+// A stored 0 is a value, not an absence: `fallback && !value` rendered a saved
+// 0 (e.g. OUROBOROS_CONSCIOUSNESS_DAILY_USD) as its fallback, and the next save
+// of ANY tab wrote the fallback back. Only a missing value takes the fallback.
+export function storedOrFallback(value, fallback) {
+    return fallback && (value === undefined || value === null || value === '') ? fallback : value;
+}
+
+// What the core serves at its own address right now (`served_ui` on /api/state),
+// beside the saved choice that applies at the next restart; a refused choice
+// carries the core's own sentence naming it and why. A core older than the choice
+// reports nothing, and nothing is shown.
+export function servedUiStatus(servedUi) {
+    const label = { builtin: 'the built-in interface', directory: 'the interface directory', none: 'no main page' }[servedUi?.source];
+    if (!label) return null;
+    return servedUi.error
+        ? { text: `Serving now: ${label}. ${servedUi.error}`, tone: 'warn' }
+        : { text: `Serving now: ${label}.`, tone: 'muted' };
+}
+
+// The interface choice travels only when edited: an untouched field must not turn
+// an environment choice or the default into a saved one, and a cleared field saves
+// the blank that selects built-in over the environment.
+export function uiDirChange(edited, loaded) {
+    const value = String(edited ?? '').trim();
+    return value === String(loaded ?? '').trim() ? {} : { OUROBOROS_UI_DIR: value };
+}
+
+function applyInputValue(id, value) {
+    const el = byId(id);
+    el.value = value === undefined || value === null ? '' : value;
+    // Server-applied snapshot (secrets arrive MASKED): lets the provider-test
+    // handler tell an owner edit apart from the mask, which must never be sent
+    // back as a credential.
+    el.dataset.appliedValue = el.value;
+}
+
+function applyCheckboxValue(id, value) {
+    byId(id).checked = isTruthySetting(value);
+}
+
+function isTruthySetting(value) {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    return value === true || ['true', '1', 'yes', 'on'].includes(normalized);
+}
+
+// A loading, validation or editor owner may update its own status. A later
+// message from anyone else drops that ownership, protecting the newer result.
+function setStatus(text, tone = 'ok', owner = '', subject = '') {
+    const status = byId('settings-status');
+    status.textContent = text;
+    status.dataset.tone = tone;
+    if (owner) status.dataset.owner = owner;
+    else delete status.dataset.owner;
+    if (subject) status.dataset.subject = subject;
+    else delete status.dataset.subject;
+}
+
+function readInt(id, fallback) {
+    const value = parseInt(byId(id).value, 10);
+    return Number.isNaN(value) ? fallback : value;
+}
+
+function resetSecretClearFlags(root) {
+    resetSecretReveals(root);
+    root.querySelectorAll('.secret-input').forEach((input) => {
+        delete input.dataset.forceClear;
+        input.type = 'password';
+    });
+    root.querySelectorAll('.secret-toggle').forEach((button) => {
+        button.textContent = 'Show';
+    });
+}
+
+function applySecretInputs(root, settings) {
+    root.querySelectorAll('[data-secret-setting]').forEach((input) => {
+        applyInputValue(input.id, settings[input.dataset.secretSetting]);
+    });
+}
+
+
+function customSecretRow(key = '', value = '') {
+    const id = `custom-secret-${Math.random().toString(36).slice(2)}`;
+    const ordinal = document.querySelectorAll('[data-custom-secret-row]').length + 1;
+    const row = document.createElement('div');
+    row.className = 'settings-custom-secret-row';
+    row.dataset.customSecretRow = '1';
+    row.dataset.originalKey = key;
+    row.innerHTML = `
+        <div class="form-field ui-field settings-custom-secret-key"><label for="${id}-key">Custom key ${ordinal}</label><input id="${id}-key" name="custom-key" type="text" class="ui-control" data-custom-secret-key value="${escapeHtml(key)}" placeholder="SLACK_WEBHOOK_URL" spellcheck="false"></div>
+        <div class="form-field ui-field settings-custom-secret-value"><label for="${id}">Value for ${escapeHtml(key || `custom key ${ordinal}`)}</label><div class="secret-input-row">
+            <input id="${id}" name="custom-value" data-custom-secret-value class="secret-input ui-control" type="password" value="${escapeHtml(value || '')}" placeholder="Secret value">
+            <button type="button" class="btn btn-default secret-toggle" data-target="${id}" data-row-secret-toggle>Show</button>
+            <button type="button" class="btn btn-default secret-clear" data-target="${id}" data-row-secret-clear>Clear</button>
+        </div></div>
+        <button type="button" class="btn btn-default settings-custom-secret-remove" data-custom-secret-remove>Remove</button>`;
+    bindSecretInputs(row);
+    row.querySelector('[data-custom-secret-value]').dataset.appliedValue = value;
+    row.querySelector('[data-custom-secret-key]').addEventListener('input', (event) => {
+        row.querySelector(`label[for="${id}"]`).textContent = `Value for ${event.target.value.trim() || `custom key ${ordinal}`}`;
+    });
+    row.querySelector('[data-custom-secret-remove]')?.addEventListener('click', () => {
+        // The caret moves to the key now in this place, else to Add (DESIGN "List editors").
+        const shown = [...row.parentElement.querySelectorAll('[data-custom-secret-row]:not([hidden])')];
+        const next = shown[shown.indexOf(row) + 1] || shown[shown.indexOf(row) - 1];
+        resetSecretReveals(row);
+        if (row.dataset.originalKey) { row.dataset.removeCustomSecret = '1'; row.hidden = true; }
+        else row.remove();
+        if (next) revealNewRow(next, next.querySelector('[data-custom-secret-key]'));
+        else document.getElementById('btn-add-custom-secret')?.focus();
+        markSettingsDirty();
+    });
+    return row;
+}
+
+function renderCustomSecrets(root, settings) {
+    const host = root.querySelector('#custom-secrets-list');
+    if (!host) return;
+    resetSecretReveals(host);
+    host.innerHTML = '';
+    const keys = Array.isArray(settings?._meta?.custom_secret_keys) ? settings._meta.custom_secret_keys : [];
+    keys.forEach((key) => host.appendChild(customSecretRow(key, settings[key] || '')));
+    if (!keys.length) host.innerHTML = '<div class="muted">No custom keys yet.</div>';
+}
+
+function renderRequestedSkillSecrets(root, skills, settings) {
+    const host = root.querySelector('#skill-requested-secrets');
+    if (!host) return;
+    resetSecretReveals(host);
+    const keys = [];
+    (Array.isArray(skills) ? skills : []).forEach((skill) => {
+        (skill?.grants?.requested_keys || []).forEach((key) => {
+            const normalized = String(key || '').trim();
+            if (normalized && !BASE_SECRET_KEYS.has(normalized)) keys.push(normalized);
+        });
+    });
+    const unique = Array.from(new Set(keys)).sort((a, b) => a.localeCompare(b));
+    if (!unique.length) { host.innerHTML = '<div class="muted">No skill-requested secrets.</div>'; return; }
+    host.innerHTML = '';
+    unique.forEach((key, idx) => {
+        const id = `requested-secret-${idx}`;
+        const el = document.createElement('div');
+        el.className = 'settings-requested-secret-row';
+        el.innerHTML = `<div class="form-field ui-field"><label for="${id}">${escapeHtml(key)}</label><div class="secret-input-row">
+            <input id="${id}" name="${escapeHtml(key)}" data-secret-setting="${escapeHtml(key)}" class="secret-input ui-control" type="password" value="${escapeHtml(settings[key] || '')}" placeholder="Secret value">
+            <button type="button" class="btn btn-default secret-toggle" data-target="${id}" data-row-secret-toggle>Show</button>
+            <button type="button" class="btn btn-default secret-clear" data-target="${id}" data-row-secret-clear>Clear</button>
+        </div></div>`;
+        el.querySelector('.secret-input').dataset.appliedValue = settings[key] || '';
+        bindSecretInputs(el); host.appendChild(el);
+    });
+}
+
+// A declarative extension form must show what is STORED. Rendering the bare
+// schema and posting it overwrote real values with the schema's first option —
+// the bundled Telegram skill unbound its owner chat id that way. The host reads
+// the current values from the SAME route it posts to. A route with no GET
+// handler (404/405) cannot say what is stored: its fields start locked behind a
+// warning until the owner chooses Edit anyway, knowing Save may replace values
+// nobody saw. Any other failed read keeps Save disabled with no way around it,
+// and a successful `{}` is a real empty document.
+const EXTENSION_VALUES_UNREADABLE = 'Current values could not be read; Save is disabled so it does not overwrite them. Use Reload Settings to retry.';
+const EXTENSION_VALUES_UNAVAILABLE = 'Current values are unavailable. These are defaults. Sending this form may change saved settings.';
+const EXTENSION_EDITING_UNREAD = 'You chose to edit without reading the saved values. Review every field before sending.';
+
+const extensionFormKey = (section, component, idx) =>
+    `${section.key || `${section.skill}:${section.section_id}`}:${component.id || idx}`;
+
+/** Read one form's stored values from its own route: `read` is ok, unsupported or failed. Exported for node tests. */
+export async function readExtensionFormValues(skill, route) {
+    try {
+        const resp = await apiFetch(extensionRoutePath(skill, route));
+        if (resp.status === 404 || resp.status === 405) return { values: {}, read: 'unsupported' };
+        if (!resp.ok) return { values: {}, read: 'failed' };
+        const data = await resp.json();
+        if (!data || typeof data !== 'object' || Array.isArray(data)) return { values: {}, read: 'failed' };
+        return { values: data, read: 'ok' };
+    } catch {
+        return { values: {}, read: 'failed' };
+    }
+}
+
+export async function renderExtensionSettingsSections(root, sections, { isCurrent = () => true } = {}) {
+    const host = root.querySelector('#extension-settings-sections');
+    if (!host) return;
+    const items = Array.isArray(sections) ? sections : [];
+    if (!items.length) {
+        host.innerHTML = '<div class="muted">No extension settings registered.</div>';
+        return;
+    }
+    const hydrated = new Map();
+    await Promise.all(items.flatMap((section) => (Array.isArray(section.render?.components) ? section.render.components : [])
+        .map(async (component, idx) => {
+            const rawRoute = component.route || component.api_route || '';
+            // Only a component with fields has values to read; an action's route is a
+            // side effect and must not be probed on every Settings load.
+            if (!['form', 'action'].includes(String(component.type || '')) || !cleanExtensionRoute(rawRoute)) return;
+            if (!(Array.isArray(component.fields) && component.fields.length)) return;
+            hydrated.set(extensionFormKey(section, component, idx),
+                await readExtensionFormValues(section.skill || '', rawRoute));
+        })));
+    // A newer load or an owner edit may have landed while those reads were in
+    // flight; a stale hydration must never overwrite the newer render.
+    if (!isCurrent()) return;
+    const formSpecs = new Map();
+    const componentHtml = (section, component, idx) => {
+        const type = String(component.type || '');
+        if (type === 'markdown') {
+            return `<div class="settings-section-copy">${escapeHtml(component.text || '')}</div>`;
+        }
+        if (type === 'json') {
+            return `<details class="widget-json"><summary>${escapeHtml(component.label || 'JSON')}</summary><pre>${escapeHtml(JSON.stringify(component.value || component.data || {}, null, 2))}</pre></details>`;
+        }
+        if (type === 'form' || type === 'action') {
+            const fields = Array.isArray(component.fields) ? component.fields : [];
+            const rawRoute = component.route || component.api_route || '';
+            if (!cleanExtensionRoute(rawRoute)) {
+                return '<div class="settings-inline-note">Invalid extension settings route.</div>';
+            }
+            const formKey = extensionFormKey(section, component, idx);
+            formSpecs.set(formKey, component);
+            // Fieldless actions are never read, so they keep `ok`.
+            const { values = {}, read = 'ok' } = hydrated.get(formKey) || {};
+            const disabled = Boolean(component.disabled);
+            const unread = read === 'unsupported' && !disabled;
+            const failed = read === 'failed';
+            const fieldOptions = {
+                disabled: disabled || unread,
+                fieldClass: 'form-field ui-field',
+                inlineClass: 'settings-extension-checkbox ui-field ui-field-inline',
+                helpClass: 'settings-inline-note ui-field-help',
+            };
+            return `
+                <form class="settings-extension-form" data-extension-settings-form data-extension-settings-key="${escapeHtml(formKey)}" data-skill="${escapeHtml(section.skill || '')}" data-route="${escapeHtml(rawRoute)}"${failed || unread ? ' data-extension-settings-blocked="1"' : ''}>
+                    ${unread ? `<div class="settings-inline-status" data-extension-settings-read data-tone="${normalizeTone('warn')}">${escapeHtml(EXTENSION_VALUES_UNAVAILABLE)}</div>` : ''}
+                    <div class="form-grid two">${fields.map((field) => renderSafeField(field, values, fieldOptions)).join('')}</div>
+                    <div class="settings-extension-actions">
+                        <button class="btn btn-primary btn-sm" type="submit"${disabled || failed || unread ? ' disabled' : ''}>${escapeHtml(component.submit_label || component.label || 'Save')}</button>
+                        ${unread ? '<button class="btn btn-secondary btn-sm" type="button" data-extension-settings-edit-anyway>Edit anyway</button>' : ''}
+                    </div>
+                    <div class="settings-inline-status" data-extension-settings-status${failed ? ` data-tone="${normalizeTone('warn')}"` : ''}>${failed ? escapeHtml(EXTENSION_VALUES_UNREADABLE) : ''}</div>
+                </form>
+            `;
+        }
+        return `<div class="settings-inline-note">Unsupported extension settings component ${idx + 1}: ${escapeHtml(type || 'unknown')}</div>`;
+    };
+    host.innerHTML = items.map((section) => {
+        const title = escapeHtml(section.title || section.section_id || section.key || 'Extension settings');
+        const skill = escapeHtml(section.skill || '');
+        const components = Array.isArray(section.render?.components) ? section.render.components : [];
+        return `
+            <article class="settings-extension-section">
+                <div class="settings-extension-section-head">
+                    <strong>${title}</strong>
+                    ${skill ? `<span class="settings-inline-note">from ${skill}</span>` : ''}
+                </div>
+                <div class="settings-extension-components">
+                    ${components.length ? components.map((component, idx) => componentHtml(section, component, idx)).join('') : '<div class="muted">No declarative components.</div>'}
+                </div>
+            </article>
+        `;
+    }).join('');
+    host.querySelectorAll('[data-extension-settings-form]').forEach((form) => {
+        // The owner's explicit choice to send this form without its stored values: it unlocks
+        // the fields the schema does not disable, and Save sends every one of them as before.
+        form.querySelector('[data-extension-settings-edit-anyway]')?.addEventListener('click', (event) => {
+            const spec = formSpecs.get(form.dataset.extensionSettingsKey) || {};
+            for (const field of spec.fields || []) {
+                const input = field.disabled ? null : form.elements?.namedItem?.(String(field.name || ''));
+                if (input) input.disabled = false;
+            }
+            delete form.dataset.extensionSettingsBlocked;
+            form.querySelector('button[type="submit"]').disabled = false;
+            event.currentTarget.disabled = true;
+            setInlineStatus(form.querySelector('[data-extension-settings-read]'), EXTENSION_EDITING_UNREAD, 'warn');
+        });
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const status = form.querySelector('[data-extension-settings-status]');
+            const skill = form.dataset.skill || '';
+            const route = form.dataset.route || '';
+            const formKey = form.dataset.extensionSettingsKey || `${skill}:${route}`;
+            const spec = formSpecs.get(formKey) || {};
+            const requestKey = `${skill}:${route}`;
+            if (!skill || !route || spec.disabled || form.dataset.extensionSettingsBlocked
+                || pendingExtensionSettings.has(requestKey)) return;
+            const values = collectSafeFieldValues(form, spec.fields || []);
+            const button = form.querySelector('button[type="submit"]');
+            const idleLabel = spec.submit_label || spec.label || 'Save';
+            pendingExtensionSettings.add(requestKey);
+            if (button) {
+                button.disabled = true;
+                button.textContent = spec.busy_label || 'Saving…';
+            }
+            setInlineStatus(status, 'Saving...', 'muted');
+            try {
+                const cleanRoute = cleanExtensionRoute(route);
+                if (!cleanRoute) throw new Error('invalid extension settings route');
+                const resp = await apiFetch(extensionRoutePath(skill, route), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(values),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok || data.error) throw new Error(data.error || `HTTP ${resp.status}`);
+                const outcome = extensionActionStatus(data);
+                setInlineStatus(status, outcome.text, outcome.tone);
+            } catch (err) {
+                setInlineStatus(status, err.message || String(err), 'danger');
+            } finally {
+                pendingExtensionSettings.delete(requestKey);
+                if (button) {
+                    button.disabled = Boolean(spec.disabled);
+                    button.textContent = idleLabel;
+                }
+            }
+        });
+    });
+}
+
+function collectSecretValue(id, body) {
+    const input = byId(id);
+    if (!input) return;
+    const settingKey = input.dataset.secretSetting;
+    if (!settingKey) return;
+    if (input.dataset.forceClear === '1') {
+        body[settingKey] = '';
+        return;
+    }
+    const value = input.value;
+    if (value && value !== input.dataset.appliedValue) body[settingKey] = value;
+}
+
+
+// The save's effect, from the gateway's honest buckets (#285). A running task keeps
+// its start snapshot, while a skill reads the keys it is granted on its next read
+// (#1122): the next-task bucket states both once, whichever keys the save carried.
+const SKILL_KEYS_READ = 'skills pick up granted keys on their next read';
+
+export function settingsSaveEffectText(data = {}) {
+    if (data.no_changes) return 'No changes detected';
+    if (data.restart_required) return 'Settings saved. Some changes require a restart to take effect';
+    if (data.restart_state?.summary || data.restart_state?.local_model?.summary) return 'Settings saved';
+    if (data.immediate_changed && data.next_task_changed) {
+        return `Settings saved. Some changes took effect immediately, others apply on the next task; ${SKILL_KEYS_READ}`;
+    }
+    if (data.immediate_changed) return 'Settings saved. Changes took effect immediately';
+    if (data.next_task_changed) return `Settings saved. Changes take effect on the next task; ${SKILL_KEYS_READ}`;
+    // Reachable when the only changed keys are retired no-ops:
+    // the warning below carries the honest story.
+    return 'Settings saved';
+}
+
+// Decision 16=A (#285): the settings "Restart now" action reuses the existing
+// owner command contract — the same WS `/restart` the chat header sends, through
+// the ONE shared confirmation both Restart buttons use (owner quiz 285597). The
+// whole confirm-and-send flow lives in chat_activity.js (node-tested, beside the
+// Panic flow); this page re-exports it and its click handler only injects deps.
+export { confirmAndSendRestart };
+
+export function initSettings({ state, setBeforePageLeave, ws } = {}) {
+    const page = document.createElement('div');
+    page.id = 'page-settings';
+    page.className = 'page app-page-glass';
+    page.innerHTML = renderSettingsPage();
+    document.getElementById('content').appendChild(page);
+
+    const activateSettingsTab = (tabName) => {
+        if (typeof page.activateSettingsTab === 'function') {
+            page.activateSettingsTab(tabName);
+        }
+    };
+    const disposeSettingsTabs = bindSettingsTabs(page, { state, onActivate: () => resetSecretReveals(page) });
+    bindSecretInputs(page);
+    bindEffortSegments(page);
+    // Appearance is client-local and injected after boot; never a server setting.
+    globalThis.ouroTheme?.mount();
+    // Notification preferences are client-local for the same reason; the module
+    // owns delegated handlers, so mounting only paints current state.
+    getNotifier().mountSettings(page);
+    // The interface size is per device too (interface_size.js): the slider sets this window's size, never a draft.
+    const disposeInterfaceSize = mountInterfaceSize(page);
+    // The desktop app's own facts (storage, system notifications): the app is not updated with the core.
+    const disposeShell = mountDesktopShell(page, (shell) => getNotifier().configure({ shell }));
+    // The interface language is an install-wide setting with its own endpoint; the block
+    // saves on change and never marks the Settings draft dirty.
+    const disposeLanguage = bindLanguageSettings(page);
+    bindAutostartControl(page); // host OS entry applied on click, never in the draft; self-disposing
+    const disposeLocalModel = bindLocalModelControls({ state,
+        onApplication: (local) => syncRestartState({ ...restartState, local_model: local }) });
+    let currentSettings = {};
+    let searchSelectionEdited = false;
+    let extensionRefreshPending = false;
+    let settingsLoaded = false;
+    let settingsBaseline = '';
+    let settingsDirty = false;
+    let draftRevision = 0;
+    let loadSequence = 0;
+    let restartReadSequence = 0;
+    let servedUiReadSequence = 0;
+    let restartState = { restart_required: false };
+    let settingsSaving = false;
+    let saveOutcomeUnknown = false;
+    let validationAttempted = false;
+    const modelRoles = createModelRolesEditor({ hostId: 'settings-model-roles',
+        onChange: (settings) => { syncProcessingPreference(settings); onSettingsEdited(); } });
+    // Accounts → API keys: the key rows, their Test and the "More providers" fold (settings_connections.js).
+    const connections = createConnectionsEditor({ root: page, onChange: () => onSettingsEdited() });
+    modelRoles.mount();
+    initMcpSettings({ onChange: onSettingsEdited });
+    initSubagentsSection({
+        hasPageDirtyIndicator: true,
+        onChange: () => onSettingsEdited(),
+        // A judged roster may clear only the validation footer it authored.
+        // A cadence or other field error keeps its typed subject and survives.
+        onJudged: (clean) => {
+            const status = byId('settings-status');
+            if (clean && status.dataset.owner === 'validation'
+                    && status.dataset.subject === 'subagents') setStatus('', 'ok');
+        },
+        isOuterDraftClean: () => !settingsDirty,
+        onGeneratedApply: () => {
+            if (settingsLoaded && !settingsDirty) setSettingsCleanBaseline();
+        },
+        previewGenerated: ({ subscriptionsConnected }) => apiClient.previewOnboardingSubagents(
+            availableSubagentsPreviewPayload(collectBody(), subscriptionsConnected),
+        ),
+    });
+    initHarnessAccounts();
+    const disposeOwnerSections = [bindSafetySettings(page), bindConsciousnessSettings(page, { state })];
+
+    function syncProcessingPreference(settings) {
+        setSubagentsProcessingPreference(settings[PROCESSING_PREFERENCE_KEY]);
+    }
+
+    function syncRestartState(value) {
+        if (!value || typeof value.restart_required !== 'boolean') return;
+        restartState = value;
+        const restartAvailable = value.restart_required || value.restart_source_unknown_keys?.length > 0;
+        byId('btn-restart-now').hidden = !restartAvailable;
+        const text = [value.summary, value.local_model?.summary].filter(Boolean).join(' ');
+        const target = byId('settings-restart-status');
+        target.hidden = !text;
+        setInlineStatus(target, text, restartAvailable || value.local_model?.pending_keys?.length ? 'warn' : 'muted');
+    }
+
+    async function refreshServedUi() {
+        const sequence = ++servedUiReadSequence;
+        let shown;
+        try {
+            shown = servedUiStatus((await apiClient.state())?.served_ui);
+        } catch { return; /* An unavailable read keeps the last known fact. */ }
+        const target = byId('s-ui-dir-applied');
+        if (sequence !== servedUiReadSequence || !target) return;
+        target.hidden = !shown;
+        setInlineStatus(target, shown?.text || '', shown?.tone || 'muted');
+    }
+
+    async function refreshRestartState() {
+        const sequence = ++restartReadSequence;
+        try {
+            const data = await apiClient.settings();
+            if (sequence === restartReadSequence) syncRestartState(data?._meta?.restart_state);
+        } catch { /* An unavailable read cannot clear a known pending change. */ }
+    }
+
+    function syncSettingsLoadState() {
+        const saveBtn = byId('btn-save-settings');
+        if (saveBtn) {
+            saveBtn.disabled = !settingsLoaded || settingsSaving || saveOutcomeUnknown;
+            saveBtn.title = settingsLoaded
+                ? (saveOutcomeUnknown ? 'Reload Settings to check the previous save before saving again.' : '')
+                : 'Reload current settings successfully before saving.';
+        }
+    }
+
+    function syncRuntimeModeBridgeState() {
+        const hasBridge = Boolean(window.pywebview?.api?.confirm_runtime_mode_change);
+        const group = document.querySelector('[data-runtime-mode-group]');
+        if (group) {
+            group.title = hasBridge
+                ? 'Runtime mode changes require native launcher confirmation and restart.'
+                : 'Runtime mode changes are saved through the owner endpoint and take effect after restart.';
+        }
+        document.querySelectorAll('[data-runtime-mode-group] [data-effort-value]').forEach((button) => {
+            button.disabled = false;
+        });
+    }
+
+    function syncPostTaskEvolutionUi() {
+        const mode = byId('s-post-task-evolution-mode')?.value || 'off';
+        page.querySelectorAll('[data-evo-every-n-row]').forEach((row) => {
+            row.hidden = mode !== 'every_n';
+        });
+    }
+
+    // Top-level keys in sorted order: the dirty check compares these strings,
+    // and the status-settle baseline fold below inserts keys AFTER the fact —
+    // equality must not depend on object insertion order. Nested values keep
+    // native stringify (both sides build them through the same code path).
+    function stableSerializeDraft(draft) {
+        return JSON.stringify(Object.fromEntries(
+            Object.entries(draft).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        ));
+    }
+
+    function snapshotSettingsDraft() {
+        return stableSerializeDraft({
+            ...collectBody(),
+            // Raw controls retain invalid/empty values and owner-only settings
+            // that the transport payload intentionally normalizes or omits.
+            controls: Array.from(page.querySelectorAll('input[id^="s-"], select[id^="s-"], textarea[id^="s-"], [data-secret-setting], [data-model-role-context]'),
+                (input) => [input.id, input.value, input.checked, input.validity?.badInput || false, input.dataset.forceClear || '']),
+            customSecrets: readCustomSecretDraft(page),
+            // MCP header rows, including exact duplicates the saved map would collapse.
+            mcpHeaderRows: mcpDraftSnapshot(),
+        });
+    }
+
+    function setSettingsCleanBaseline() {
+        settingsBaseline = snapshotSettingsDraft();
+        settingsDirty = false;
+        const indicator = byId('settings-unsaved-indicator');
+        if (indicator) indicator.classList.remove('is-visible');
+    }
+
+    function updateSettingsDirtyState() {
+        const nextDirty = settingsLoaded && settingsBaseline
+            ? snapshotSettingsDraft() !== settingsBaseline : draftRevision > 0;
+        if (nextDirty === settingsDirty) return;
+        settingsDirty = nextDirty;
+        const indicator = byId('settings-unsaved-indicator');
+        if (indicator) indicator.classList.toggle('is-visible', settingsDirty);
+    }
+
+    function onSettingsEdited() {
+        draftRevision += 1;
+        if (validationAttempted) renderValidation();
+        updateSettingsDirtyState();
+    }
+
+    let baselineSettleDisposer = null;
+    function armCleanBaselineOnStatusSettle(revision) {
+        // The sections' Claudexor status probe is fire-and-forget, so the
+        // baseline can be taken before the store-gated collectors have their
+        // facts — and their output changes when a snapshot lands (the accounts
+        // facet, the later include-models upgrade). Absent owner edits, no
+        // store arrival may read as an unsaved change; and every owner edit
+        // flips settingsDirty through its own input handler BEFORE any store
+        // notify, so re-baselining while the draft is clean can never mask
+        // one. Deliberately NOT a one-shot on everSettled: an earlier
+        // model-less read may have settled the store long before the upgrade
+        // this page's collectors actually feed on. A BARE subscription, not a
+        // status surface: this observer must react to snapshots the sections'
+        // own surfaces fetch, never arm the polling chain itself.
+        baselineSettleDisposer?.();
+        baselineSettleDisposer = claudexorStatus.subscribe(() => {
+            // CLEAN drafts only. A late availability repaint may change status
+            // copy but never the canonical actor draft; re-baselining a DIRTY
+            // page would still absorb the owner's real row edit into the clean
+            // baseline, so it remains forbidden.
+            // After an edit, any availability-only difference remains in the
+            // draft comparison until the next load/save; it cannot absorb edits.
+            if (revision === draftRevision && !settingsDirty && settingsLoaded) setSettingsCleanBaseline();
+        });
+    }
+
+    function discardUnsavedSettingsDraft() {
+        applySettings(currentSettings || {});
+        renderCustomSecrets(page, currentSettings || {});
+        validationAttempted = false;
+        paintSettingsFieldErrors(page, []);
+        setSettingsCleanBaseline();
+        setStatus('', 'ok');
+    }
+
+    function syncAutoGrantBridgeState() {
+        const hasBridge = Boolean(window.pywebview?.api?.request_auto_grant_reviewed_skills_change);
+        const checkbox = byId('s-auto-grant-reviewed-skills');
+        const label = checkbox?.closest('.local-toggle');
+        if (checkbox) checkbox.disabled = false;
+        if (label) {
+            label.title = hasBridge
+                ? 'Requires native confirmation. Applies only after a fresh executable skill review and only to manifest-declared grants for that exact content hash.'
+                : 'Uses the owner endpoint. Applies only after a fresh executable skill review and only to manifest-declared grants for that exact content hash.';
+        }
+    }
+
+    function applySettings(s) {
+        setupContract = s?._meta?.setup_contract || setupContract || {};
+        applySecretInputs(page, s);
+        INPUT_FIELDS.forEach(([id, key, fallback = '']) => applyInputValue(id, storedOrFallback(s[key], fallback)));
+        applyInputValue('s-ui-dir', s.OUROBOROS_UI_DIR);
+        searchSelectionEdited = false;
+        VALUE_FIELDS.forEach(([id, key, fallback]) => { byId(id).value = s[key] || fallback; });
+        modelRoles.load(s, { ...setupContract, modelSlots: setupModelSlots().map((slot) => ({
+            ...slot, inputId: slot.settingsInputId,
+        })) });
+        applyCheckboxValue('s-auto-grant-reviewed-skills', s.OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS);
+        // Owner-facing mutative-subagents control shows the EFFECTIVE state when it
+        // is binary-representable: an explicit value, or unset in advanced/pro
+        // (every acting surface on = "On"). Unset in LIGHT mode is surface-aware
+        // (external work, including isolated project copies, stays on; own-body copies off — see
+        // config.get_allow_mutative_subagents), so neither Off nor On is truthful
+        // there: it displays as "Auto". Picking Auto saves the empty value
+        // (collectBody maps any non-on/off segment to ''), so the mode default
+        // keeps deciding.
+        const rawMutative = String(s.OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS ?? '').trim().toLowerCase();
+        const runtimeMode = String(s.OUROBOROS_RUNTIME_MODE || 'advanced').trim().toLowerCase();
+        const mutativeInput = byId('s-allow-mutative-subagents');
+        mutativeInput.dataset.rawValue = rawMutative;
+        delete mutativeInput.dataset.effortTouched;
+        mutativeInput.value =
+            ({ true: 'on', false: 'off' }[rawMutative] || (runtimeMode === 'light' ? 'auto' : 'on'));
+        // The actor list lives next to it in Agents → Available subagents.
+        applySubagentsSettings(s);
+        syncProcessingPreference(s);
+        // The editor offers the API providers THIS document has a credential
+        // for, named by the setup contract. Derived from the loaded settings,
+        // so a key added under Accounts shows up on the next load rather than
+        // being typed as a prefix (docs/DESIGN.md §7).
+        setSubagentsSourceContext(s, setupContract.providerProfiles);
+        // Post-task evolution: one owner-facing selector maps to enable + cadence.
+        const evoEnabled =
+            ({ true: 'on', '1': 'on', on: 'on', false: 'off', '0': 'off', off: 'off' }[
+                String(s.OUROBOROS_POST_TASK_EVOLUTION ?? '').trim().toLowerCase()] || 'off') === 'on';
+        const evoCadence = String(s.OUROBOROS_POST_TASK_EVOLUTION_CADENCE || 'llm').trim().toLowerCase();
+        // Use the SAME strict shape as the backend (^every_n:[1-9]\d*$) so a stale/
+        // malformed value (e.g. every_nonsense, every_n:0) displays as llm — never as
+        // Every-N:3, which a later Save would silently persist as periodic evolution.
+        const everyNMatch = evoCadence.match(/^every_n:([1-9]\d*)$/);
+        if (!evoEnabled) {
+            byId('s-post-task-evolution-mode').value = 'off';
+        } else if (everyNMatch) {
+            byId('s-post-task-evolution-mode').value = 'every_n';
+            byId('s-evo-cadence-n').value = everyNMatch[1];
+        } else {
+            byId('s-post-task-evolution-mode').value = 'llm';
+        }
+        NUMBER_FIELDS.forEach(([id, key, fallback, allowFalsy]) => {
+            const value = s[key];
+            if (allowFalsy ? value !== null && value !== undefined : value) byId(id).value = value;
+            else byId(id).value = fallback;
+        });
+        (Array.isArray(setupContract.budgetFields) ? setupContract.budgetFields : []).forEach((field) => {
+            const id = field.settingsInputId;
+            const input = byId(id);
+            if (!input) return;
+            input.min = field.min || '0.01';
+            input.step = field.step || 'any';
+            input.value = s[field.settingKey] ?? field.default ?? '';
+        });
+        applyMcpSettings(s);
+        // After the flat inputs: the rows read their applied values, and a reload expires every Test verdict.
+        connections.load(s, { modelSlots: setupModelSlots() });
+        resetSecretClearFlags(page);
+        syncEffortSegments(page);
+        syncRuntimeModeBridgeState();
+        syncPolicyState(page, s?._meta);
+        syncPostTaskEvolutionUi();
+        applySafetySettings(page, s);  // owner-only safety values, facts and lines (settings_safety.js)
+        applyConsciousnessSettings(page, s);
+        void refreshSearchPreview();  // fire-and-forget; describes the applied search Source/Model
+    }
+
+    function _renderNetworkHint(meta) {
+        const hint = document.getElementById('settings-lan-hint');
+        if (!hint || !meta) return;
+        if (meta.reachability === 'loopback_only') {
+            hint.innerHTML = 'Bound to <code>localhost</code>: only accessible from this machine. Set Server Bind Host to <code>0.0.0.0</code>, save, and restart for LAN access.';
+            hint.dataset.tone = 'info';
+            hint.hidden = false;
+        } else if (meta.reachability === 'lan_reachable') {
+            const url = escapeHtml(meta.recommended_url || '');
+            const warning = escapeHtml(meta.warning || '');
+            hint.innerHTML = `LAN URL: <a href="${url}" target="_blank" rel="noopener">${url}</a>${warning ? ' — <strong>' + warning + '</strong>' : ''}`;
+            hint.dataset.tone = meta.warning ? 'warn' : 'ok';
+            hint.hidden = false;
+        } else if (meta.reachability === 'host_ip_unknown') {
+            const url = escapeHtml(meta.recommended_url || '');
+            const warning = escapeHtml(meta.warning || '');
+            hint.innerHTML = `Server is listening on non-localhost but LAN IP could not be detected automatically. Try <code>${url}</code>.${warning ? ' <strong>' + warning + '</strong>' : ''}`;
+            hint.dataset.tone = 'warn';
+            hint.hidden = false;
+        } else {
+            hint.hidden = true;
+        }
+    }
+
+    // Skill-requested keys and extension settings sections come from the
+    // installed-skill list, a read the settings document never waits for; a
+    // hidden page skips it altogether, since every page show reloads.
+    const settingsPageActive = () => state?.activePage === 'settings';
+
+    async function loadSettings({ awaitEnrichment = true } = {}) {
+        resetSecretReveals(page);
+        const sequence = ++loadSequence;
+        const restartSequence = ++restartReadSequence;
+        const revision = draftRevision;
+        const extensionsRead = settingsPageActive() ? apiClient.extensions().catch(() => ({})) : null;
+        const data = await apiClient.settings();
+        if (!data || typeof data !== 'object' || Array.isArray(data) || data.error) {
+            throw new Error(data?.error || 'The server did not return a settings document.');
+        }
+        if (restartSequence === restartReadSequence) syncRestartState(data._meta?.restart_state);
+        if (sequence !== loadSequence || revision !== draftRevision) return false;
+        currentSettings = data;
+        applySettings(data);
+        renderCustomSecrets(page, data);
+        // This confirmed document can already be edited and saved. Optional
+        // reviewer/status/skill reads must not hold its baseline or Save capability.
+        settingsLoaded = true;
+        saveOutcomeUnknown = false;
+        validationAttempted = false;
+        paintSettingsFieldErrors(page, []);
+        setSettingsCleanBaseline();
+        armCleanBaselineOnStatusSettle(revision);
+        _renderNetworkHint(data._meta);
+        void refreshServedUi();
+        syncSettingsLoadState();
+        // The skill-requested rows and the extension settings forms (which read
+        // their stored values before rendering) are optional enrichment: it must
+        // not delay the clean baseline above or absorb an owner edit made while
+        // it was pending, so it lands only on an unchanged draft.
+        const isCurrent = () => sequence === loadSequence && revision === draftRevision;
+        const enriched = (async () => {
+            const enrichment = [reloadReviewPool({ isCurrent }), reloadSubagentsSection()];
+            const extData = await extensionsRead;
+            if (extData && isCurrent()) {
+                renderRequestedSkillSecrets(page, extData.skills || [], data);
+                const sections = Array.isArray(extData.live?.settings_sections) ? extData.live.settings_sections : [];
+                enrichment.push(renderExtensionSettingsSections(page, sections, { isCurrent }));
+            }
+            await Promise.all(enrichment);
+            if (!isCurrent()) {
+                updateSettingsDirtyState();
+                return false;
+            }
+            // Optional enrichment belongs in a still-clean baseline, never in an
+            // owner edit made while one of those reads was pending.
+            setSettingsCleanBaseline();
+            return true;
+        })();
+        // A confirmed Save waits for the document only; its enrichment lands behind the same guards.
+        if (!awaitEnrichment) {
+            enriched.catch(() => {});
+            return true;
+        }
+        return enriched;
+    }
+
+    async function reloadSettingsWithFeedback() {
+        if (settingsSaving) return;
+        if (settingsDirty && !(await confirmDiscardSettings('reload Settings'))) return;
+        const reloadSequence = loadSequence + 1;
+        setStatus('Loading settings...', 'muted', 'load');
+        try {
+            const applied = await loadSettings();
+            if (!applied && byId('settings-status').dataset.owner === 'load') {
+                setStatus('Settings were not reloaded because your draft changed while loading. Your edits are kept.', 'warn', 'load');
+            }
+            try {
+                await refreshModelCatalog({ button: byId('btn-refresh-model-catalog') });
+                if (applied && byId('settings-status').dataset.owner === 'load' && !settingsDirty && !settingsSaving && !saveOutcomeUnknown) setStatus('Settings loaded', 'ok');
+            } catch (error) {
+                if (applied && byId('settings-status').dataset.owner === 'load' && !settingsDirty && !settingsSaving && !saveOutcomeUnknown) setStatus(
+                    `Settings loaded. Model catalog refresh failed: ${error.message || error}`,
+                    'warn'
+                );
+            }
+            // Catalog readiness is independent of Settings GET completion:
+            // a superseding page-show load may still be waiting for its document.
+            // Arm after discovery so its settled Accounts snapshot stays quiet.
+            accountModelCatalog.arm();
+        } catch (error) {
+            if (reloadSequence !== loadSequence) return;
+            settingsLoaded = false;
+            syncSettingsLoadState();
+            setStatus(
+                `Failed to load current settings. Save is disabled until reload succeeds: ${error.message || error}`,
+                'warn'
+            );
+        }
+    }
+
+    async function refreshSettingsAfterExtensionChange(reason = 'skills changed') {
+        if (extensionRefreshPending || settingsSaving || saveOutcomeUnknown) return;
+        if (settingsDirty) {
+            await refreshRestartState();
+            setStatus(`Settings changed externally (${reason}). Reload after saving or discarding your draft.`, 'warn');
+            return;
+        }
+        extensionRefreshPending = true;
+        try {
+            if (!(await loadSettings())) return;
+            setStatus('Settings refreshed', 'ok');
+        } catch (error) {
+            setStatus(`Settings refresh failed: ${error.message || error}`, 'warn');
+        } finally {
+            extensionRefreshPending = false;
+        }
+    }
+
+    function collectSearchSelection() {
+        const backend = byId('s-websearch-source').value;
+        let model = byId('s-websearch-model').value.trim();
+        // Preserve untouched legacy settings. An edited native Anthropic id uses
+        // the existing routed spelling so dispatch can recognize the new intent.
+        if (searchSelectionEdited && backend === 'anthropic' && model
+                && !model.includes('::') && !model.startsWith('anthropic/')) model = `anthropic::${model}`;
+        return { backend, model };
+    }
+
+    function collectBody() {
+        const fieldValue = (id) => byId(id)?.value || '';
+        const mutativeInput = byId('s-allow-mutative-subagents');
+        const rawMutative = String(mutativeInput?.dataset?.rawValue ?? '').trim().toLowerCase();
+        const mutativeTouched = mutativeInput?.dataset?.effortTouched === '1';
+        const body = {
+            OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS: byId('s-auto-grant-reviewed-skills')?.checked ? 'true' : 'false',
+            OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS: mutativeTouched
+                ? ({ on: 'true', off: 'false' }[mutativeInput?.value] ?? '')
+                : (rawMutative ? ({ true: 'true', false: 'false' }[rawMutative] ?? rawMutative) : ''),
+            ...collectMcpSettings(),
+            // Saved config and live availability are independent: a loaded
+            // actor list is collected even when status is down; an unloaded,
+            // unparseable or untouched generated draft omits the key.
+            ...collectSubagentsSettings(),
+        };
+        Object.assign(body, modelRoles.collect());
+        INPUT_FIELDS.forEach(([id, key, fallback = '']) => {
+            const value = fieldValue(id).trim();
+            body[key] = key === 'OUROBOROS_SERVER_HOST' ? value || fallback : value || '';
+        });
+        Object.assign(body, uiDirChange(fieldValue('s-ui-dir'), currentSettings?.OUROBOROS_UI_DIR));
+        body.OUROBOROS_WEBSEARCH_MODEL = collectSearchSelection().model;
+        VALUE_FIELDS
+            // Owner-only keys travel through their audited owner endpoints, never the generic
+            // settings POST (the safety levels, rules and checker: settings_safety.js).
+            .filter(([, key]) => key !== 'OUROBOROS_RUNTIME_MODE' && key !== 'OUROBOROS_CONTEXT_MODE')
+            .forEach(([id, key]) => { body[key] = fieldValue(id); });
+        NUMBER_FIELDS.forEach(([id, key, fallback]) => { body[key] = readInt(id, fallback); });
+        (Array.isArray(setupContract.budgetFields) ? setupContract.budgetFields : []).forEach((field) => {
+            const id = field.settingsInputId;
+            const input = byId(id);
+            if (!input) return;
+            const raw = String(input.value || '').trim();
+            const parsed = Number(raw);
+            const value = Number.isFinite(parsed) && parsed > 0 ? parsed : raw;
+            if (String(value) !== String(currentSettings?.[field.settingKey] ?? field.default)) {
+                body[field.settingKey] = value;
+            }
+        });
+        // Post-task evolution: compose the legacy enable + cadence settings from
+        // the single owner-facing selector.
+        const evoCadMode = byId('s-post-task-evolution-mode').value;
+        body.OUROBOROS_POST_TASK_EVOLUTION = evoCadMode === 'off' ? 'false' : 'true';
+        body.OUROBOROS_POST_TASK_EVOLUTION_CADENCE = evoCadMode === 'every_n'
+            ? `every_n:${Math.max(1, parseInt(byId('s-evo-cadence-n').value, 10) || 3)}`
+            : 'llm';
+
+        page.querySelectorAll('[data-secret-setting]').forEach((input) => {
+            collectSecretValue(input.id, body);
+        });
+        Object.assign(body, collectCustomSecrets().values, connections.collect());
+        return body;
+    }
+
+    function collectCustomSecrets() {
+        const customKeys = new Set(currentSettings?._meta?.custom_secret_keys || []);
+        return collectCustomSecretDraft(readCustomSecretDraft(page),
+            Object.keys(currentSettings).filter((key) => !customKeys.has(key)));
+    }
+
+    function validationSummary(errors) {
+        return errors.length > 1 ? `${errors[0]} (${errors.length} fields need attention.)` : errors[0] || '';
+    }
+
+    function collectValidation() {
+        const fields = [...validateMcpSettings(), ...connections.validate()];
+        const cadence = byId('s-evo-cadence-n');
+        if (byId('s-post-task-evolution-mode')?.value === 'every_n' && !/^[1-9]\d*$/.test(cadence.value.trim())) {
+            fields.push({ input: cadence, message: 'Every-N cadence needs a whole number ≥ 1.' });
+        }
+        page.querySelectorAll('input[id^="s-"], select[id^="s-"], textarea[id^="s-"]').forEach((input) => {
+            if (input === cadence || fields.some((error) => error.input === input)
+                    || input.hasAttribute('data-model-role-context') || !input.willValidate || input.validity.valid) return;
+            const label = input.labels?.[0]?.textContent || input.name || input.id;
+            fields.push({ input, message: `${label.trim()}: ${input.validationMessage}` });
+        });
+        const rows = [...page.querySelectorAll('[data-custom-secret-row]')];
+        collectCustomSecrets().errors.forEach(({ index, field, message }) => {
+            if (rows[index]?.dataset.judged === '1') fields.push({ input: rows[index].querySelector(`[data-custom-secret-${field}]`), message });
+        });
+        const groups = [
+            ['fields', fields.map(({ message }) => message)],
+            ['models', modelRoles.validateAll()],
+            ['subagents', validateSubagentsDraft().map((error) => `Available subagents: ${error}`)],
+        ];
+        const messages = groups.flatMap(([, rows]) => rows).filter(Boolean);
+        const subject = groups.find(([, rows]) => rows.some(Boolean))?.[0] || '';
+        return { fields, messages, subject };
+    }
+
+    function renderValidation() {
+        const { fields, messages, subject } = collectValidation();
+        paintSettingsFieldErrors(page, fields);
+        if (byId('settings-status').dataset.owner === 'validation') {
+            if (messages.length) setStatus(validationSummary(messages), 'warn', 'validation', subject);
+            else setStatus('', 'ok');
+        }
+        return { messages, subject };
+    }
+
+    async function confirmDiscardSettings(action) {
+        return openConfirmDialog({
+            title: 'Unsaved settings',
+            body: `You have unsaved settings changes. Discard them and ${action}?`,
+            confirmLabel: 'Discard and continue', cancelLabel: 'Stay',
+        });
+    }
+
+    async function saveRuntimeModeViaNativeBridgeIfNeeded(nextMode) {
+        const currentMode = currentSettings?.OUROBOROS_RUNTIME_MODE || 'advanced';
+        if (nextMode === currentMode) return null;
+        // The native bridge is confirmation-only.  Older shells do not expose
+        // that method; fall back to the same in-app dialog so they never receive
+        // the legacy mutating request_runtime_mode_change call (which cannot
+        // represent Cyber Pro). Every surface writes through one owner endpoint.
+        const nativeConfirm = window.pywebview?.api?.confirm_runtime_mode_change;
+        const confirmed = nativeConfirm
+            ? (await nativeConfirm(nextMode))?.confirmed === true
+            : await openConfirmDialog({
+                title: 'Change runtime mode',
+                body: `Change Ouroboros runtime mode from ${currentMode} to ${nextMode}? The change takes effect after restart.`,
+                confirmLabel: 'Change mode',
+            });
+        if (!confirmed) {
+            const result = { ok: false, saved: false, error: 'Runtime mode change cancelled.' };
+            throw Object.assign(new Error(result.error), { body: result });
+        }
+        const result = await apiClient.ownerRuntimeMode(nextMode);
+        if (!result || result.ok !== true) {
+            throw Object.assign(new Error(result?.error || 'Runtime mode change failed.'), { body: result });
+        }
+        return result;
+    }
+
+    async function saveAutoGrantViaNativeBridgeIfNeeded(nextEnabled) {
+        const currentEnabled = isTruthySetting(currentSettings?.OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS);
+        if (nextEnabled === currentEnabled) return null;
+        const bridge = window.pywebview?.api?.request_auto_grant_reviewed_skills_change;
+        // Browser-side confirm only; the pywebview bridge path stays untouched.
+        const result = bridge
+            ? await bridge(nextEnabled)
+            : ((await openConfirmDialog({
+                title: 'Reviewed-skill auto-grant',
+                body: `${nextEnabled ? 'Enable' : 'Disable'} reviewed-skill auto-grant? It only applies after a fresh executable review for the current content hash.`,
+                confirmLabel: nextEnabled ? 'Enable' : 'Disable',
+            }))
+                ? await apiClient.ownerAutoGrant(nextEnabled)
+                : { ok: false, saved: false, error: 'Reviewed-skill auto-grant change cancelled.' });
+        if (!result || result.ok !== true) {
+            throw Object.assign(new Error(result?.error || 'Reviewed-skill auto-grant change was cancelled.'), { body: result });
+        }
+        return result;
+    }
+
+    async function saveContextModeViaOwnerEndpointIfNeeded(next) {
+        const current = currentSettings?.OUROBOROS_CONTEXT_MODE || 'max';
+        if (next === current) return null;
+        const result = await apiClient.ownerContextMode(next);
+        if (!result || result.ok !== true) {
+            throw Object.assign(new Error(result?.error || 'Context mode change failed.'), { body: result });
+        }
+        return result;
+    }
+
+    markSettingsDirty = onSettingsEdited;
+    syncSettingsLoadState();
+    syncRuntimeModeBridgeState();
+    syncAutoGrantBridgeState();
+    reloadSettingsWithFeedback();
+
+    if (typeof setBeforePageLeave === 'function') {
+        // app.js showPage() awaits every beforePageLeave handler, so the async
+        // dialog is legal here. Rapid double-navigation cannot double-fire the
+        // discard: opening a second dialog resolves the first as false (stay),
+        // so at most one confirmed leave runs discardUnsavedSettingsDraft().
+        setBeforePageLeave(async ({ from }) => {
+            if (from !== 'settings') return true;
+            if (settingsSaving) return false;
+            if (!settingsDirty) { resetSecretReveals(page); return true; }
+            const leave = await confirmDiscardSettings('leave Settings');
+            if (leave) { resetSecretReveals(page); discardUnsavedSettingsDraft(); }
+            return leave;
+        });
+    }
+
+    // Blocks outside the server draft (theme, notifications and the interface size on Appearance; host
+    // sign-in startup on Behavior) never enter the /api/settings payload, so their
+    // controls must not make the server draft dirty — otherwise toggling one would
+    // ask the owner to discard "unsaved settings" that do not exist.
+    const onServerSettingEdited = (event) => {
+        if (event?.target?.closest?.('[data-notify-settings], [data-autostart-settings], [data-interface-size]')) return;
+        if (event?.target?.closest?.('[data-response-limit]')) return;   // a maximum is an evidence acknowledgement, not a setting
+        if (event?.target?.closest?.('[data-i18n-settings]')) return;   // the interface language saves through its own endpoint
+        onSettingsEdited();
+    };
+    let searchPreviewSequence = 0;
+    async function refreshSearchPreview() {
+        const sequence = ++searchPreviewSequence;
+        const target = byId('s-websearch-preview');
+        if (!target?.isConnected) return;
+        try {
+            const data = await apiClient.webSearchPreview(searchSelectionEdited ? collectSearchSelection() : {});
+            if (sequence !== searchPreviewSequence || !target.isConnected) return;
+            // The help text already says skills, MCP and browser tools stay independent.
+            const legacy = data.ignored_legacy_model ? ` Anthropic does not apply the saved model ${data.ignored_legacy_model}; edit Source or Model to change it.`
+                : data.unapplied_model ? ` No built-in search serves the saved model ${data.unapplied_model}; Auto uses provider defaults.` : '';
+            const causes = { no_credentials: 'no API key', package_missing: 'package not installed', legacy_openai_base_url: 'OPENAI_BASE_URL is set' };
+            const unavailable = (data.unavailable || []).map((leg) => `${leg.source} (${causes[leg.unavailable_reason] || 'not ready'})`).join(', ');
+            target.textContent = data.error || `Eligible routes: ${(data.legs || []).map((leg) => `${leg.source}${leg.model ? ` · ${leg.model}` : ''}`).join(' → ') || 'none'}.${unavailable ? ` Unavailable: ${unavailable}.` : ''} Uses saved account credentials.${legacy}`;
+        } catch (_) { if (sequence === searchPreviewSequence && target.isConnected) target.textContent = 'Search routes could not be checked. Your choices are kept.'; }
+    }
+    const onSearchSelectionEdited = () => { searchSelectionEdited = true; void refreshSearchPreview(); };
+    byId('s-websearch-source')?.addEventListener('change', onSearchSelectionEdited);
+    byId('s-websearch-model')?.addEventListener('input', onSearchSelectionEdited);
+    page.addEventListener('input', onServerSettingEdited);
+    page.addEventListener('change', onServerSettingEdited);
+    page.addEventListener('click', (event) => {
+        if (event.target.closest('[data-effort-value], .secret-clear, [data-row-secret-clear], [data-custom-secret-remove]')) {
+            queueMicrotask(() => {
+                syncPostTaskEvolutionUi();
+                syncPolicyState(page, currentSettings?._meta);
+                onSettingsEdited();
+            });
+        }
+    });
+    byId('btn-add-custom-secret')?.addEventListener('click', () => {
+        const host = byId('custom-secrets-list');
+        if (!host) return;
+        if (host.querySelector('.muted')) host.innerHTML = '';
+        const row = customSecretRow();
+        host.appendChild(row);
+        revealNewRow(row, row.querySelector('[data-custom-secret-key]'));
+        markSettingsDirty();
+    });
+
+    // Skill lifecycle events reload only a visible page; the page-show
+    // handler below reloads on entry, so a hidden page reads nothing.
+    window.addEventListener('ouro:skill-lifecycle', (event) => {
+        if (!settingsPageActive()) return;
+        const action = String(event.detail?.action || 'skills changed');
+        refreshSettingsAfterExtensionChange(action);
+    });
+    window.addEventListener('ouro:settings-updated', (event) => {
+        if (event.detail?.source === 'settings') return;
+        const action = String(event.detail?.reason || 'settings changed');
+        refreshSettingsAfterExtensionChange(action);
+    });
+    if (ws && typeof ws.on === 'function') {
+        ws.on('extension_lifecycle', (event) => {
+            if (!settingsPageActive()) return;
+            const action = String(event?.action || 'extension lifecycle');
+            refreshSettingsAfterExtensionChange(action);
+        });
+    }
+    // A confirmed Accounts facet is the existing status-store seam for login
+    // completion. It refreshes the catalog only on a changed/rehydrated account
+    // answer, while modelRoles.adoptCatalog keeps unsaved assignments intact.
+    const accountModelCatalog = watchAccountModelCatalog();
+    const disposeRestartReconnect = ws?.on?.('open', () => {
+        refreshRestartState();
+        void refreshServedUi();
+        if (settingsLoaded) void refreshModelCatalog();
+    });
+
+    window.addEventListener('ouro:page-shown', (event) => {
+        if (event.detail?.page === 'settings') {
+            refreshSettingsAfterExtensionChange('settings page shown');
+            if (settingsLoaded) void refreshModelCatalog();
+        }
+    });
+
+    const onModelCatalog = (event) => modelRoles.adoptCatalog(event.detail);
+    const beforeUnload = (event) => {
+        if (settingsDirty || settingsSaving) { event.preventDefault(); event.returnValue = ''; }
+    };
+    window.addEventListener('beforeunload', beforeUnload);
+    document.addEventListener('settings-model-catalog:updated', onModelCatalog);
+    window.addEventListener('pagehide', (event) => {
+        resetSecretReveals(page);
+        if (event.persisted) return;
+        disposeSettingsTabs();
+        window.removeEventListener('beforeunload', beforeUnload);
+        disposeLocalModel();
+        disposeOwnerSections.forEach((dispose) => dispose());
+        disposeLanguage();
+        disposeInterfaceSize();
+        disposeShell();
+        disposeRestartReconnect?.();
+        accountModelCatalog.dispose();
+        restartReadSequence += 1;
+        baselineSettleDisposer?.();
+        modelRoles.destroy();
+        connections.destroy();
+        document.removeEventListener('settings-model-catalog:updated', onModelCatalog);
+    });
+
+    byId('btn-refresh-model-catalog').addEventListener('click', async (event) => {
+        await refreshModelCatalog({ button: event.currentTarget });
+    });
+
+    byId('btn-reload-settings')?.addEventListener('click', async () => {
+        await reloadSettingsWithFeedback();
+    });
+
+    byId('btn-save-settings').addEventListener('click', async () => {
+        if (settingsSaving || saveOutcomeUnknown) return;
+        if (!settingsLoaded) {
+            setStatus('Reload current settings successfully before saving.', 'warn');
+            return;
+        }
+        // The owner just tried to commit the draft — every Save click is one,
+        // whichever validation aborts it below — so from here the roster shows
+        // its own errors beside the rows they name, not only in this status.
+        noteSubagentsSaveAttempt();
+        modelRoles.noteSaveAttempt();
+        page.querySelectorAll('[data-custom-secret-row]').forEach((row) => { row.dataset.judged = '1'; });
+        validationAttempted = true;
+        const { messages: errors, subject } = renderValidation();
+        if (errors.length) {
+            setStatus(validationSummary(errors), 'warn', 'validation', subject);
+            return;
+        }
+        const body = collectBody();
+        loadSequence += 1;
+        const sentRevision = draftRevision;
+        const subagentsChanged = subagentSettingsFingerprint(body.OUROBOROS_SUBAGENTS)
+            !== subagentSettingsFingerprint(currentSettings?.OUROBOROS_SUBAGENTS);
+        const ownerDraft = {
+            runtime: byId('s-runtime-mode').value || 'advanced',
+            autoGrant: Boolean(byId('s-auto-grant-reviewed-skills').checked),
+            context: byId('s-context-mode').value || 'max',
+            // Takes the checker's changed keys (Models, Agents) out of `body`; they are written first, below.
+            safety: safetyOwnerDraft(page, body, currentSettings),
+        };
+
+        // Phase 1 of the save: the button goes busy and the status says so.
+        // Capability probes on review-route changes make a save take seconds;
+        // an idle "Save Settings" over that window reads as a dead click.
+        const saveButton = byId('btn-save-settings');
+        settingsSaving = true;
+        setButtonBusy(saveButton, true);
+        setStatus('Saving…', 'muted');
+        let saved = false;
+        let checkerSaved = false;
+        try {
+            checkerSaved = await saveSafetyChecker(ownerDraft.safety);
+            const data = await apiClient.saveSettings(body);
+            if (data?.status !== 'saved') {
+                const error = new Error(data?.error || 'The server did not confirm the settings save.');
+                error.body = data;
+                throw error;
+            }
+            saved = true;
+            let runtimeModeResult = null;
+            let runtimeModeError = '';
+            let autoGrantResult = null;
+            let autoGrantError = '';
+            let contextModeResult = null;
+            let contextModeError = '';
+            try {
+                runtimeModeResult = await saveRuntimeModeViaNativeBridgeIfNeeded(ownerDraft.runtime);
+            } catch (error) {
+                const failure = settingsWriteFailure(error, "Runtime mode");
+                runtimeModeError = failure.text;
+                saveOutcomeUnknown ||= failure.unknown;
+            }
+            try {
+                autoGrantResult = await saveAutoGrantViaNativeBridgeIfNeeded(ownerDraft.autoGrant);
+            } catch (error) {
+                const failure = settingsWriteFailure(error, "Reviewed-skill auto-grant");
+                autoGrantError = failure.text;
+                saveOutcomeUnknown ||= failure.unknown;
+            }
+            try {
+                contextModeResult = await saveContextModeViaOwnerEndpointIfNeeded(ownerDraft.context);
+            } catch (error) {
+                const failure = settingsWriteFailure(error, "Context mode");
+                contextModeError = failure.text;
+                saveOutcomeUnknown ||= failure.unknown;
+            }
+            const safety = await saveSafetyOwnerChanges(ownerDraft.safety, currentSettings);
+            saveOutcomeUnknown ||= safety.unknown;
+            const ownerError = runtimeModeError || autoGrantError || contextModeError || safety.error;
+            const draftKept = ownerError || sentRevision !== draftRevision || !(await loadSettings({ awaitEnrichment: false }));
+            syncAutoGrantBridgeState();
+            const effect = checkerSaveEffect(data, ownerDraft.safety);
+            let statusMsg = settingsSaveEffectText(effect);
+            let statusType = effect.restart_required && !effect.no_changes ? 'warn' : 'ok';
+            if (subagentsChanged && data.agent_task_running) {
+                statusMsg += '. Available subagents take effect for new child tasks; '
+                    + 'the current task keeps its existing routes';
+            }
+            if (data.warnings && data.warnings.length) {
+                statusMsg += '. Warnings: ' + data.warnings.join(' | ');
+                statusType = 'warn';
+            }
+            const references = connectionReferencesText(data.connection_references, connections.connections());
+            if (references) {
+                statusMsg += `. ${references}`;
+                statusType = 'warn';
+            }
+            if (runtimeModeResult?.restart_required) {
+                statusMsg = `${statusMsg} Runtime mode saved as ${runtimeModeResult.runtime_mode}; restart required.`;
+                statusType = 'warn';
+            }
+            if (runtimeModeError) {
+                statusMsg = `${statusMsg} ${runtimeModeError}`;
+                statusType = 'warn';
+            }
+            if (autoGrantResult) {
+                statusMsg = `${statusMsg} Reviewed-skill auto-grant ${autoGrantResult.enabled ? 'enabled' : 'disabled'}.`;
+            }
+            if (contextModeResult?.context_mode) {
+                statusMsg = `${statusMsg} Context mode saved as ${contextModeResult.context_mode}.`;
+            }
+            if (contextModeError) {
+                statusMsg = `${statusMsg} ${contextModeError}`;
+                statusType = 'warn';
+            }
+            if (safety.saved) statusMsg = `${statusMsg} ${safety.saved}`;
+            if (safety.error) { statusMsg = `${statusMsg} ${safety.error}`; statusType = 'warn'; }
+            if (autoGrantError) {
+                statusMsg = `${statusMsg} ${autoGrantError}`;
+                statusType = 'warn';
+            }
+            if (draftKept) {
+                statusMsg += saveOutcomeUnknown ? '. Your draft is kept. Reload Settings to check before saving again.' : '. Your current draft is kept.';
+                statusType = 'warn';
+            }
+            setStatus(statusMsg, statusType);
+            syncRestartState(data.restart_state);
+            await refreshRestartState();
+            window.dispatchEvent(new CustomEvent('ouro:settings-updated', { detail: { reason: 'settings saved', source: 'settings' } }));
+        } catch (e) {
+            const receipt = e?.body || e?.payload;
+            const confirmedSaved = saved || receipt?.saved === true;
+            saveOutcomeUnknown = !confirmedSaved && receipt?.saved !== false;
+            // The checker's keys are saved already: the next Save compares against them, never re-sends them.
+            if (checkerSaved && !confirmedSaved) Object.assign(currentSettings, ownerDraft.safety.checker.settings);
+            setStatus(confirmedSaved
+                ? `Settings were saved, but a later step failed: ${e.message}. Your draft is kept.`
+                : saveOutcomeUnknown
+                    ? `Save outcome unknown: ${e.message}. Your draft is kept. Reload Settings to check before saving again.`
+                    : `${checkerSaved ? `Changes in ${checkerTabsText(ownerDraft.safety)} were saved; the other settings were not` : 'Settings were not saved'}: ${e.message}. Your draft is kept.`, 'warn');
+        } finally {
+            settingsSaving = false;
+            setButtonBusy(saveButton, false);
+            syncSettingsLoadState();
+        }
+    });
+
+    byId('btn-restart-now')?.addEventListener('click', async () => {
+        const outcome = await confirmAndSendRestart({ openConfirmDialog, ws });
+        if (outcome === 'sent') {
+            setStatus('Restart requested. If the agent refuses, the reason appears in the main chat.', 'muted');
+        } else if (outcome === 'not_connected') {
+            setStatus('Not connected — the restart command was not sent.', 'warn');
+        }
+    });
+
+    byId('btn-reset').addEventListener('click', async () => {
+        const confirmedReset = await openConfirmDialog({
+            title: 'Reset runtime data',
+            body: 'This will delete all runtime data (state, memory, logs, settings) and restart.\nThe repo (agent code) will be preserved.\nYou will need to re-enter your provider settings.\n\nContinue?',
+            confirmLabel: 'Delete and restart',
+            danger: true,
+        });
+        if (!confirmedReset) return;
+        try {
+            const res = await apiFetch('/api/reset', { method: 'POST' });
+            const data = await res.json();
+            if (data.status === 'ok') {
+                await openConfirmDialog({
+                    title: 'Reset complete',
+                    body: 'Deleted: ' + (data.deleted.join(', ') || 'nothing') + '\nRestarting...',
+                    alert: true,
+                });
+            } else {
+                await openConfirmDialog({
+                    title: 'Reset failed',
+                    body: 'Error: ' + (data.error || 'unknown'),
+                    alert: true,
+                });
+            }
+        } catch (e) {
+            showToast('Reset failed: ' + e.message, 'error');
+        }
+    });
+
+    return {
+        activateTab: activateSettingsTab,
+        page,
+    };
+}

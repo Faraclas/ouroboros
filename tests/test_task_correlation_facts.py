@@ -1,0 +1,208 @@
+"""Existing observation records carry their actual task, call and start facts."""
+
+import json
+import queue
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+from ouroboros.agent import OuroborosAgent
+from ouroboros.agent_task_pipeline import _store_task_result
+from ouroboros.task_results import load_task_result, write_task_result
+
+
+def test_known_start_survives_finalization_and_legacy_ts_is_not_relabelled(tmp_path):
+    env = SimpleNamespace(drive_root=tmp_path, repo_dir=tmp_path)
+    task = {"id": "known", "type": "task", "text": "work", "queued_at": 1700000000.0}
+    write_task_result(tmp_path, "known", "scheduled", ts="2020-01-01T00:00:00+00:00")
+    host = SimpleNamespace(env=env, _task_started_ts=1700000005.0)
+    OuroborosAgent._persist_running_record(host, task)
+    started = load_task_result(tmp_path, "known")["started_at"]
+    assert started == datetime.fromtimestamp(host._task_started_ts, timezone.utc).isoformat()
+    OuroborosAgent._persist_running_record(host, task)  # preflight amendment is the same start
+    _store_task_result(env, task, "done", {"rounds": 1, "cost": 0}, {"tool_calls": []})
+    stored = load_task_result(tmp_path, "known")
+    assert stored["started_at"] == started and stored["queued_at"] == task["queued_at"]
+    assert stored["ts"] != started
+    write_task_result(tmp_path, "legacy", "running", ts="2020-01-01T00:00:00+00:00")
+    _store_task_result(env, {"id": "legacy", "type": "task"}, "done", {}, {"tool_calls": []})
+    assert "started_at" not in load_task_result(tmp_path, "legacy")
+
+
+def test_real_llm_round_and_usage_join_across_worker_and_supervisor_logs(tmp_path):
+    from ouroboros.loop_llm_call import call_llm_with_retry
+    from supervisor.events_budget import _handle_llm_usage
+
+    worker, canonical = tmp_path / "worker", tmp_path / "canonical"
+    logs = worker / "logs"
+    logs.mkdir(parents=True)
+    events = queue.Queue()
+    class LLM:
+        def chat(self, **kwargs):
+            return ({"content": "done", "tool_calls": [], "finish_reason": "stop"},
+                    {"provider": "openai-compatible", "resolved_model": "local-model", "cost": 0.0,
+                     "prompt_tokens": 12, "completion_tokens": 3, "ledger_attempt_ids": ["a1", "a2"],
+                     "claudexor": {"operation_id": "op-1"}})
+    message, cost = call_llm_with_retry(LLM(), [{"role": "user", "content": "do work"}],
+                                       "openai-compatible::local-model", None, "medium", 1,
+                                       logs, "call-task", 7, events, {})
+    assert message["content"] == "done" and cost == 0
+    queued = list(events.queue)
+    usage_event = next(row for row in queued if row.get("type") == "llm_usage")
+    ctx = SimpleNamespace(DRIVE_ROOT=canonical, RUNNING={}, update_budget_from_usage=lambda usage: None,
+                          bridge=SimpleNamespace(push_log=lambda event: None))
+    _handle_llm_usage(usage_event, ctx)
+    local = [json.loads(line) for line in (logs / "events.jsonl").read_text().splitlines()]
+    global_rows = [json.loads(line) for line in (canonical / "logs" / "events.jsonl").read_text().splitlines()]
+    round_row = next(row for row in local if row["type"] == "llm_round")
+    saved = next(row for row in global_rows if row["type"] == "llm_usage")
+    for key in ("llm_call_id", "execution_id", "round_id", "round", "ledger_attempt_ids", "claudexor"):
+        assert saved[key] == round_row[key]
+    assert saved["round"] == 7
+    assert saved["cost"] == 0 and saved["cost_known"] is True
+    # #807: the round names its physical attempts; the last one carried this response.
+    assert round_row["ledger_attempt_ids"] == ["a1", "a2"] and round_row["physical_attempt_id"] == "a2"
+    assert round_row["claudexor"]["operation_id"] == "op-1"
+    assert not any(row["type"] == "llm_round" for row in global_rows)
+
+
+class _Clock:
+    """The loop's own clock: ``sleep`` advances it, so a backoff is part of the round."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+    def time(self):
+        return 1_700_000_000.0 + self.now
+
+    def sleep(self, seconds):
+        self.now += float(seconds)
+
+
+class _TimedLLM:
+    """Each call costs ``latency`` seconds; the scripted answers say how each call ends."""
+
+    def __init__(self, clock, script, latency=2.0):
+        self.clock, self.script, self.latency = clock, list(script), latency
+
+    def chat(self, **kwargs):
+        self.clock.now += self.latency
+        step = self.script.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+def _round_rows(logs):
+    rows = [json.loads(line) for line in (logs / "events.jsonl").read_text().splitlines()]
+    return [row for row in rows if row["type"] == "llm_round"]
+
+
+def test_llm_round_duration_spans_the_logical_round_and_settles_it(tmp_path, monkeypatch):
+    from ouroboros import loop_llm_call as llm_call
+
+    clock, usage, events = _Clock(), {}, queue.Queue()
+    monkeypatch.setattr(llm_call, "time", clock)
+    answer = ({"content": "done", "tool_calls": []}, {"response_finish_reason": "stop"})
+    empty = ({"content": "", "tool_calls": []}, {"response_finish_reason": None})
+
+    def call(llm, round_idx, retries=1):
+        return llm_call.call_llm_with_retry(llm, [{"role": "user", "content": "hi"}], "fake/model", None, "medium",
+                                            retries, tmp_path, "duration-task", round_idx, events, usage)
+
+    # An empty reply, its backoff and the retry are one logical round.
+    assert call(_TimedLLM(clock, [empty, answer]), 1, retries=2)[0]["content"] == "done"
+    first = _round_rows(tmp_path)[-1]
+    assert first["duration_ms"] == round((clock.now - 1000.0) * 1000) and first["duration_ms"] > 4000
+    finished = [event["data"] for event in events.queue
+                if event.get("type") == "log_event" and event["data"].get("type") == "llm_round_finished"]
+    assert finished[-1]["duration_ms"] == first["duration_ms"]
+    # A later call on the settled round id (a wrap-up) measures only itself.
+    call(_TimedLLM(clock, [answer], latency=1.0), 1)
+    assert _round_rows(tmp_path)[-1]["duration_ms"] == 1000
+    # A failed call and the fallback that settles the same round: one row covering both.
+    start = clock.now
+    assert call(_TimedLLM(clock, [RuntimeError("provider down")]), 2)[0] is None
+    call(_TimedLLM(clock, [answer], latency=3.0), 2)
+    assert _round_rows(tmp_path)[-1]["duration_ms"] == round((clock.now - start) * 1000) == 5000
+    # A new round after a failed one starts fresh.
+    assert call(_TimedLLM(clock, [RuntimeError("provider down")]), 3)[0] is None
+    call(_TimedLLM(clock, [answer], latency=1.5), 4)
+    assert _round_rows(tmp_path)[-1]["duration_ms"] == 1500 and len(_round_rows(tmp_path)) == 4  # wrap-up has its own row
+
+
+def test_llm_api_error_names_its_operation_and_attempts_only_when_the_failure_carries_them(tmp_path, monkeypatch):
+    from ouroboros import loop_llm_call as llm_call
+
+    monkeypatch.setattr(llm_call, "time", _Clock())
+    tagged = RuntimeError("operation failed")
+    tagged.operation_id, tagged.ledger_attempt_ids = "op-9", ["x1"]
+    for error in (tagged, RuntimeError("plain failure")):
+        assert llm_call.call_llm_with_retry(_TimedLLM(_Clock(), [error]), [{"role": "user", "content": "hi"}],
+                                            "fake/model", None, "medium", 1, tmp_path, "error-task", 1,
+                                            None, {})[0] is None
+    rows = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    tagged_row, plain_row = [row for row in rows if row["type"] == "llm_api_error"]
+    assert tagged_row["operation_id"] == "op-9" and tagged_row["ledger_attempt_ids"] == ["x1"]
+    assert "operation_id" not in plain_row and plain_row["ledger_attempt_ids"] == []
+
+
+def test_facts_line_discloses_the_same_binding_ceiling_as_the_stop(monkeypatch):
+    """The periodic [PACING] checkpoint is gone (#1748); the facts line names the ceiling
+    the loop decides on and the tree's known spend against it, each bound by name."""
+    from ouroboros import task_pacing as pacing
+    from ouroboros.loop_messages import _money_facts
+
+    ceiling = pacing.CostCeiling(state="active", ceiling_usd=80, root_cap_usd=100, basis="root_cap")
+    parts = _money_facts({"cost_ceiling": ceiling, "tree": {
+        "settled_usd": 20, "accounted_usd": 23, "root_limit_usd": 100, "age_sec": 4.2},
+        "wallet": {"status": "no_global_limit"}})
+    joined = " | ".join(parts)
+    assert "shared wallet: no global limit" in joined
+    assert "hard tree cap $100.00" not in joined  # named once, inside the tree line
+    assert "in-task cost ceiling $80.00 (root_cap)" in joined
+    assert "~$20.00 of $80.00 in-task cost ceiling ($100.00 hard tree cap)" in joined
+    assert "+$3.00 open holds not counted" in joined and "ledger snapshot 4 s old" in joined
+    degraded = " | ".join(_money_facts({"cost_ceiling": ceiling, "tree": {
+        "settled_usd": 20, "accounted_usd": 20, "root_limit_usd": 100, "integrity_degraded": True}}))
+    assert "task tree spend unknown (ledger integrity degraded)" in degraded and "$20.00" not in degraded
+    assert "hard tree cap $100.00" in degraded  # the bound itself is still known
+
+
+def test_terminal_delegation_rows_keep_existing_root_and_parent(tmp_path, monkeypatch):
+    from ouroboros import delegate_custody as custody
+
+    monkeypatch.setattr(custody, "_CUSTODY", {})
+    from ouroboros.task_results import write_task_result
+    write_task_result(tmp_path, "root", "running", root_task_id="root")  # the child's real root
+    row = custody.RunCustody(run_id="correlated", task_id="child", root_task_id="root", parent_task_id="parent",
+                             route_id="route", ledger_root=str(tmp_path))
+    custody.record_started(tmp_path, row)
+    custody.settle_run(tmp_path, SimpleNamespace(), row,
+                       {"summary": {"state": "succeeded", "model": "test-model", "spendUsd": 0, "spendEstimated": False}})
+    custody.record_patch_disposed(tmp_path, row, disposition="rejected")
+    row.output_artifact, row.output_complete = "recorded-output.txt", True
+    assert custody.record_settled_unread(tmp_path, row)
+    records = [json.loads(line) for line in custody.event_log_path(tmp_path).read_text().splitlines()]
+    wanted = {custody.LEDGER_RECORDED, custody.SETTLED, custody.PATCH_DISPOSED, custody.SETTLED_UNREAD}
+    found = [record for record in records if record["type"] in wanted]
+    assert {record["type"] for record in found} == wanted
+    assert all(record["root_task_id"] == "root" and record["parent_task_id"] == "parent" for record in found)
+
+
+def test_tool_error_manifest_has_typed_code_and_redacted_reason(tmp_path):
+    from ouroboros.loop_tool_execution import _execute_single_tool
+    from ouroboros.tools.tool_result import ToolResult
+
+    tools = SimpleNamespace(CODE_TOOLS=set(), _ctx=SimpleNamespace(task_metadata={}),
+                            execute_result=lambda *_a: ToolResult(status="error", code="EXECUTOR_ERROR", text="Database initialization failed."))
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    result = _execute_single_tool(tools, {"id": "tc1", "function": {"name": "probe", "arguments": "{}"}}, logs, "task")
+    manifest = json.loads(Path(result["trace_ref"]["manifest_ref"]["path"]).read_text())
+    assert manifest["tool_code"] == "EXECUTOR_ERROR"
+    assert manifest["error_preview"] == "Database initialization failed."
+    assert manifest["semantic_ok"] is False

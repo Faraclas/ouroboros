@@ -1,0 +1,1133 @@
+"""Publish one captured skill snapshot, preserving review and scanner evidence."""
+
+from __future__ import annotations
+
+import base64
+import json
+import pathlib
+import re
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
+
+from ouroboros._usage_wait import receiver_abandonable
+from ouroboros.betterleaks_runtime import resolve_betterleaks
+from ouroboros.config import (
+    SKILL_SOURCE_CLAWHUB,
+    SKILL_SOURCE_EXTERNAL,
+    SKILL_SOURCE_NATIVE,
+    SKILL_SOURCE_OUROBOROSHUB,
+    SKILL_SOURCE_SELF_AUTHORED,
+    SKILL_SOURCE_USER_REPO,
+    get_light_model,
+    get_runtime_mode,
+)
+from ouroboros.llm import LLMClient
+from ouroboros.model_wait import ModelWaitInterrupted
+from ouroboros.marketplace.provenance import write_publication_record
+from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+from ouroboros.skill_loader import SkillPayloadUnreadable, _sanitize_skill_name
+from ouroboros.skill_publish_eligibility import PUBLISHABLE_STATUSES
+from ouroboros.skill_publish_destination import (
+    PublishListingError,
+    captured_release_digest,
+    catalog_row,
+    hub_entry_listing,
+    resolve_publish_destination,
+    task_destination,
+    update_catalog,
+)
+from ouroboros.skill_publish_github import (
+    SkillPublishGitHubError,
+    commit_payload,
+    create_pr_receipt,
+    ensure_branch,
+    fetch_branch_head,
+    fetch_repository,
+    fetch_tree_paths,
+    fetch_upstream_catalog,
+    fetch_upstream_file,
+    github_login,
+    merge_pull_request,
+    prepare_publish_repository,
+)
+from ouroboros.skill_publish_result import (
+    SKILL_PUBLISH_STAGES,
+    SkillPublishDestinationError,
+    serialize_skill_publish_result,
+)
+from ouroboros.skill_publish_scanner import (
+    ScannerExecutable,
+    SecretScanResult,
+    scan_named_bytes,
+)
+from ouroboros.skill_publish_snapshot import (
+    SkillPublishSnapshot,
+    SkillPublishSnapshotError,
+    capture_skill_publish_snapshot,
+)
+from ouroboros.skill_review_status import normalize_skill_review_status
+from ouroboros.skill_publish_eligibility import publication_author_acceptance
+from ouroboros.tool_access import (
+    ResolvedResourceBinding,
+    build_resolved_resource_binding,
+    canonical_data_root,
+    load_bound_skill,
+)
+from ouroboros.tools.github import github_token_from_env_or_settings
+from ouroboros.tools.registry import ToolContext, ToolEntry
+from ouroboros.utils import utc_now_iso
+from ouroboros.config import runtime_setting
+
+_BRANCH_SEGMENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_PROVENANCE_SLUG_MAX = 128
+_PR_BODY_MODEL_TIMEOUT_SEC = 45.0
+_GENERATED_H2_HEADINGS = (
+    "Version change",
+    "Author Checklist",
+    "Known advisory findings",
+    "Recorded reviewer findings",
+    "Secret scan attestation",
+)
+
+
+class _PublishFailure(RuntimeError):
+    """Closed, candidate-free publication failure."""
+
+    def __init__(self, reason_code: str, repair_hint: str, *, status: str = "blocked") -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+        self.repair_hint = repair_hint
+        self.status = status
+
+
+@dataclass
+class _PublishAttempt:
+    """In-memory facts for one call, never a durable recovery workflow."""
+
+    skill: str
+    snapshot_hash: str = ""
+    scanner: Dict[str, Any] = field(default_factory=dict)
+    completed_stage: str = ""
+    completed_effects: List[Dict[str, Any]] = field(default_factory=list)
+    findings: List[Dict[str, Any]] = field(default_factory=list)
+    blocker_count: int = 0
+    warning_count: int = 0
+    audited_false_positive_count: int = 0
+    version_change: Dict[str, str] = field(default_factory=dict)
+    advice: Dict[str, Any] = field(default_factory=dict)
+
+    def mark(self, stage: str, **facts: str) -> None:
+        if stage not in SKILL_PUBLISH_STAGES:
+            raise ValueError("unknown skill publish stage")
+        self.completed_stage = stage
+        effect: Dict[str, Any] = {"stage": stage}
+        effect.update({key: value for key, value in facts.items() if value})
+        self.completed_effects.append(effect)
+
+    def observe_scan(self, result: SecretScanResult, *, include_findings: bool = True) -> None:
+        facts = {
+            "engine": result.engine,
+            "version": result.version,
+            "ruleset_sha256": result.ruleset_sha256,
+        }
+        for key, value in facts.items():
+            if value:
+                self.scanner[key] = value
+        if not include_findings:
+            return
+        self.findings.extend(asdict(item) for item in result.findings)
+        self.blocker_count += result.blocker_count
+        self.warning_count += result.warning_count
+        self.audited_false_positive_count += result.audited_false_positive_count
+
+    def result(
+        self,
+        *,
+        ok: bool,
+        status: str,
+        reason_code: str,
+        repair_hint: str = "",
+        receipt: Mapping[str, Any] | None = None,
+        expected_repository: str = "",
+        extra_fields: Mapping[str, Any] | None = None,
+    ) -> str:
+        return serialize_skill_publish_result(
+            ok=ok,
+            status=status,
+            reason_code=reason_code,
+            skill=self.skill,
+            snapshot_hash=self.snapshot_hash,
+            scanner=self.scanner,
+            completed_stage=self.completed_stage,
+            completed_effects=self.completed_effects,
+            findings=self.findings,
+            blocker_count=self.blocker_count,
+            warning_count=self.warning_count,
+            audited_false_positive_count=self.audited_false_positive_count,
+            repair_hint=repair_hint,
+            receipt=receipt,
+            expected_repository=expected_repository,
+            extra_fields={**self.advice, **dict(extra_fields or {})},
+        )
+
+
+def _safe_result_skill(raw: object) -> str:
+    safe = _sanitize_skill_name(str(raw or ""))
+    return safe if safe and safe != "_unnamed" else "unknown"
+
+
+def _validate_local_skill(
+    ctx: ToolContext,
+    skill: str,
+    binding: ResolvedResourceBinding | None = None,
+):
+    safe = _sanitize_skill_name(skill)
+    if not safe or safe == "_unnamed":
+        raise _PublishFailure("skill_invalid", "Choose one installed skill, then retry.")
+    if not github_token_from_env_or_settings():
+        raise _PublishFailure(
+            "github_token_missing",
+            "Add a GitHub token in Settings to publish",
+        )
+    try:
+        binding = binding or build_resolved_resource_binding(
+            ctx,
+            root="skill_payload",
+            operation="review",
+            path=".",
+            skill_name=safe,
+        )
+        loaded = load_bound_skill(binding)
+    except (SkillPayloadUnreadable, OSError, RuntimeError, ValueError) as exc:
+        raise _PublishFailure(
+            "skill_load_failed",
+            "Repair the installed skill payload, then retry.",
+        ) from exc
+    if loaded is None:
+        raise _PublishFailure("skill_not_found", "Choose one installed skill, then retry.")
+    allowed_sources = {
+        SKILL_SOURCE_EXTERNAL,
+        SKILL_SOURCE_SELF_AUTHORED,
+        SKILL_SOURCE_USER_REPO,
+        SKILL_SOURCE_OUROBOROSHUB,
+        SKILL_SOURCE_CLAWHUB,
+    }
+    if loaded.source == SKILL_SOURCE_NATIVE and not (loaded.skill_dir / ".seed-origin").is_file():
+        allowed_sources.add(SKILL_SOURCE_NATIVE)
+    cyber = mode_has_unrestricted_agency(get_runtime_mode())
+    if loaded.source not in allowed_sources and not cyber:
+        raise _PublishFailure(
+            "skill_source_unsupported",
+            "Copy or adapt the skill into a publishable user-managed source, then retry.",
+        )
+    if loaded.load_error:
+        raise _PublishFailure(
+            "skill_load_failed",
+            "Repair the installed skill payload, then retry.",
+        )
+    author = publication_author_acceptance(loaded.review, loaded.content_hash)
+    if normalize_skill_review_status(loaded.review.status) not in PUBLISHABLE_STATUSES and not cyber and not author:
+        raise _PublishFailure(
+            "review_not_publishable",
+            "Resolve review blockers or pending review work, then retry.",
+        )
+    if str(getattr(loaded.review, "review_profile", "") or "") == "owner_attested" and not cyber and not author:
+        raise _PublishFailure(
+            "review_owner_attested",
+            "Run the full skill review for public publication, then retry.",
+        )
+    return safe, loaded
+
+
+def _payload_files(snapshot: SkillPublishSnapshot) -> List[Dict[str, Any]]:
+    return [
+        {
+            "path": item.path,
+            "sha256": item.sha256,
+            "size": item.byte_count,
+            "content_b64": base64.b64encode(item.content).decode("ascii"),
+        }
+        for item in snapshot.public_files
+    ]
+
+
+def _captured_control_json(snapshot: SkillPublishSnapshot, filename: str) -> Dict[str, Any] | None:
+    item = snapshot.file(filename)
+    if item is None:
+        return None
+    try:
+        value = json.loads(item.content.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _provenance_hint(snapshot: SkillPublishSnapshot, record: Mapping[str, Any] | None = None) -> str:
+    source = (record or {}).get("source") or {}
+    if source.get("name") and (record or {}).get("entry"):
+        label = "".join(ch for ch in str(source["name"]) if 0x20 <= ord(ch) != 0x7F).replace("`", "")[:80]
+        data, slug_key = {"slug": record["entry"]}, "slug"
+    elif snapshot.source == SKILL_SOURCE_OUROBOROSHUB:
+        data = _captured_control_json(snapshot, ".ouroboroshub.json")
+        label = "OuroborosHub"
+        slug_key = "slug"
+    elif snapshot.source == SKILL_SOURCE_CLAWHUB:
+        data = _captured_control_json(snapshot, ".clawhub.json")
+        label = "ClawHub"
+        slug_key = "clawhub_slug"
+    else:
+        return ""
+    if data is None:
+        return ""
+    original = str(data.get(slug_key) or data.get("slug") or "").strip()
+    safe = "".join(ch for ch in original if 0x20 <= ord(ch) != 0x7F)
+    safe = safe.replace("`", "").strip()
+    if not safe:
+        return ""
+    if len(safe) > _PROVENANCE_SLUG_MAX:
+        safe = safe[:_PROVENANCE_SLUG_MAX] + "…"
+    return f"## Provenance\nLocally installed from {label} as `{safe}`. This PR submits a locally adapted version.\n"
+
+
+def _advisory_findings_section(review: Any) -> str:
+    """Render bounded FAIL rows without changing their original severity."""
+    rows: List[str] = []
+    reference = (getattr(review, "author_disposition", {}) or {}).get("review_reference") or {}
+    findings = list(getattr(review, "findings", None) or []) + list(reference.get("feedback") or [])
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        if str(finding.get("verdict") or "").upper() != "FAIL":
+            continue
+        severity = " ".join(str(finding.get("severity") or "").lower().split()) or "advisory"
+        item = " ".join(str(finding.get("item") or "?").replace("`", "").split()) or "?"
+        reason = " ".join(str(finding.get("reason") or "").split())
+        if len(reason) > 500:
+            reason = reason[:500] + "…"
+        rows.append(f"- `{item}` ({severity}): {reason}" if reason else f"- `{item}` ({severity})")
+    unique = list(dict.fromkeys(rows))
+    if not unique:
+        return ""
+    return (
+        "## Recorded reviewer findings\n"
+        "Original FAIL findings from the local skill review:\n" + "\n".join(unique) + "\n"
+    )
+
+
+def _fence_marker(line: str) -> Tuple[str, int, str] | None:
+    indent = len(line) - len(line.lstrip(" "))
+    if indent > 3:
+        return None
+    stripped = line[indent:]
+    if not stripped or stripped[0] not in {"`", "~"}:
+        return None
+    char = stripped[0]
+    run = len(stripped) - len(stripped.lstrip(char))
+    if run < 3:
+        return None
+    return char, run, stripped[run:]
+
+
+def _h2_heading(line: str) -> str | None:
+    indent = len(line) - len(line.lstrip(" "))
+    if indent > 3:
+        return None
+    stripped = line[indent:].rstrip()
+    if not stripped.startswith("## "):
+        return None
+    heading = stripped[3:]
+    return heading if heading and not heading.startswith("#") else None
+
+
+def _strip_generated_h2_sections(body: str, headings: Sequence[str]) -> str:
+    """Remove real target H2 sections while preserving fenced/code examples."""
+    targets = frozenset(str(heading) for heading in headings)
+    output: List[str] = []
+    skipping = False
+    fence: Tuple[str, int] | None = None
+    for raw_line in body.splitlines(keepends=True):
+        line = raw_line.rstrip("\r\n")
+        marker = _fence_marker(line)
+        if fence is not None:
+            if not skipping:
+                output.append(raw_line)
+            if marker is not None and marker[0] == fence[0] and marker[1] >= fence[1] and not marker[2].strip():
+                fence = None
+            continue
+        if marker is not None:
+            fence = (marker[0], marker[1])
+            if not skipping:
+                output.append(raw_line)
+            continue
+        heading = _h2_heading(line)
+        if heading is not None:
+            if heading in targets:
+                skipping = True
+                continue
+            if skipping:
+                skipping = False
+        if not skipping:
+            output.append(raw_line)
+    return "".join(output)
+
+
+def _close_unterminated_fence(body: str) -> str:
+    """Keep the next independently rendered Markdown component outside a fence."""
+    fence: Tuple[str, int] | None = None
+    for raw_line in body.splitlines():
+        marker = _fence_marker(raw_line)
+        if marker is None:
+            continue
+        if fence is None:
+            fence = (marker[0], marker[1])
+        elif marker[0] == fence[0] and marker[1] >= fence[1] and not marker[2].strip():
+            fence = None
+    if fence is None:
+        return body
+    separator = "" if body.endswith(("\n", "\r")) else "\n"
+    return f"{body}{separator}{fence[0] * fence[1]}\n"
+
+
+_PR_ONLY_EFFECT = "The pull request is the only requested public effect."
+_MERGED_EFFECT = ("This account can push to the destination: the pull request is merged at once and is the only "
+                  "requested public effect.")
+
+
+def _author_checklist(review: Any, snapshot_hash: str = "", effect: str = _PR_ONLY_EFFECT) -> str:
+    author = publication_author_acceptance(review, snapshot_hash)
+    if author:
+        reference = author.get("review_reference") or {}
+        reviewed_hash = str(review.reviewed_content_hash or review.content_hash or "")
+        rationale = " ".join(str(author["rationale"]).split())
+        basis = ("Independent review was unavailable; no critic approval is inferred."
+                 if reference.get("basis") == "unavailable"
+                 else "The original critic evidence is preserved; author acceptance does not claim a fresh clean review.")
+        return (
+            "## Author Checklist\n"
+            f"- Advisory author acceptance: {author['disposition']}. {basis}\n"
+            f"- Original critic status: {review.status}; reviewed hash: {reviewed_hash or 'unavailable'}.\n"
+            f"- Author review basis: {reference.get('basis') or 'reviewed'}; reference hash: {reference.get('content_hash') or reviewed_hash or 'unavailable'}.\n"
+            f"- Author-accepted and published snapshot: {snapshot_hash}.\n"
+            "- Author acceptance does not represent another independent critic review.\n"
+            f"- Author rationale: {rationale}\n"
+            f"- {effect}\n"
+        )
+    if mode_has_unrestricted_agency(get_runtime_mode()):
+        reviewed_hash = str(review.reviewed_content_hash or review.content_hash or "")
+        return (
+            "## Author Checklist\n"
+            "- Cyber Pro publication: review and scanner findings are advisory.\n"
+            f"- Local review status: {review.status}; profile: {review.review_profile or 'none'}.\n"
+            f"- Reviewed hash: {reviewed_hash or 'unavailable'}; published snapshot: {snapshot_hash}.\n"
+            "- Published bytes match the captured snapshot; no clean or fresh review is inferred.\n"
+            f"- {effect}\n"
+        )
+    advisory = bool(_advisory_findings_section(review))
+    review_line = (
+        "- Fresh review with no blockers verified locally; advisory findings are disclosed below."
+        if advisory
+        else "- Fresh clean review verified locally."
+    )
+    return (
+        "## Author Checklist\n"
+        f"{review_line}\n"
+        "- Published bytes match the immutable reviewed snapshot.\n"
+        f"- {effect}\n"
+    )
+
+
+def _fallback_pr_core(mode: str, skill: str, snapshot: SkillPublishSnapshot) -> str:
+    manifest = snapshot.manifest
+    description = manifest.description or "See the published skill files."
+    return (
+        "## Summary\n"
+        f"- {mode.title()} `{skill}` v{manifest.version} to OuroborosHub.\n"
+        f"- Type: `{manifest.skill_type}`; files: {len(snapshot.public_files)}.\n\n"
+        "## What This Skill Does\n"
+        f"{description}\n"
+    )
+
+
+def _pr_body_prompt(
+    mode: str,
+    skill: str,
+    snapshot: SkillPublishSnapshot,
+    note: str,
+    provenance: str,
+    review: Any,
+    version_change: Mapping[str, str] | None = None,
+) -> str:
+    facts = {
+        "mode": mode,
+        "skill": skill,
+        "version": snapshot.manifest.version,
+        "type": snapshot.manifest.skill_type,
+        "description": snapshot.manifest.description[:2000],
+        "when_to_use": snapshot.manifest.when_to_use[:2000],
+        "file_count": len(snapshot.public_files),
+        "files": [item.path[:240] for item in snapshot.public_files[:50]],
+        "author_note": note[:2000],
+        "provenance": provenance[:1000],
+        "review_status": normalize_skill_review_status(str(getattr(review, "status", "") or "")),
+        "author_accepted": bool(publication_author_acceptance(review, snapshot.content_hash)),
+        "review_stale": review.is_stale_for(snapshot.content_hash),
+        **dict(version_change or {}),
+    }
+    return (
+        "Write concise Markdown for only these sections: Summary and What This Skill Does. "
+        "Use only the structured facts below. Do not invent claims or reproduce Author "
+        "Checklist, Version change, Recorded reviewer findings, Known advisory findings, Secret scan attestation, Note, or Provenance "
+        "sections; the host renders those. Version strings are opaque; do not infer their order.\n\n"
+        + json.dumps(facts, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
+
+
+def _record_llm_usage(ctx: ToolContext, model: str, usage: Mapping[str, Any]) -> None:
+    if not usage:
+        return
+    raw_cost = usage.get("cost")
+    ctx.pending_events.append(
+        {
+            "type": "llm_usage",
+            "task_id": str(getattr(ctx, "task_id", "") or ""),
+            "provider": "skill_publish",
+            "model": model,
+            "usage": dict(usage),
+            "cost": float(raw_cost) if raw_cost is not None else None,
+            "source": "submit_skill_to_hub",
+            "ts": utc_now_iso(),
+            "category": "task",
+        }
+    )
+
+
+def _scanner_executable(ctx: ToolContext) -> ScannerExecutable:
+    runtime = resolve_betterleaks(data_root=canonical_data_root(ctx))
+    path = pathlib.Path(runtime.binary_path) if runtime.binary_path else None
+    status = runtime.status if runtime.status in {"ready", "missing", "corrupt"} else "corrupt"
+    return ScannerExecutable(path=path, identity=runtime.binary_sha256, status=status)
+
+
+def _scan(
+    ctx: ToolContext,
+    attempt: _PublishAttempt,
+    executable: ScannerExecutable,
+    named_bytes: Mapping[str, bytes],
+    *,
+    honor_inline_allowances: bool,
+) -> SecretScanResult:
+    result = scan_named_bytes(
+        named_bytes,
+        executable=executable,
+        drive_root=pathlib.Path(ctx.drive_root),
+        scope="task",
+        owner_task_id=str(ctx.task_id or ""),
+        honor_inline_allowances=honor_inline_allowances,
+    )
+    cyber = mode_has_unrestricted_agency(get_runtime_mode())
+    attempt.observe_scan(result, include_findings=cyber)
+    if cyber:
+        previous = attempt.advice.get("scanner_status")
+        attempt.advice["scanner_status"] = (
+            "scanner_error" if "scanner_error" in {previous, result.status}
+            else "findings" if "findings" in {previous, result.status} else result.status
+        )
+        if result.status == "scanner_error":
+            error = f"{result.reason_code}: {result.repair_hint}"
+            known = str(attempt.advice.get("scanner_errors") or "")
+            attempt.advice["scanner_errors"] = "\n".join(dict.fromkeys([*known.splitlines(), error]))
+        if result.status == "scanner_error" or result.blocker_count:
+            ctx.emit_progress_fn(
+                f"Cyber Pro publication advice: {result.reason_code or result.status}; "
+                f"high-confidence findings={result.blocker_count}. Publication continues."
+            )
+    if result.status == "scanner_error" and not cyber:
+        raise _PublishFailure(
+            result.reason_code or "scanner_report_invalid",
+            result.repair_hint or "Repair the Betterleaks runtime, then retry.",
+            status="repair_needed",
+        )
+    return result
+
+
+@receiver_abandonable()
+def _select_optional_pr_core(
+    ctx: ToolContext,
+    attempt: _PublishAttempt,
+    executable: ScannerExecutable,
+    *,
+    mode: str,
+    skill: str,
+    snapshot: SkillPublishSnapshot,
+    note: str,
+    provenance: str,
+    review: Any,
+) -> str:
+    fallback = _fallback_pr_core(mode, skill, snapshot)
+    prompt = _pr_body_prompt(mode, skill, snapshot, note, provenance, review, attempt.version_change)
+    prompt_scan = _scan(
+        ctx,
+        attempt,
+        executable,
+        {"pr-body-model-prompt.txt": prompt.encode("utf-8")},
+        honor_inline_allowances=False,
+    )
+    if prompt_scan.blocker_count and not mode_has_unrestricted_agency(get_runtime_mode()):
+        return fallback
+    try:
+        model = get_light_model()
+        response, usage = LLMClient().chat(
+            messages=[{"role": "user", "content": prompt}],
+            model=model,
+            model_role="light",
+            reasoning_effort="low",
+            max_tokens=8192,
+            use_local=runtime_setting("USE_LOCAL_LIGHT", "").lower() in {"true", "1"},
+            timeout=_PR_BODY_MODEL_TIMEOUT_SEC,
+        )
+        _record_llm_usage(ctx, model, usage)
+        body = str(response.get("content") or "").strip()
+    except Exception as exc:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(exc)
+        ctx.emit_progress_fn("PR body formatter unavailable; using deterministic fallback.")
+        return fallback
+    if not body:
+        return fallback
+    body_scan = _scan(
+        ctx,
+        attempt,
+        executable,
+        {"optional-pr-body.md": body.encode("utf-8")},
+        honor_inline_allowances=False,
+    )
+    return fallback if body_scan.blocker_count and not mode_has_unrestricted_agency(get_runtime_mode()) else body
+
+
+def _scan_public_derived(
+    ctx: ToolContext,
+    attempt: _PublishAttempt,
+    executable: ScannerExecutable,
+    named_bytes: Mapping[str, bytes],
+) -> SecretScanResult:
+    result = _scan(
+        ctx,
+        attempt,
+        executable,
+        named_bytes,
+        honor_inline_allowances=False,
+    )
+    if not mode_has_unrestricted_agency(get_runtime_mode()):
+        attempt.observe_scan(result)
+        if result.blocker_count:
+            raise _PublishFailure(
+                "secret_blocked",
+                "Remove or rotate the high-confidence candidate, then retry.",
+            )
+    return result
+
+
+def _render_pr_body(
+    ctx: ToolContext,
+    attempt: _PublishAttempt,
+    executable: ScannerExecutable,
+    *,
+    mode: str,
+    skill: str,
+    snapshot: SkillPublishSnapshot,
+    note: str,
+    provenance: str,
+    review: Any,
+    effect: str = _PR_ONLY_EFFECT,
+) -> str:
+    core = _select_optional_pr_core(
+        ctx,
+        attempt,
+        executable,
+        mode=mode,
+        skill=skill,
+        snapshot=snapshot,
+        note=note,
+        provenance=provenance,
+        review=review,
+    )
+    prefix_parts = []
+    if provenance:
+        prefix_parts.append(_close_unterminated_fence(provenance.strip()).rstrip())
+    if note.strip():
+        prefix_parts.append(_close_unterminated_fence(f"## Note\n{note.strip()}").rstrip())
+    prefix_parts.append(_close_unterminated_fence(core.strip()).rstrip())
+    selected = "\n\n".join(prefix_parts) + "\n"
+    selected = _strip_generated_h2_sections(selected, _GENERATED_H2_HEADINGS).rstrip()
+    host_sections = [_author_checklist(review, snapshot.content_hash, effect).strip()]
+    if attempt.version_change:
+        before = json.dumps(attempt.version_change["catalog_version"], ensure_ascii=False)
+        after = json.dumps(attempt.version_change["proposed_version"], ensure_ascii=False)
+        host_sections.insert(0, f"## Version change\nCatalog version: {before}\n\nProposed version: {after}")
+    advisory = _advisory_findings_section(review)
+    if advisory:
+        host_sections.append(advisory.strip())
+    body_without_attestation = selected + "\n\n" + "\n\n".join(host_sections) + "\n"
+    _scan_public_derived(
+        ctx,
+        attempt,
+        executable,
+        {"pull-request-body.md": body_without_attestation.encode("utf-8")},
+    )
+    attestation = (
+        "## Secret scan attestation\n"
+        f"- Engine: {attempt.scanner.get('engine', '')} "
+        f"{attempt.scanner.get('version', '')}\n"
+        f"- Ruleset SHA-256: {attempt.scanner.get('ruleset_sha256', '')}\n"
+        f"- blockers={attempt.blocker_count}; warnings={attempt.warning_count}; "
+        f"audited={attempt.audited_false_positive_count}.\n"
+    )
+    if attempt.advice.get("scanner_status"):
+        attestation += f"- Scanner status: {attempt.advice['scanner_status']}.\n"
+        if attempt.advice.get("scanner_errors"):
+            attestation += f"- Scanner errors (advisory): {attempt.advice['scanner_errors']}\n"
+    return body_without_attestation.rstrip() + "\n\n" + attestation
+
+
+def _record_publication_receipt(
+    ctx: ToolContext, skill: str, version: str, receipt: Mapping[str, Any],
+) -> Tuple[bool, str]:
+    """Best-effort durable publication receipt beside the skill's review state.
+
+    Never raises; a write problem becomes ``(False, diagnostic)`` in the result
+    JSON instead of converting a real PR success into a failure. The mapping
+    mirrors the validated PR receipt (frozen contract).
+    """
+    try:
+        write_publication_record(canonical_data_root(ctx), skill, {
+            "slug": skill,
+            "version": str(version),
+            "content_hash": str(receipt.get("snapshot_hash") or "").lower(),
+            "repository": str(receipt.get("repository") or ""),
+            "pr_number": receipt.get("number"),
+            "pr_url": str(receipt.get("url") or ""),
+            "published_at": utc_now_iso(),
+        })
+        return True, ""
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"[:200]
+
+
+def _annotate_publication_recorded(serialized: str, recorded: bool, record_error: str) -> str:
+    """Add the receipt-write outcome beside the PR receipt; never raises."""
+    try:
+        envelope = json.loads(serialized)
+        envelope["publication_recorded"] = recorded
+        if not recorded:
+            envelope["publication_record_error"] = record_error
+        return json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        return serialized
+
+
+def _destination_listing(ctx: ToolContext, attempt: _PublishAttempt, target: Any, snapshot: SkillPublishSnapshot,
+                         payload_files: List[Dict[str, Any]], *, skill: str, folder: str, login: str,
+                         category: Any) -> Tuple[Dict[str, bytes], Tuple[str, ...], str, str, str, bool]:
+    """``(listing files, obsolete paths, mode, base sha, base branch, can push)`` of one destination."""
+    owner, repo, base_branch = target.owner, target.repo, target.branch
+    sent = {str(item["path"]) for item in payload_files}
+    listing: Dict[str, bytes] = {}
+    can_push = False
+    if target.kind == "git":
+        facts = fetch_repository(ctx, owner, repo)
+        can_push = bool(facts["can_push"])
+        base_sha, base_branch = fetch_branch_head(ctx, owner, repo, base_branch or facts["default_branch"])
+        if not folder:  # a skill at the repository root shares it with the repository's own files: never delete
+            return listing, (), "update", base_sha, base_branch, can_push
+        present = fetch_tree_paths(ctx, owner, repo, base_sha, folder)
+        return listing, tuple(sorted(set(present) - sent)), "update" if present else "add", base_sha, base_branch, can_push
+    base_sha, base_branch = fetch_branch_head(ctx, owner, repo, base_branch)
+    if fetch_upstream_file(ctx, owner, repo, base_sha, "hub.json") is None:
+        # An older hub lists a skill by its v1 catalog row alone.
+        catalog, base_sha = fetch_upstream_catalog(ctx, owner, repo, base_branch)
+        try:
+            mode, updated_catalog, obsolete_paths, previous_version = update_catalog(
+                catalog, catalog_row(skill, snapshot, payload_files))
+            listing["catalog.json"] = json.dumps(
+                updated_catalog, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False,
+            ).encode("utf-8")
+        except PublishListingError as exc:
+            raise _PublishFailure(exc.reason_code, exc.repair_hint) from exc
+        except (TypeError, ValueError) as exc:
+            raise _PublishFailure("upstream_catalog_invalid", "Repair the upstream Hub catalog, then retry.") from exc
+    else:
+        try:
+            listing, previous_version = hub_entry_listing(
+                lambda path: fetch_upstream_file(ctx, owner, repo, base_sha, path), snapshot, skill=skill,
+                login=login, category=category, new_entry=target.new_entry)
+        except PublishListingError as exc:
+            raise _PublishFailure(exc.reason_code, exc.repair_hint) from exc
+        obsolete_paths = tuple(sorted(set(fetch_tree_paths(ctx, owner, repo, base_sha, folder)) - sent))
+        mode = "add" if previous_version is None else "update"
+    if previous_version is not None:
+        attempt.version_change = {"catalog_version": previous_version, "proposed_version": snapshot.manifest.version}
+    return listing, obsolete_paths, mode, base_sha, base_branch, can_push
+
+
+def _publish_outcome(ctx: ToolContext, attempt: _PublishAttempt, target: Any, receipt: Mapping[str, Any], *,
+                     can_push: bool, commit_sha: str, folder: str, digest: str) -> None:
+    """Record what reached the repository and what lists it; a push-able git destination merges now."""
+    attempt.advice.update({"files_published": "pull_request", "release_digest": digest})
+    merged = False
+    if target.kind == "git" and can_push:
+        outcome = merge_pull_request(ctx, target.owner, target.repo, int(receipt["number"]), commit_sha)
+        merged = bool(outcome["merged"])
+        if merged:
+            attempt.advice.update({"files_published": "merged", "merged_commit": outcome["commit"]})
+        else:
+            attempt.advice["merge_error"] = str(outcome.get("error") or "")[:400]
+    if target.kind == "hub":
+        attempt.advice["listed"] = "when_merged"
+    elif target.pointer:
+        # The hub entry pins a commit of the author's repository: its own one-entry change moves it.
+        attempt.advice.update({"listed": "needs_entry_update", "entry_path": folder,
+                               "entry_repo": f"https://github.com/{target.repository}"})
+    else:
+        attempt.advice["listed"] = "listed" if merged else "when_merged"
+
+
+def _submit_skill_to_hub(
+    ctx: ToolContext,
+    skill: str,
+    note: str = "",
+    confirm_public_submission: bool = False,
+    destination: str = "",
+    category: Any = None,
+    _resolved_binding: ResolvedResourceBinding | None = None,
+) -> str:
+    attempt = _PublishAttempt(skill=_safe_result_skill(skill))
+    expected_repository = ""
+    try:
+        cyber = mode_has_unrestricted_agency(get_runtime_mode())
+        if not confirm_public_submission and not cyber:
+            raise _PublishFailure(
+                "confirmation_required",
+                "Confirm this public submission, then retry.",
+            )
+        safe_skill, loaded = _validate_local_skill(ctx, skill, _resolved_binding)
+        attempt.skill = safe_skill
+        attempt.mark("local_validation")
+        try:
+            target = resolve_publish_destination(canonical_data_root(ctx), safe_skill,
+                                                 destination or task_destination(ctx))
+        except SkillPublishDestinationError as exc:
+            raise _PublishFailure(
+                exc.reason_code,
+                "Choose a GitHub destination: the hub, or a git source this account can open pull requests to.",
+            ) from exc
+        owner, repo, base_branch = target.owner, target.repo, target.branch
+        folder = target.skill_folder(safe_skill)
+        expected_repository = target.repository
+        attempt.advice.update({"destination_source": target.source_id, "destination_kind": target.kind,
+                               "destination_folder": folder})
+        snapshot = capture_skill_publish_snapshot(loaded)
+        attempt.snapshot_hash = snapshot.content_hash
+        author = publication_author_acceptance(loaded.review, snapshot.content_hash)
+        if cyber or author:
+            attempt.advice.update({
+                "safety_advisory": cyber,
+                "review_status": str(loaded.review.status),
+                "review_profile": str(loaded.review.review_profile or ""),
+                "reviewed_content_hash": str(loaded.review.reviewed_content_hash or loaded.review.content_hash or ""),
+                "review_stale": loaded.review.is_stale_for(snapshot.content_hash),
+                "review_record": str(canonical_data_root(ctx) / "state" / "skills" / safe_skill / "review.json"),
+            })
+        if author:
+            attempt.advice.update({
+                "author_accepted": True, "author_content_hash": author["subject_hash"],
+                "author_disposition": author["disposition"], "author_rationale": author["rationale"],
+                "author_review_basis": str((author.get("review_reference") or {}).get("basis") or "reviewed"),
+            })
+        attempt.mark("snapshot_captured")
+        if not snapshot.manifest.version.strip():
+            raise _PublishFailure(
+                "manifest_version_missing",
+                "Add a skill manifest version, run a fresh review, then retry.",
+            )
+        executable = _scanner_executable(ctx)
+        payload_scan = _scan(
+            ctx,
+            attempt,
+            executable,
+            {item.path: item.content for item in snapshot.public_files},
+            honor_inline_allowances=True,
+        )
+        if not cyber:
+            attempt.observe_scan(payload_scan)
+        if payload_scan.blocker_count and not cyber:
+            raise _PublishFailure(
+                "secret_blocked",
+                "Remove or rotate the high-confidence candidate, then retry.",
+            )
+        from ouroboros.skill_install_record import read_install_record
+
+        provenance = _provenance_hint(snapshot, read_install_record(canonical_data_root(ctx), safe_skill))
+        preliminary: Dict[str, bytes] = {}
+        if note.strip():
+            preliminary["author-note.md"] = note.strip().encode("utf-8")
+        if provenance:
+            preliminary["provenance.md"] = provenance.encode("utf-8")
+        if preliminary:
+            preliminary_scan = _scan(
+                ctx,
+                attempt,
+                executable,
+                preliminary,
+                honor_inline_allowances=False,
+            )
+            if preliminary_scan.blocker_count and not cyber:
+                attempt.observe_scan(preliminary_scan)
+                raise _PublishFailure(
+                    "secret_blocked",
+                    "Remove or rotate the high-confidence candidate, then retry.",
+                )
+        attempt.mark("local_preflight")
+        login = github_login(ctx)
+        payload_files = _payload_files(snapshot)
+        listing, obsolete_paths, mode, base_sha, base_branch, can_push = _destination_listing(
+            ctx, attempt, target, snapshot, payload_files, skill=safe_skill, folder=folder, login=login,
+            category=category)
+        effect = _MERGED_EFFECT if target.kind == "git" and can_push else _PR_ONLY_EFFECT
+        title = f"{mode.title()} skill: {safe_skill} v{snapshot.manifest.version}"
+        branch_version = _BRANCH_SEGMENT_RE.sub("-", snapshot.manifest.version).strip("-") or "unknown"
+        branch = f"submit/{safe_skill}-v{branch_version}"
+        attempt.mark(
+            "upstream_read",
+            repository=expected_repository,
+            actor=login,
+            base_sha=base_sha,
+            mode=mode,
+        )
+        _scan_public_derived(
+            ctx,
+            attempt,
+            executable,
+            {**listing, "pull-request-title.txt": title.encode("utf-8")},
+        )
+        body = _render_pr_body(
+            ctx,
+            attempt,
+            executable,
+            mode=mode,
+            skill=safe_skill,
+            snapshot=snapshot,
+            note=note,
+            provenance=provenance,
+            review=loaded.review,
+            effect=effect,
+        )
+        prepare_publish_repository(
+            ctx,
+            attempt,
+            owner=owner,
+            repo=repo,
+            base_branch=base_branch,
+            login=login,
+        )
+        branch_sha = ensure_branch(ctx, login, repo, branch, base_sha, base_branch=base_branch, attempt=attempt)
+        attempt.mark(
+            "branch_created",
+            repository=f"{login}/{repo}",
+            actor=login,
+            branch=branch,
+            base_sha=branch_sha,
+        )
+        prefix = f"{folder}/" if folder else ""
+        additions = [
+            {"path": f"{prefix}{item['path']}", "contents": str(item["content_b64"])}
+            for item in payload_files
+        ]
+        additions.extend(
+            {"path": path, "contents": base64.b64encode(data).decode("ascii")} for path, data in listing.items()
+        )
+        deletions = [{"path": f"{prefix}{path}"} for path in obsolete_paths]
+        commit_sha, commit_url = commit_payload(
+            ctx,
+            login,
+            repo,
+            branch,
+            branch_sha,
+            title,
+            additions,
+            deletions,
+        )
+        attempt.mark(
+            "commit_created",
+            repository=f"{login}/{repo}",
+            actor=login,
+            branch=branch,
+            commit_sha=commit_sha,
+            commit_url=commit_url,
+        )
+        receipt = create_pr_receipt(
+            ctx,
+            attempt,
+            owner=owner,
+            repo=repo,
+            base_branch=base_branch,
+            login=login,
+            branch=branch,
+            title=title,
+            body=body,
+            commit_sha=commit_sha,
+        )
+        if receipt is None:
+            raise _PublishFailure(
+                "pr_open_indeterminate",
+                "Inspect the recorded branch and commit before deciding whether to retry.",
+                status="partial",
+            )
+        attempt.mark(
+            "pr_opened",
+            repository=expected_repository,
+            actor=login,
+            branch=branch,
+            commit_sha=commit_sha,
+        )
+        _publish_outcome(ctx, attempt, target, receipt, can_push=can_push, commit_sha=commit_sha, folder=folder,
+                         digest=captured_release_digest(snapshot))
+        serialized = attempt.result(
+            ok=True,
+            status="pr_opened",
+            reason_code="",
+            receipt=receipt,
+            expected_repository=expected_repository,
+        )
+        # State-plane receipt write happens only AFTER serializer receipt
+        # validation — and maps from the VALIDATED envelope receipt (canonical
+        # repository spelling, normalized fields), never the raw input.
+        try:
+            validated_receipt = json.loads(serialized).get("receipt") or receipt
+        except Exception:
+            validated_receipt = receipt
+        recorded, record_error = _record_publication_receipt(
+            ctx, safe_skill, snapshot.manifest.version, validated_receipt,
+        )
+        try:
+            # Re-serialize with the annotation INSIDE the cap loop so the added
+            # fields participate in findings trimming (a post-hoc append could
+            # push a just-under-cap envelope past the transport limit and get
+            # head-truncated into invalid JSON).
+            extra: Dict[str, Any] = {**attempt.version_change, "publication_recorded": recorded}
+            if not recorded:
+                extra["publication_record_error"] = record_error
+            return attempt.result(
+                ok=True,
+                status="pr_opened",
+                reason_code="",
+                receipt=receipt,
+                expected_repository=expected_repository,
+                extra_fields=extra,
+            )
+        except Exception:
+            # Never lose a real PR success: fall back to the bounded post-hoc
+            # annotation (which itself never raises and never exceeds the cap
+            # by more than the annotation bytes).
+            return _annotate_publication_recorded(serialized, recorded, record_error)
+    except SkillPublishSnapshotError as exc:
+        return attempt.result(
+            ok=False,
+            status="blocked",
+            reason_code=exc.reason_code,
+            repair_hint="Repair or re-review the captured skill payload, then retry.",
+            expected_repository=expected_repository,
+        )
+    except (_PublishFailure, SkillPublishGitHubError) as exc:
+        return attempt.result(
+            ok=False,
+            status=exc.status,
+            reason_code=exc.reason_code,
+            repair_hint=exc.repair_hint,
+            expected_repository=expected_repository,
+            extra_fields={key: value for key, value in {
+                "error_detail": getattr(exc, "detail", ""),
+                "github_status": getattr(exc, "http_status", None),
+                "github_operation": getattr(exc, "operation", ""),
+            }.items() if value},
+        )
+    except Exception as exc:
+        if isinstance(exc, ModelWaitInterrupted) and exc.control_reason == "owner_pause":
+            # Keep this invocation's completed stages: Pause buys no formatter
+            # retry or publication, and claims no rollback of earlier effects.
+            abandoned = bool(getattr(exc, "receiver_abandoned", False))
+            return attempt.result(
+                ok=False, status="blocked", reason_code="owner_pause",
+                repair_hint="The owner paused publication; resume the task before deciding whether to retry.",
+                expected_repository=expected_repository,
+                extra_fields={"abandoned_model_attempt_ids": ",".join(getattr(exc, "ledger_attempt_ids", None) or []),
+                              "model_outcome": "unknown" if abandoned else "not_dispatched"},
+            )
+        return attempt.result(
+            ok=False,
+            status="error",
+            reason_code="unexpected_publish_error",
+            repair_hint="Inspect the safe publication facts, repair the cause, then retry.",
+            expected_repository=expected_repository,
+        )
+
+
+_PUBLISH_SCHEMA = {
+    "name": "submit_skill_to_hub",
+    "description": (
+        "Publish one immutable skill snapshot by opening a GitHub pull request: to the skill's origin "
+        "source when it came from one (the hub, the author's repository a hub entry points at, or a git "
+        "source), otherwise to the hub as one entry with its files, or to a git source the owner names. "
+        "A git destination this account may push to is merged at once. The result reports separately "
+        "files_published (pull_request | merged) and listed (when_merged | listed | needs_entry_update: a "
+        "hub entry pointing at the author's repository moves to the new commit in its own hub change). A "
+        "failed result is repair evidence for the next agent turn; success contains a validated PR receipt."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "skill": {
+                "type": "string",
+                "description": "Installed skill name (slug).",
+            },
+            "note": {
+                "type": "string",
+                "default": "",
+                "description": "Optional public author note for the pull request.",
+            },
+            "confirm_public_submission": {
+                "type": "boolean",
+                "description": (
+                    "Required outside Cyber Pro: confirms the human approved "
+                    "this public submission. Cyber Pro may proceed without it."
+                ),
+            },
+            "destination": {
+                "type": "string",
+                "description": (
+                    "Optional: 'hub' or the id of a hub or git source. Default: the destination the owner chose "
+                    "for this publish task, else the skill's origin, else the hub."
+                ),
+            },
+            "category": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Hub category ids (one or two) for a new hub entry; propose them, the owner confirms.",
+            },
+        },
+        "required": ["skill", "confirm_public_submission"],
+    },
+}
+
+
+def get_tools() -> List[ToolEntry]:
+    return [
+        ToolEntry(
+            name="submit_skill_to_hub",  # literal: the tool-policy AST scan keys on it
+            schema=_PUBLISH_SCHEMA,
+            handler=_submit_skill_to_hub,
+            is_code_tool=False,
+            timeout_sec=180,
+        )
+    ]
+
+
+__all__ = ["get_tools"]

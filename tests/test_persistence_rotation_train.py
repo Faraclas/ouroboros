@@ -1,0 +1,353 @@
+"""CPL4-C1..C5 rotation-train pins: readers stay whole across a rotated chain.
+
+The generalized rotator (``supervisor/state.rotate_jsonl_log_if_needed``) now
+also rotates events/tools/supervisor/task_reflections on the supervisor tick.
+The custody rows live in the store, so rotation of the retained event chain
+must leave every custody answer whole; the forensic chain reader and the
+explicit repair fold must span the archive and fail closed on a segment they
+cannot open; the settled-terminal receipts heal across a rotation; and the
+one-time legacy usage import must snapshot the chain whole.
+tools/supervisor/task_reflections tail readers backfill from the newest
+archive segments.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+import pytest
+
+from ouroboros import delegate_custody as custody
+from ouroboros.utils import append_jsonl, iter_jsonl_chain_objects
+from supervisor.state import rotate_jsonl_log_if_needed
+
+
+@pytest.fixture(autouse=True)
+def _clean_custody_memo():
+    custody._CUSTODY.clear()
+    yield
+    custody._CUSTODY.clear()
+
+
+def _emit(root, kind, **payload):
+    assert custody.emit(root, kind, payload)
+
+
+def _rotate_events(root):
+    rotate_jsonl_log_if_needed(root, "events.jsonl", "events", max_bytes=1)
+    assert sorted((root / "archive").glob("events_*.jsonl"))
+    assert (root / "logs" / "events.jsonl").stat().st_size == 0
+
+
+def test_replay_reads_rotated_custody_rows(tmp_path):
+    _emit(tmp_path, custody.STARTED, run_id="r1", task_id="t1")
+    _emit(tmp_path, custody.SETTLED, run_id="r1", task_id="t1", state="succeeded")
+    _rotate_events(tmp_path)
+    _emit(tmp_path, custody.STARTED, run_id="r2", task_id="t2")
+
+    state = custody.replay(tmp_path)
+    assert state["r1"].settled and state["r1"].terminal_state == "succeeded"
+    assert state["r2"].task_id == "t2" and not state["r2"].settled
+    assert custody.lookup(tmp_path, "t1", "r1")[0] == custody.OWNED
+
+
+def test_open_runs_and_pending_invocations_span_chain(tmp_path):
+    _emit(tmp_path, custody.START_REQUESTED, invocation_id="inv1", task_id="t1",
+          request={"prompt": "x"})
+    _emit(tmp_path, custody.STARTED, run_id="r1", task_id="t1", invocation_id="inv1")
+    _rotate_events(tmp_path)
+    _emit(tmp_path, custody.START_REQUESTED, invocation_id="inv2", task_id="t2",
+          request={"prompt": "y"})
+
+    assert [row.run_id for row in custody.open_runs(tmp_path)] == ["r1"]
+    pending = {row["invocation_id"] for row in custody.pending_invocations(tmp_path)}
+    assert pending == {"inv2"}
+    record = custody.invocation_record(tmp_path, "inv1")
+    assert record is not None and record["state"] == "started" and record["run_id"] == "r1"
+
+
+def test_fault_survives_rotation_of_the_chain(tmp_path):
+    # The fault lives on the run's store row; rotating the retained chain under it
+    # (the old 4 MB tail-scan window is gone) changes nothing.
+    _emit(tmp_path, custody.CONTAINMENT_FAULT, run_id="r1", task_id="t1",
+          reason="cancel_unverified")
+    _rotate_events(tmp_path)
+    _emit(tmp_path, custody.STARTED, run_id="r2", task_id="t2")
+
+    faults = custody.open_containment_faults(tmp_path)
+    assert [row.get("run_id") for row in faults] == ["r1"]
+
+    _emit(tmp_path, custody.CONTAINMENT_RESOLVED, run_id="r1", task_id="t1",
+          reason="verified_terminal")
+    assert custody.open_containment_faults(tmp_path) == []
+
+
+def test_forensic_chain_read_spans_every_segment(tmp_path):
+    for index in range(4):
+        _emit(tmp_path, custody.STARTED, run_id=f"r{index}", task_id=f"t{index}")
+        rotate_jsonl_log_if_needed(tmp_path, "events.jsonl", "events", max_bytes=1)
+    segments = sorted((tmp_path / "archive").glob("events_*.jsonl"))
+    assert len(segments) == 4
+
+    all_rows = [row["run_id"] for row in custody.custody_rows(tmp_path)]
+    assert all_rows == ["r0", "r1", "r2", "r3"]
+    assert all(row["event_id"] for row in custody.custody_rows(tmp_path))
+
+
+def test_run_timing_reads_rotated_started_row(tmp_path):
+    _emit(tmp_path, custody.STARTED, run_id="r1", task_id="t1", max_seconds=120)
+    _rotate_events(tmp_path)
+    started_ts, max_seconds = custody.run_timing(tmp_path, "r1")
+    assert started_ts and max_seconds == 120
+
+
+def test_explicit_repair_folds_the_whole_chain(tmp_path):
+    from ouroboros import delegate_custody_current as current
+
+    _emit(tmp_path, custody.STARTED, run_id="r1", task_id="t1")
+    _rotate_events(tmp_path)
+    _emit(tmp_path, custody.SETTLED, run_id="r1", task_id="t1", state="succeeded")
+    before = custody.replay(tmp_path)
+    assert current.rebuild(tmp_path, replace=True) == 1
+    after = custody.replay(tmp_path)
+    assert after["r1"].settled and after["r1"].terminal_state == "succeeded"
+    assert vars(after["r1"]) == vars(before["r1"])
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="chmod-based unreadability needs a non-root POSIX user",
+)
+def test_unreadable_archive_segment_fails_the_repair_closed(tmp_path):
+    from ouroboros import delegate_custody_current as current
+    from ouroboros.obligations import ObligationsUnavailable
+
+    _emit(tmp_path, custody.STARTED, run_id="r1", task_id="t1")
+    _rotate_events(tmp_path)
+    segment = sorted((tmp_path / "archive").glob("events_*.jsonl"))[0]
+    segment.chmod(0)
+    try:
+        # The chain probe sees the hidden segment and the repair refuses to fold a
+        # partial chain over the rows...
+        assert custody.custody_chain_unreadable(tmp_path) is True
+        with pytest.raises(ObligationsUnavailable):
+            current.rebuild(tmp_path, replace=True)
+        # ...while the store keeps answering: the rows never depended on the chain.
+        assert custody.custody_log_unreadable(tmp_path) is False
+        assert [row.run_id for row in custody.open_runs(tmp_path)] == ["r1"]
+    finally:
+        segment.chmod(0o644)
+    assert custody.custody_chain_unreadable(tmp_path) is False
+    assert current.rebuild(tmp_path, replace=True) == 1
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="chmod-based unreadability needs a non-root POSIX user",
+)
+def test_unreadable_archive_directory_is_typed_not_empty(tmp_path):
+    """Audit #14-6a: ``Path.glob`` SWALLOWS a PermissionError on archive/ and
+    yields nothing, so every chain reader read "this store never rotated" from
+    a directory it could not open. Authority readers must see a TYPED
+    incomplete view instead; fail-soft readers keep the lenient answer."""
+    from ouroboros import delegate_custody_current as current
+    from ouroboros.obligations import ObligationsUnavailable
+    from ouroboros.utils import JsonlChainUnreadable, jsonl_archive_segments
+
+    _emit(tmp_path, custody.STARTED, run_id="r1", task_id="t1")
+    _rotate_events(tmp_path)
+    path = custody.event_log_path(tmp_path)
+    archive_dir = tmp_path / "archive"
+    archive_dir.chmod(0)
+    try:
+        assert jsonl_archive_segments(path) == []  # fail-soft: degraded window
+        with pytest.raises(JsonlChainUnreadable):
+            jsonl_archive_segments(path, strict=True)
+        assert custody.custody_chain_unreadable(tmp_path) is True
+        with pytest.raises(ObligationsUnavailable):
+            current.rebuild(tmp_path, replace=True)
+    finally:
+        archive_dir.chmod(0o755)
+    assert custody.custody_chain_unreadable(tmp_path) is False
+    assert current.rebuild(tmp_path, replace=True) == 1
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="chmod-based unreadability needs a non-root POSIX user",
+)
+@pytest.mark.parametrize("hide", ["segment", "directory"])
+def test_legacy_money_import_fails_closed_on_an_unreadable_chain(tmp_path, hide):
+    """Audit #14-6a: the legacy usage import EXPECTS an OSError and fails
+    closed — but a permission error on a rotated segment (or on archive/)
+    never reached that except, and the hidden ``llm_usage`` rows would have
+    been silently excluded from the imported monetary baseline."""
+    from ouroboros.usage_ledger import UsageAccountingError
+    from ouroboros.usage_journal import legacy_snapshot as _legacy_snapshot
+
+    events_path = tmp_path / "logs" / "events.jsonl"
+    append_jsonl(events_path, {"type": "llm_usage", "model": "m1", "cost": 0.5})
+    _rotate_events(tmp_path)
+    append_jsonl(events_path, {"type": "llm_usage", "model": "m2", "cost": 0.25})
+    hidden = (
+        tmp_path / "archive" if hide == "directory"
+        else sorted((tmp_path / "archive").glob("events_*.jsonl"))[0]
+    )
+    hidden.chmod(0)
+    try:
+        with pytest.raises(UsageAccountingError):
+            _legacy_snapshot(tmp_path)
+    finally:
+        hidden.chmod(0o755 if hide == "directory" else 0o644)
+    rows, _state, _hashes = _legacy_snapshot(tmp_path)
+    assert [row["model"] for row in rows] == ["m1", "m2"]
+
+
+def test_settled_receipts_heal_across_rotation(tmp_path, monkeypatch):
+    import ouroboros.delegate_terminal as dt
+
+    from ouroboros.task_results import write_task_result
+
+    refreshed: list[str] = []
+    real = dt.refresh_terminal_reconciliation
+    monkeypatch.setattr(dt, "refresh_terminal_reconciliation",
+                        lambda root, tid, **kw: refreshed.append(tid) or real(root, tid, **kw))
+
+    _emit(tmp_path, custody.STARTED, run_id="r1", task_id="t1")
+    write_task_result(tmp_path, "t1", "failed", delegated_runs_unreconciled=["r1"])
+    _emit(tmp_path, custody.SETTLED, run_id="r1", task_id="t1", state="succeeded")
+    assert dt.refresh_recently_settled_terminals(tmp_path) == 1
+    assert refreshed == ["t1"]
+
+    _rotate_events(tmp_path)
+    _emit(tmp_path, custody.STARTED, run_id="r2", task_id="t2")
+    write_task_result(tmp_path, "t2", "failed", delegated_runs_unreconciled=["r2"])
+    _emit(tmp_path, custody.SETTLED, run_id="r2", task_id="t2", state="succeeded")
+    # t1's receipt was retired by its heal; the rotation under the chain changes
+    # nothing because the receipts are store rows, not a chain offset. Only t2 is owed.
+    assert dt.refresh_recently_settled_terminals(tmp_path) == 1
+    assert refreshed == ["t1", "t2"]
+    assert dt.refresh_recently_settled_terminals(tmp_path) == 0
+
+
+def test_worker_boot_event_found_after_rotation(tmp_path, monkeypatch):
+    from supervisor import workers
+    from supervisor.worker_pool_lifecycle import _first_worker_event_since, events_log_cursor
+
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path, raising=False)
+    events_path = tmp_path / "logs" / "events.jsonl"
+    append_jsonl(events_path, {"type": "noise"})
+    cursor = events_log_cursor()
+    append_jsonl(events_path, {"type": "worker_boot", "git_sha": "abc123", "pid": 7})
+    _rotate_events(tmp_path)
+
+    evt = _first_worker_event_since(cursor)
+    assert evt is not None and evt.get("git_sha") == "abc123"
+
+
+def test_worker_boot_event_found_when_the_new_live_log_outgrew_the_cursor(tmp_path, monkeypatch):
+    """Audit #14-6c: rotation was detected as "the live file is smaller than my
+    offset". Under a busy supervisor the FRESH live file is already bigger than
+    the old offset by the time the verify reads, so the rotation went
+    unnoticed and the read seeked into an unrelated file at a meaningless
+    offset — the boot event vanished. Detect by file IDENTITY."""
+    from supervisor import workers
+    from supervisor.worker_pool_lifecycle import _first_worker_event_since, events_log_cursor
+
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path, raising=False)
+    events_path = tmp_path / "logs" / "events.jsonl"
+    append_jsonl(events_path, {"type": "noise", "pad": "x" * 200})
+    cursor = events_log_cursor()
+    append_jsonl(events_path, {"type": "worker_boot", "git_sha": "abc123", "pid": 7})
+    _rotate_events(tmp_path)
+    # The new live file overtakes the old offset before the verify runs.
+    for i in range(20):
+        append_jsonl(events_path, {"type": "llm_round", "i": i, "pad": "y" * 200})
+    assert events_path.stat().st_size > cursor[0]
+
+    evt = _first_worker_event_since(cursor)
+    assert evt is not None and evt.get("git_sha") == "abc123"
+    # The pre-cursor noise row stays excluded: the offset is honored inside the
+    # segment the cursor actually named.
+    assert _first_worker_event_since(cursor, "noise") is None
+
+
+def test_legacy_snapshot_includes_rotated_llm_usage(tmp_path):
+    from ouroboros.usage_journal import legacy_snapshot as _legacy_snapshot
+
+    events_path = tmp_path / "logs" / "events.jsonl"
+    append_jsonl(events_path, {"type": "llm_usage", "model": "m1", "cost": 0.5,
+                               "prompt_tokens": 10, "completion_tokens": 5})
+    _rotate_events(tmp_path)
+    append_jsonl(events_path, {"type": "llm_usage", "model": "m2", "cost": 0.25,
+                               "prompt_tokens": 4, "completion_tokens": 2})
+
+    rows, _state, hashes = _legacy_snapshot(tmp_path)
+    assert [row["model"] for row in rows] == ["m1", "m2"]
+    assert hashes["events.jsonl"]  # the chain snapshot was hashed and archived
+
+
+def test_iter_jsonl_chain_objects_chronological(tmp_path):
+    path = tmp_path / "logs" / "events.jsonl"
+    append_jsonl(path, {"i": 0})
+    rotate_jsonl_log_if_needed(tmp_path, "events.jsonl", "events", max_bytes=1)
+    append_jsonl(path, {"i": 1})
+    rotate_jsonl_log_if_needed(tmp_path, "events.jsonl", "events", max_bytes=1)
+    append_jsonl(path, {"i": 2})
+
+    assert [row["i"] for row in iter_jsonl_chain_objects(path)] == [0, 1, 2]
+
+
+@pytest.mark.serial
+def test_launcher_stdout_copy_is_size_capped(monkeypatch, tmp_path):
+    """CPL4-C5: the launcher drains a real server pipe into a rotated agent_stdout.log.
+
+    The copier's own byte, failure and gap rules: tests/test_capped_output_copy.py.
+    """
+    import subprocess
+    import threading
+
+    import launcher
+    from ouroboros import process_logging
+    from ouroboros.process_logging import SERVER_LOG_MAX_BYTES
+
+    data_dir, repo_dir = tmp_path / "data", tmp_path / "repo"
+    repo_dir.mkdir()
+    (repo_dir / "server.py").write_text("", encoding="utf-8")
+    line = b"x" * 1023 + b"\n"
+    producer = f"import sys\nfor _ in range(5120): sys.stdout.buffer.write({line!r})\n"
+    monkeypatch.setattr(launcher, "IS_WINDOWS", False)
+    monkeypatch.setattr(launcher, "DATA_DIR", data_dir)
+    monkeypatch.setattr(launcher, "REPO_DIR", repo_dir)
+    monkeypatch.setattr(launcher, "_load_settings", lambda: {})
+    monkeypatch.setattr(launcher, "_apply_settings_to_env", lambda _settings: None)
+    monkeypatch.setattr(launcher, "process_group_id", lambda _pid: None)
+    monkeypatch.setattr(launcher, "_hidden_popen",
+                        lambda _cmd, **kwargs: subprocess.Popen([sys.executable, "-c", producer], **kwargs))
+    drained, copy = threading.Event(), process_logging.copy_capped_output
+    monkeypatch.setattr(process_logging, "copy_capped_output", lambda *a, **k: (copy(*a, **k), drained.set()))
+
+    proc = launcher.start_agent(port=9877)
+    assert proc.wait(timeout=120) == 0 and drained.wait(timeout=120)
+    proc.stdout.close()
+    log_path = data_dir / "logs" / "agent_stdout.log"
+    rotated = [log_path.with_name(f"agent_stdout.log.{index}") for index in (2, 1)]
+    assert [path.stat().st_size for path in (*rotated, log_path)] == [SERVER_LOG_MAX_BYTES] * 2 + [1024 * 1024]
+    assert b"".join(path.read_bytes() for path in (*rotated, log_path)) == line * 5120
+
+
+def test_supervisor_tick_rotates_the_train():
+    """Source pin: the four train logs rotate beside chat/progress."""
+    import pathlib
+
+    src = (pathlib.Path(__file__).resolve().parent.parent / "server.py").read_text(
+        encoding="utf-8",
+    )
+    for name, prefix in (
+        ("events.jsonl", "events"),
+        ("tools.jsonl", "tools"),
+        ("supervisor.jsonl", "supervisor"),
+        ("task_reflections.jsonl", "task_reflections"),
+    ):
+        assert f'rotate_jsonl_log_if_needed(DATA_DIR, "{name}", "{prefix}")' in src

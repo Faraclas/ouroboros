@@ -1,0 +1,960 @@
+"""A large delegated result is delivered whole or declared partial.
+
+Split verbatim out of ``tests/test_delegated_subagent_transport.py`` by theme. This
+module owns the staged result artifact, the coverage acknowledgement bound to what
+delivery actually hands the model, and the disclosure that follows an unread or
+truncated output.
+"""
+
+from __future__ import annotations
+
+import json
+import hashlib
+from dataclasses import replace
+
+import pytest
+
+from tests.test_main_authored_context import call
+from tests.test_main_authored_context import main_loop as _main_loop
+
+main_loop = _main_loop
+import pathlib
+
+from tests._delegated_transport_shared import (  # noqa: F401  (autouse fixture applies on import)
+    _LiveRunStub,
+    _event_types,
+    _nanny_ctx,
+    _owned_gateway_uses_each_test_transport,
+    _select_transport_access,
+)
+
+
+def test_a_large_delegated_result_is_delivered_whole_or_declared_partial(tmp_path, monkeypatch):
+    """`final_summary`/`primary_output` carry the run's real work product and Claudexor
+    returns up to 256 KiB. The 15k head-truncation cut it mid-string and destroyed the
+    JSON, so a large review came back as an unparseable fragment that still looked like
+    a verdict. The payload now bounds ITSELF and the remainder is a readable artifact."""
+    from ouroboros.loop_tool_execution import _truncate_tool_result
+    from ouroboros.tool_capabilities import tool_result_limit
+
+    import ouroboros.tools.delegate as delegate
+    from ouroboros.gateways import claudexor as gw
+
+    verdict = "V" * 120_000
+
+    class _Stub(_LiveRunStub):
+        def get_run(self, rid, **_kw):
+            return {"lastSeq": 9, "primaryOutput": verdict,
+                    "finalSummary": "S" * 60_000,
+                    "outcomeBanner": "B" * 40_000,
+                    "summary": {"state": "succeeded", "spendUsd": 0.0}}
+
+    monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
+    delegate._CUSTODY.clear()
+    delegate._CUSTODY["run-1"] = delegate._RunCustody(
+        run_id="run-1", task_id="t-a", route_id="r", model="m", project_id="p", project_owned=False)
+    ctx = _nanny_ctx(tmp_path)
+    raw = delegate._delegate_wait(ctx, "run-1", wait_sec=1)
+    delegate._CUSTODY.clear()
+
+    limit = tool_result_limit("delegate_wait")
+    assert len(raw) <= limit, "the producer must fit the budget the truncator applies"
+    assert _truncate_tool_result(raw, "delegate_wait", {}) == raw, "outer truncation must not fire"
+    payload = json.loads(raw)          # the fatal symptom: this used to be unparseable
+
+    delivery = payload["output_delivery"]
+    assert delivery["complete"] is False and delivery["consumed"] is False
+    assert "primary_output" not in payload, "a preview must not wear the whole field's name"
+    assert payload["primary_output_preview"] and payload["primary_output_preview"] in verdict
+
+    artifact = delivery["artifact"]
+    # #1573: retained once in the staging task's CANONICAL source store, read back by
+    # its absolute path through the artifact_store lineage read.
+    from ouroboros.artifacts import task_artifact_dir_path
+
+    assert artifact["root"] == "artifact_store"
+    assert artifact["source"]["task_id"] == "t-a"
+    assert pathlib.Path(artifact["path"]) == task_artifact_dir_path(tmp_path, "t-a") / artifact["source"]["path"]
+    staged = pathlib.Path(artifact["abs_path"]).read_text(encoding="utf-8")
+    assert json.loads(staged)["primary_output"] == verdict, "the whole result must survive"
+    assert delivery["read_next"]["tool"] == "read_file"
+
+    # The advertised chunk read really works, with a stable cursor over an immutable
+    # file — and it works for the READ-ONLY nanny, which is the common caller and the
+    # one whose access policy could have made the whole contract unreachable.
+    from ouroboros.tool_access import LOCAL_READONLY_SUBAGENT_MODE
+    from ouroboros.tools.core import _read_file
+    from ouroboros.contracts.task_constraint import TaskConstraint
+
+    ctx.task_constraint = TaskConstraint(mode=LOCAL_READONLY_SUBAGENT_MODE)
+    head = _read_file(ctx, path=artifact["path"], root=artifact["root"], start_line=1, max_lines=5)
+    tail = _read_file(ctx, path=artifact["path"], root=artifact["root"],
+                      start_line=artifact["lines"], max_lines=5)
+    assert "BLOCKED" not in head and "NOT_FOUND" not in head and "ERROR" not in head
+    assert head != tail, "start_line must be a real cursor, not a no-op"
+
+
+def _read_artifact_whole(ctx, artifact, step=7):
+    """Direct readers receive exactly their selected line window, without a hidden cap."""
+    from ouroboros.tools.core import _read_file
+
+    lines = pathlib.Path(artifact["abs_path"]).read_text(encoding="utf-8").splitlines(keepends=True)
+    for line_no in range(1, len(lines) + 1, step):
+        _read_file(ctx, path=artifact["path"], root=artifact["root"], start_line=line_no, max_lines=step)
+
+
+def _staged_for_main(f, raw, run_id="run-coverage"):
+    from ouroboros import delegate_custody as dc, delegate_output as output
+    from ouroboros.tool_access import resource_root_path
+
+    f.ctx.task_id = "authored-main"
+    output._READ_COVERAGE.clear()
+    target = resource_root_path(f.ctx, "task_drive") / "delegated_runs" / f"{run_id}.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(raw)
+    entry = dc.RunCustody(run_id=run_id, task_id="authored-main", route_id="fixture", model="fixture",
+                          project_id="fixture", project_owned=False, ledger_root=str(f.ctx.drive_root))
+    dc.record_started(f.ctx.drive_root, entry)
+    entry.output_artifact, entry.output_sha = f"delegated_runs/{target.name}", hashlib.sha256(raw).hexdigest()
+    entry.output_complete = True
+    dc.emit(f.ctx.drive_root, dc.OUTPUT_SPILLED, {
+        "run_id": run_id, "task_id": entry.task_id, "staged": True, "full_content": True,
+        "artifact": entry.output_artifact, "sha256": entry.output_sha,
+    })
+    return target, entry
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("partial", [False, True], ids=["whole-large", "measured-head-tail"])
+def test_the_coverage_ack_binds_to_what_delivery_actually_hands_the_model(main_loop, monkeypatch, partial):
+    """Real Main credits the exact read window intersected with its final projection."""
+    from ouroboros import delegate_output as output
+    from ouroboros.tools.core import _read_file
+    from tests.test_main_result_ingress import _observe_measurements
+
+    f = main_loop
+    raw = ("Преамбула\r\n" + "Ж🙂Ω" * 55_000 + "\rЗавершение\n").encode("utf-8")
+    target, entry = _staged_for_main(f, raw)
+    content = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    f.ctx.context_fit_plan = replace(f.ctx.context_fit_plan, window_tokens=120_000 if partial else 2_000_000)
+    _observe_measurements(monkeypatch)
+    offset = 37 if partial else 0
+    answer, _, trace = f.run([
+        call("read_file", {"root": "task_drive", "path": entry.output_artifact,
+                           "start_line": 1, "max_lines": 100, "start_char": offset}, "read-staged"),
+        {"content": "done"},
+    ])
+    assert answer == "done"
+    row = next(row for row in trace["tool_calls"] if row["tool_call_id"] == "read-staged")
+    read_view = row["tool_result_meta"]["read_view"]
+    assert read_view["source_revision"] == hashlib.sha256(raw).hexdigest()
+    assert read_view["source_start_char"] == offset
+    assert read_view["body_chars"] == len(content) - offset
+    assert read_view["complete_chars"] == len(content) < len(raw)
+    visible = next(row["content"] for row in f.inputs[-1]["messages"] if row.get("tool_call_id") == "read-staged")
+    key = f"{target.resolve()}|{entry.output_sha}"
+    last = "Завершение\n"
+    if not partial:
+        numbered = "".join(f"{n:>6}\t{line}" for n, line in enumerate(content.splitlines(keepends=True), 1))
+        assert numbered in visible and len(visible) > 160_000
+        assert output._READ_COVERAGE[key] == [[0, len(content)]]
+        assert entry.output_consumed is True
+    else:
+        assert row["result_partial"] is True
+        spans = row["result_source_view"]["shown_ranges"]
+        assert len(spans) == 2
+        # The cursor lands inside line 2, so the first row is that line's partial
+        # head under its own number; display numbers are never source.
+        header = read_view["body_start"] + len(f"{2:>6}\t")
+        assert header < spans[0][1] and spans[1][0] < header + len(content) - offset - len(last)
+        expected = [[offset, offset + spans[0][1] - header],
+                    [offset + spans[1][0] - header, len(content)]]
+        assert output._READ_COVERAGE[key] == expected
+        assert content[expected[0][0]:expected[0][1]] in visible
+        assert content[expected[1][0]:-len(last)] + f"{3:>6}\t{last}" in visible
+        assert expected[0][1] < expected[1][0] and not entry.output_consumed
+        # Exact pages fill the omitted interval and the deliberately skipped prefix.
+        _read_file(f.ctx, root="task_drive", path=entry.output_artifact, max_lines=100,
+                   start_char=expected[0][1], max_chars=expected[1][0] - expected[0][1])
+        assert not entry.output_consumed
+        _read_file(f.ctx, root="task_drive", path=entry.output_artifact, max_lines=100, max_chars=offset)
+        assert entry.output_consumed
+    consumed = [json.loads(line) for line in (f.ctx.drive_root / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+                if '"delegate_run_output_consumed"' in line]
+    assert len(consumed) == 1 and consumed[0]["sha256"] == hashlib.sha256(raw).hexdigest()
+    assert consumed[0]["bytes"] == len(raw) and consumed[0]["chars"] == len(content)
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("missing", ["read_view", "source_revision", "projection"])
+def test_unknown_delivery_metadata_never_claims_complete(main_loop, missing):
+    from ouroboros import delegate_output as output
+    from ouroboros.tools.tool_result import ToolResult
+
+    f = main_loop
+    target, entry = _staged_for_main(f, b"exact staged output\n")
+    with output.staged_read_delivery_scope():
+        typed = f.registry.execute_result("read_file", {"root": "task_drive", "path": entry.output_artifact})
+    assert not output._READ_COVERAGE and not entry.output_consumed
+    meta = dict(typed.meta)
+    if missing == "read_view":
+        meta.pop("read_view")
+    elif missing == "source_revision":
+        meta["read_view"] = {**meta["read_view"], "source_revision": "unknown"}
+    invalid = ToolResult(status=typed.status, code=typed.code, text=typed.text, meta=meta)
+    projected = {"result": typed.text}
+    if missing == "projection":
+        projected.update(result_partial=True)
+    output.acknowledge_staged_output_delivery(f.ctx, {"result": typed.text, "tool_result": invalid}, projected)
+    assert not output._READ_COVERAGE and not entry.output_consumed
+    output.acknowledge_staged_output_delivery(f.ctx, {"result": typed.text, "tool_result": typed}, {"result": typed.text})
+    assert entry.output_consumed
+    assert output._READ_COVERAGE[f"{target.resolve()}|{entry.output_sha}"] == [[0, len(target.read_bytes())]]
+
+
+def _numbered_display_oracle(content, rendered, body_start, *, start_line, start_char, max_chars):
+    """Display offset -> source offset, built from the content (never by parsing the display)."""
+    lines = content.splitlines(keepends=True)
+    window = "".join(lines[start_line - 1:])
+    body = window[start_char:][:max_chars] if max_chars else window[start_char:]
+    ends, total = [], 0
+    for line in window.splitlines(keepends=True):
+        total += len(line)
+        ends.append(total)
+    number = start_line + sum(1 for end in ends if end <= start_char)
+    mapping, pos = {}, body_start
+    source = sum(len(line) for line in lines[:start_line - 1]) + start_char
+    for row in body.splitlines(keepends=True):
+        pos += len(f"{number:>6}\t")
+        for _ in row:
+            mapping[pos] = source
+            pos, source = pos + 1, source + 1
+        number += 1
+    assert pos == len(rendered)
+    return mapping
+
+
+def _credited(mapping, shown):
+    offsets = sorted({mapping[d] for lo, hi in shown for d in range(lo, hi) if d in mapping})
+    ranges = []
+    for offset in offsets:
+        if ranges and ranges[-1][1] == offset:
+            ranges[-1][1] += 1
+        else:
+            ranges.append([offset, offset + 1])
+    return ranges
+
+
+@pytest.mark.parametrize("start_line,start_char,max_chars", [
+    (1, 0, None), (2, 7, None), (1, 3, 150), (3, 2, 40), (5, 0, 1)])
+def test_numbered_read_credit_counts_only_shown_source_characters(start_line, start_char, max_chars):
+    """The one delivered-range SSOT decodes read_file's numbered rows: display
+    numbers and a hidden middle credit nothing, partial rows keep exact offsets."""
+    from ouroboros import delegate_output as output
+    from ouroboros.tools.core_file_tools import _render_line_slice
+
+    content = "alpha\n" + "Ж🙂Ω" * 40 + "\n" + "mid line\n" + "x" * 90 + "\n" + "omega"
+    extent = {}
+    rendered = _render_line_slice("f", content, max_lines=10, start_line=start_line,
+                                  start_char=start_char, max_chars=max_chars, extent=extent)
+    oracle = _numbered_display_oracle(content, rendered, extent["body_start"], start_line=start_line,
+                                      start_char=start_char, max_chars=max_chars)
+    inside_first_row = min(len(rendered), extent["body_start"] + len(f"{1:>6}\t") + 2)
+    shown_sets = ([[0, len(rendered)]],                                   # whole
+                  [[0, extent["body_start"] + 3], [inside_first_row, len(rendered)]],  # cut inside a number
+                  [[0, (len(rendered) + extent["body_start"]) // 2], [len(rendered) - 9, len(rendered)]],
+                  [[0, extent["body_start"]]])                            # the header alone
+    for shown in shown_sets:
+        expected = _credited(oracle, shown)
+        assert output._delivered_source_ranges(extent, rendered, {}, content, shown) == expected, shown
+    whole = output._delivered_source_ranges(extent, rendered, {"result": rendered}, content)
+    assert whole == _credited(oracle, [[0, len(rendered)]])
+    assert whole == [[extent["source_start_char"], extent["source_end_char"]]]
+    # Tampered descriptors or display text credit nothing (never a guessed offset).
+    shape = extent["display_map"]
+    body_char = next(d for d in sorted(oracle))
+    forged = rendered[:body_char] + ("#" if rendered[body_char] != "#" else "!") + rendered[body_char + 1:]
+    for view, text in (({**extent, "display_map": {**shape, "first_number": shape["first_number"] + 1}}, rendered),
+                       ({**extent, "display_map": {**shape, "rows": shape["rows"] - 1}}, rendered),
+                       ({key: value for key, value in extent.items() if key != "display_map"}, rendered),
+                       ({**extent, "body_chars": extent["body_chars"] - 1}, rendered),
+                       (extent, forged)):
+        assert output._delivered_source_ranges(view, text, {}, content, [[0, len(text)]]) is None
+
+
+def test_a_real_2000_row_read_carries_its_display_map_on_the_bounded_result(tmp_path):
+    """The invocation-local read_view keeps the few-byte display map (never per-line
+    facts) and the SSOT credits the whole Unicode read from it."""
+    from ouroboros import delegate_output as output
+    from ouroboros.tools.core import _read_file
+    from ouroboros.tools.registry import ToolContext
+    from ouroboros.tools.tool_result import (
+        _install_tool_result_sidecar, _published_tool_result, _restore_tool_result_sidecar,
+    )
+
+    rows = [f"Ж🙂Ω row {i}\n" for i in range(2000)]
+    rows[999] = "mid "  # a Unicode line boundary is a row of its own
+    (tmp_path / "big.txt").write_text("".join(rows), encoding="utf-8")
+    content = (tmp_path / "big.txt").read_text(encoding="utf-8")
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path / "data")
+    sentinel = object()
+    token = _install_tool_result_sidecar(ctx, sentinel)
+    try:
+        text = _read_file(ctx, "big.txt", root="system_repo")
+        typed = _published_tool_result(ctx, sentinel)
+    finally:
+        _restore_tool_result_sidecar(token)
+    view = typed.meta["read_view"]
+    assert view["display_map"] == {"scheme": "numbered_rows_v1", "first_number": 1, "rows": 2000}
+    assert "line_ends" not in view and f"{2000:>6}\tЖ🙂Ω row 1999\n" in text
+    assert output._delivered_source_ranges(view, text, {"result": text}, content) == [[0, len(content)]]
+
+
+@pytest.mark.serial
+def test_parallel_main_reads_keep_their_own_source_window(main_loop, monkeypatch):
+    import threading
+    from ouroboros import delegate_output as output
+    from ouroboros.tools import core_file_tools
+    from tests.test_main_result_ingress import _observe_measurements
+
+    f = main_loop
+    first, first_entry = _staged_for_main(f, ("Ж" * 1000 + "\n").encode("utf-8"), "run-first")
+    second, second_entry = _staged_for_main(f, ("Ω" * 2000 + "\n").encode("utf-8"), "run-second")
+    _observe_measurements(monkeypatch)
+    stamp = core_file_tools._stamp_read_view
+    barrier = threading.Barrier(2)
+
+    def overlapping_stamp(*args, **kwargs):
+        rendered = stamp(*args, **kwargs)
+        barrier.wait(timeout=5)
+        f.ctx.last_read_view = {"target": "unrelated shared context value"}
+        return rendered
+
+    monkeypatch.setattr(core_file_tools, "_stamp_read_view", overlapping_stamp)
+    calls = call("read_file", {"root": "task_drive", "path": first_entry.output_artifact,
+                              "start_char": 7, "max_chars": 90}, "first-read")
+    calls["tool_calls"].extend(call("read_file", {
+        "root": "task_drive", "path": second_entry.output_artifact,
+        "start_char": 123, "max_chars": 40}, "second-read")["tool_calls"])
+    answer, _, trace = f.run([calls, {"content": "done"}])
+    assert answer == "done"
+    assert output._READ_COVERAGE[f"{first.resolve()}|{first_entry.output_sha}"] == [[7, 97]]
+    assert output._READ_COVERAGE[f"{second.resolve()}|{second_entry.output_sha}"] == [[123, 163]]
+    assert not first_entry.output_consumed and not second_entry.output_consumed
+    rows = {row["tool_call_id"]: row for row in trace["tool_calls"]}
+    assert rows["first-read"]["tool_result_meta"]["read_view"]["target"] == str(first)
+    assert rows["second-read"]["tool_result_meta"]["read_view"]["target"] == str(second)
+
+
+def test_reading_the_staged_artifact_whole_writes_the_canonical_acknowledgement(
+        tmp_path, monkeypatch):
+    """Owner doctrine D7: a delegated result is OBTAINED only after the artifact is
+    read to EOF — meaning proven CONTINUOUS coverage from the first line to the last,
+    not a cursor that merely touched the end. The canonical acknowledgement is a typed
+    row written exactly when the windows have covered the whole artifact — carrying the
+    byte length and hash of what was staged — written once, replayed across restarts,
+    and surfaced on a re-wait. It gates NOTHING: partial reads still work, full reads
+    still work, the only change is that the record can now tell the two apart."""
+    import hashlib
+
+    import ouroboros.delegate_custody as dc
+    import ouroboros.tools.delegate as delegate
+    from ouroboros.gateways import claudexor as gw
+    from ouroboros.tools.core import _read_file
+
+    class _Stub(_LiveRunStub):
+        def get_run(self, rid, **_kw):
+            return {"lastSeq": 9, "primaryOutput": "V" * 120_000,
+                    "summary": {"state": "succeeded", "spendUsd": 0.0}}
+
+    monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
+    delegate._CUSTODY.clear()
+    delegate._READ_COVERAGE.clear()
+    dc.record_started(tmp_path, delegate._RunCustody(
+        run_id="run-1", task_id="t-a", route_id="r", model="m",
+        project_id="p", project_owned=False, root_task_id="t-a", ledger_root=str(tmp_path)))
+    ctx = _nanny_ctx(tmp_path)
+
+    first = json.loads(delegate._delegate_wait(ctx, "run-1", wait_sec=1))
+    artifact = first["output_delivery"]["artifact"]
+    assert first["output_delivery"]["consumed"] is False
+    assert "delegate_run_output_consumed" not in _event_types(tmp_path)
+    spilled = [json.loads(l) for l in (tmp_path / "logs" / "events.jsonl").read_text().splitlines()
+               if '"delegate_run_output_spilled"' in l]
+    assert spilled and spilled[-1]["sha256"] == artifact["sha256"], \
+        "the staged fact must durably carry what was staged"
+    assert spilled[-1]["full_content"] is True
+
+    # A head read is served in full and acknowledges nothing.
+    head = _read_file(ctx, path=artifact["path"], root=artifact["root"], start_line=1, max_lines=5)
+    assert "BLOCKED" not in head and "ERROR" not in head
+    assert "delegate_run_output_consumed" not in _event_types(tmp_path)
+
+    # THE NEGATIVE THAT DEFINES THE CONTRACT: a tail window whose end touches EOF, with
+    # the middle never read, is NOT full reading and must not acknowledge. (The first
+    # cut of this feature acknowledged exactly this shape.)
+    tail = _read_file(ctx, path=artifact["path"], root=artifact["root"],
+                      start_line=artifact["lines"], max_lines=5)
+    assert "BLOCKED" not in tail and "ERROR" not in tail
+    assert "delegate_run_output_consumed" not in _event_types(tmp_path), \
+        "head+tail with a skipped middle must never acknowledge"
+    gap_wait = json.loads(delegate._delegate_wait(ctx, "run-1", wait_sec=1))
+    assert gap_wait["output_delivery"]["consumed"] is False
+
+    # Filling the gap — contiguous coverage of every line — IS the acknowledgement.
+    _read_artifact_whole(ctx, artifact)
+    rows = [json.loads(l) for l in (tmp_path / "logs" / "events.jsonl").read_text().splitlines()
+            if '"delegate_run_output_consumed"' in l]
+    assert len(rows) == 1, "the acknowledgement is canonical: one row, not one per read"
+    staged_bytes = pathlib.Path(artifact["abs_path"]).read_bytes()
+    assert rows[0]["run_id"] == "run-1"
+    assert rows[0]["bytes"] == len(staged_bytes) == artifact["bytes"]
+    assert rows[0]["sha256"] == hashlib.sha256(staged_bytes).hexdigest() == artifact["sha256"]
+    assert rows[0]["lines"] == artifact["lines"]
+
+    # Reading it whole again does not write a second acknowledgement.
+    _read_artifact_whole(ctx, artifact)
+    assert sum(1 for t in _event_types(tmp_path) if t == "delegate_run_output_consumed") == 1
+
+    # A re-wait on the terminal run now reports the durable fact in its disposition.
+    second = json.loads(delegate._delegate_wait(ctx, "run-1", wait_sec=1))
+    assert second["output_delivery"]["consumed"] is True
+
+    # The fact survives a worker restart, like every other custody fact.
+    delegate._CUSTODY.clear()
+    replayed = dc.replay(tmp_path)["run-1"]
+    assert replayed.output_consumed is True
+    assert replayed.output_complete is True
+    assert replayed.output_artifact == artifact["source"]["path"]
+    assert replayed.output_source == artifact["source"]
+    delegate._CUSTODY.clear()
+
+
+def test_the_staged_artifact_is_the_bytes_it_declares_even_under_a_translating_text_layer(
+    tmp_path, monkeypatch,
+):
+    """The artifact's sha256 IS its identity — `custody.output_sha` — and the read
+    receipt measures the file with `read_bytes`, so the declared bytes and the written
+    bytes have to be one object. Staging used a TEXT write, whose `newline=None` layer
+    translates every "\\n" to `os.linesep`: on Windows the payload (always
+    `json.dumps(..., indent=2)`, so always multi-line) landed as CRLF while the
+    published hash described the LF form, `record_output_consumed` refused on the
+    mismatch, and the D7 acknowledgement could never be written for any delegated run —
+    every result stayed "settled but NOT COLLECTED" forever.
+
+    Runnable anywhere: the platform's text layer is emulated by a translating
+    `Path.write_text`, which the fixed code simply never calls. Reverting to a text
+    write brings the failure back on POSIX too, which is the point.
+    """
+    import hashlib
+
+    import ouroboros.delegate_custody as dc
+    import ouroboros.tools.delegate as delegate
+    from ouroboros.gateways import claudexor as gw
+
+    class _Stub(_LiveRunStub):
+        def get_run(self, rid, **_kw):
+            return {"lastSeq": 9, "primaryOutput": "V" * 120_000,
+                    "summary": {"state": "succeeded", "spendUsd": 0.0}}
+
+    real_write_text = pathlib.Path.write_text
+
+    def _windows_shaped_write_text(self, data, *args, **kwargs):
+        return real_write_text(self, str(data).replace("\n", "\r\n"), *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "write_text", _windows_shaped_write_text)
+    monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
+    delegate._CUSTODY.clear()
+    delegate._READ_COVERAGE.clear()
+    dc.record_started(tmp_path, delegate._RunCustody(
+        run_id="run-1", task_id="t-a", route_id="r", model="m",
+        project_id="p", project_owned=False, root_task_id="t-a", ledger_root=str(tmp_path)))
+    ctx = _nanny_ctx(tmp_path)
+
+    out = json.loads(delegate._delegate_wait(ctx, "run-1", wait_sec=1))
+    artifact = out["output_delivery"]["artifact"]
+    on_disk = pathlib.Path(artifact["abs_path"]).read_bytes()
+    assert b"\r\n" not in on_disk, "the staged payload is bytes, not translated text"
+    assert len(on_disk) == artifact["bytes"]
+    assert hashlib.sha256(on_disk).hexdigest() == artifact["sha256"]
+
+    # ...and therefore the acknowledgement can actually land.
+    _read_artifact_whole(ctx, artifact)
+    assert sum(1 for t in _event_types(tmp_path) if t == "delegate_run_output_consumed") == 1
+    assert dc.settled_unread_outputs(tmp_path) == []
+    delegate._CUSTODY.clear()
+
+
+def test_an_unread_result_is_a_loud_durable_fact_at_settlement(tmp_path, monkeypatch):
+    """Owner directive: full-output consumption must be LOAD-BEARING before settlement.
+    Until now the D7 acknowledgement was pure disclosure — the module said so in words,
+    'nothing anywhere blocks on its absence' — so a delegated result could be paid for
+    and never collected with nothing but a boolean field to notice it.
+
+    WHY NOT A HARD GATE (the (a) option), proven by the call order right here:
+    `delegate_wait` SETTLES and only then builds the payload that STAGES the artifact.
+    Refusing to settle until the read happened would refuse the step that creates the
+    thing to read, and would hold back the LEDGER ROW for money already spent; cancelled
+    and failed runs commonly have no output at all and would strand in `open_runs`
+    forever. So (b): the money settles immediately and the OMISSION becomes a typed
+    durable fact on three surfaces — the settlement row, the parent's result, and the
+    health invariants — self-clearing the moment the read lands."""
+    import ouroboros.delegate_custody as dc
+    import ouroboros.tools.delegate as delegate
+    from ouroboros.gateways import claudexor as gw
+
+    class _Huge(_LiveRunStub):
+        def get_run(self, rid, **_kw):
+            return {"lastSeq": 9, "primaryOutput": "V" * 120_000,
+                    "summary": {"state": "succeeded", "spendUsd": 0.0,
+                                "effectiveAccess": "readonly"}}
+
+    monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Huge())
+    delegate._CUSTODY.clear()
+    delegate._READ_COVERAGE.clear()
+    dc.record_started(tmp_path, delegate._RunCustody(
+        run_id="run-live", task_id="t-a", route_id="r", model="m",
+        project_id="p", project_owned=False, root_task_id="t-a", ledger_root=str(tmp_path)))
+    ctx = _nanny_ctx(tmp_path)
+
+    first = json.loads(delegate._delegate_wait(ctx, "run-live", wait_sec=1))
+    artifact = first["output_delivery"]["artifact"]
+
+    # 1. The money settled — never held hostage to a disclosure.
+    assert first["settlement"]["settled"] is True
+    assert first["settlement"]["ledger_recorded"] is True
+    # 2. ...and the omission is named, on the settlement row AND in words to the parent.
+    assert "NOT COLLECTED" in first["result_not_collected"]
+    assert "delegate_run_settled_unread" in _event_types(tmp_path)
+    # 3. ...and it stays visible until the read happens.
+    unread = dc.settled_unread_outputs(tmp_path)
+    assert [c.run_id for c in unread] == ["run-live"]
+
+    # ONCE PER RUN, not once per poll: a re-wait on an already settled run must not
+    # append a second identical omission row (which would read as a second omission),
+    # while still telling the parent the result is STILL not collected.
+    repeat = json.loads(delegate._delegate_wait(ctx, "run-live", wait_sec=1))
+    assert "NOT COLLECTED" in repeat["result_not_collected"]
+    assert sum(1 for t in _event_types(tmp_path) if t == "delegate_run_settled_unread") == 1
+
+    # It survives the worker that settled it: the fact is durable, not process-local —
+    # and a restarted worker does not repeat the row either, because the flag replays.
+    delegate._CUSTODY.clear()
+    assert [c.run_id for c in dc.settled_unread_outputs(tmp_path)] == ["run-live"]
+    restarted = json.loads(delegate._delegate_wait(ctx, "run-live", wait_sec=1))
+    assert "NOT COLLECTED" in restarted["result_not_collected"]
+    assert sum(1 for t in _event_types(tmp_path) if t == "delegate_run_settled_unread") == 1
+
+    # THE READ CLEARS IT, on every surface, with no second settlement needed.
+    _read_artifact_whole(ctx, artifact)
+    assert dc.settled_unread_outputs(tmp_path) == []
+    again = json.loads(delegate._delegate_wait(ctx, "run-live", wait_sec=1))
+    assert "result_not_collected" not in again, "a collected result must stop nagging"
+    assert again["output_delivery"]["consumed"] is True
+
+    # NEGATIVE HALVES — the shapes that must never owe this, or the fact becomes noise
+    # and legitimate flows deadlock on a warning they cannot discharge:
+    #   (a) a run whose payload fit INLINE staged nothing;
+    inline = dc.RunCustody(run_id="r-inline", task_id="t-a", settled=True)
+    assert dc.settled_output_unread(inline) is False
+    #   (b) a run whose staged content was only a PREVIEW was never acknowledgeable;
+    preview = dc.RunCustody(run_id="r-prev", task_id="t-a", settled=True,
+                            output_artifact="delegated_runs/r-prev.json",
+                            output_complete=False)
+    assert dc.settled_output_unread(preview) is False
+    #   (c) a run that is not settled yet owes nothing here (it is still in flight).
+    live = dc.RunCustody(run_id="r-live", task_id="t-a", settled=False,
+                         output_artifact="delegated_runs/r-live.json",
+                         output_complete=True)
+    assert dc.settled_output_unread(live) is False
+    delegate._CUSTODY.clear()
+    delegate._READ_COVERAGE.clear()
+
+
+def test_no_post_fires_when_the_start_request_row_did_not_land(tmp_path, monkeypatch):
+    """Codex audit, claim 2, proven by run before fixing: with the event-log append
+    failing, the POST still fired and the run started with NO durable request row --
+    a worker death before record_started would leave a live overpowered run that
+    nothing durable names. The POST is now conditional on the row landing: a broken
+    event log refuses the start, typed, with the created registration retired."""
+    import ouroboros.tools.delegate as delegate
+    from ouroboros.gateways import claudexor as gw
+
+    posts = []
+
+    class _Stub(_LiveRunStub):
+        def start_run(self, request, *, idempotency_key=""):
+            posts.append(idempotency_key)
+            return {"runId": "run-1"}
+
+    # A READ-ONLY child (the stub serves readonly only): technical access alone decides
+    # the run shape now (#1609), so the premise is stated, not inferred from the ctx.
+    _select_transport_access(monkeypatch, "readonly")
+    monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
+    monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
+    from ouroboros import delegate_custody_current as current
+
+    real_publish = current.publish
+
+    def broken_publish(root, event, **kwargs):
+        if event.get("type") == "delegate_run_start_requested":
+            return False               # the reducing transaction's own "did not land" signal
+        return real_publish(root, event, **kwargs)
+
+    monkeypatch.setattr(current, "publish", broken_publish)
+    delegate._CUSTODY.clear()
+    out = json.loads(delegate._delegate_start(_nanny_ctx(tmp_path), "do the work").text)
+    delegate._CUSTODY.clear()
+    assert out["status"] == "refused"
+    assert out["reason"] == "start_request_row_unwritable"
+    assert out["definitely_unrun"] is True
+    assert posts == [], "POST is conditional on the durable request row"
+    assert "delegate_run_started" not in _event_types(tmp_path)
+
+
+def test_a_reader_selected_partial_line_is_not_covered(tmp_path, monkeypatch):
+    """A direct reader credits its exact max_chars window, never its omitted tail."""
+    import ouroboros.delegate_custody as dc
+    import ouroboros.tools.delegate as delegate
+    from ouroboros.gateways import claudexor as gw
+    from ouroboros.tools.core import _read_file
+
+    budget = 4096
+
+    class _Stub(_LiveRunStub):
+        def get_run(self, rid, **_kw):
+            # One ~120K-char JSON line in the staged artifact: longer than any
+            # deliverable read_file window.
+            return {"lastSeq": 9, "primaryOutput": "V" * 120_000,
+                    "summary": {"state": "succeeded", "spendUsd": 0.0}}
+
+    monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
+    delegate._CUSTODY.clear()
+    delegate._READ_COVERAGE.clear()
+    dc.record_started(tmp_path, delegate._RunCustody(
+        run_id="run-1", task_id="t-a", route_id="r", model="m",
+        project_id="p", project_owned=False, root_task_id="t-a", ledger_root=str(tmp_path)))
+    ctx = _nanny_ctx(tmp_path)
+    first = json.loads(delegate._delegate_wait(ctx, "run-1", wait_sec=1))
+    artifact = first["output_delivery"]["artifact"]
+
+    # A line-window sweep with an explicit character bound leaves the long-line gap.
+    line = 1
+    while line <= artifact["lines"]:
+        _read_file(ctx, path=artifact["path"], root=artifact["root"],
+                   start_line=line, max_lines=7, max_chars=budget)
+        line += 7
+    assert "delegate_run_output_consumed" not in _event_types(tmp_path), \
+        "a line the delivery layer cut is NOT covered"
+    delegate._CUSTODY.clear()
+    assert dc.replay(tmp_path)["run-1"].output_consumed is False
+
+    # The remainder is reachable through the sub-line cursor, and only DELIVERED
+    # chunks accumulate: advancing start_char across the long line completes coverage.
+    staged_lines = pathlib.Path(artifact["abs_path"]).read_text(encoding="utf-8").splitlines(keepends=True)
+    stride = budget
+    for line_no, line in enumerate(staged_lines, start=1):
+        offset = 0
+        while offset < len(line):
+            view = _read_file(ctx, path=artifact["path"], root=artifact["root"],
+                              start_line=line_no, max_lines=1, start_char=offset, max_chars=stride)
+            if offset:
+                assert f"(from char {offset} of this window" in view.splitlines()[0], \
+                    "the sub-line cursor must be disclosed in the header"
+            offset += stride
+    assert sum(1 for t in _event_types(tmp_path) if t == "delegate_run_output_consumed") == 1, \
+        "delivered-chunk coverage of every character is the acknowledgement"
+    delegate._CUSTODY.clear()
+
+
+def test_a_restaged_different_artifact_does_not_inherit_the_old_acknowledgement(
+        tmp_path, monkeypatch):
+    """Codex audit, claim 5, proven by run before fixing: after a full read + ack of
+    artifact A, a re-wait re-staged DIFFERENT bytes at the same path and the delivery
+    still said consumed:true — the old ack transferred by PATH to content never read.
+    The ack is hash-bound now: a re-stage with a different sha resets consumed (in
+    process and in replay), the new content owes its own full read, and a second
+    acknowledgement row for the new bytes is legitimate."""
+    import ouroboros.delegate_custody as dc
+    import ouroboros.tools.delegate as delegate
+    from ouroboros.gateways import claudexor as gw
+
+    class _Stub(_LiveRunStub):
+        payload = "A" * 30_000 + "\n" + ("x\n" * 200)
+        def get_run(self, rid, **_kw):
+            return {"lastSeq": 9, "primaryOutput": self.payload,
+                    "summary": {"state": "succeeded", "spendUsd": 0.0}}
+
+    stub = _Stub()
+    monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: stub)
+    delegate._CUSTODY.clear()
+    delegate._READ_COVERAGE.clear()
+    dc.record_started(tmp_path, delegate._RunCustody(
+        run_id="run-1", task_id="t-a", route_id="r", model="m",
+        project_id="p", project_owned=False, root_task_id="t-a", ledger_root=str(tmp_path)))
+    ctx = _nanny_ctx(tmp_path)
+
+    first = json.loads(delegate._delegate_wait(ctx, "run-1", wait_sec=1))
+    artifact = first["output_delivery"]["artifact"]
+    _read_artifact_whole(ctx, artifact)
+    acks = lambda: sum(1 for t in _event_types(tmp_path) if t == "delegate_run_output_consumed")
+    assert acks() == 1
+
+    # Identical re-stage keeps the acknowledgement: same bytes, same fact.
+    same = json.loads(delegate._delegate_wait(ctx, "run-1", wait_sec=1))
+    assert same["output_delivery"]["consumed"] is True
+
+    # DIFFERENT content re-staged at the same path: the old ack must not transfer.
+    stub.payload = "B" * 30_000 + "\n" + ("y\n" * 300)
+    # The body publishes the newer exact observation independently of an
+    # immediate retained-result read; waiting itself no longer polls the engine.
+    from ouroboros.delegate_collection import observe_run
+    assert observe_run(tmp_path, dc.replay(tmp_path)["run-1"],
+                       {**stub.get_run("run-1"), "lastSeq": 10})
+    changed = json.loads(delegate._delegate_wait(ctx, "run-1", wait_sec=1))
+    artifact2 = changed["output_delivery"]["artifact"]
+    assert artifact2["sha256"] != artifact["sha256"]
+    assert changed["output_delivery"]["consumed"] is False, \
+        "an acknowledgement names bytes, never a path"
+    delegate._CUSTODY.clear()
+    assert dc.replay(tmp_path)["run-1"].output_consumed is False, \
+        "the reset must survive a worker restart"
+
+    # The new content earns its own acknowledgement by being read whole.
+    _read_artifact_whole(ctx, artifact2)
+    assert acks() == 2
+    delegate._CUSTODY.clear()
+    assert dc.replay(tmp_path)["run-1"].output_consumed is True
+    delegate._CUSTODY.clear()
+
+
+def test_a_truncated_primary_output_is_resolved_from_the_artifact_route(
+        tmp_path, monkeypatch):
+    """`primaryOutput.text` on the run detail is a bounded 256 KiB PREVIEW
+    (control-api PRIMARY_OUTPUT_PREVIEW_BYTES) beside `bytes` and `truncated`. A
+    truncated preview must never be staged or acknowledged as the result: the full
+    file comes from GET /v2/runs/:id/artifacts/<path>, verified against the reported
+    size before it may wear the plain name."""
+    import ouroboros.delegate_custody as dc
+    import ouroboros.tools.delegate as delegate
+    from ouroboros.gateways import claudexor as gw
+
+    full_text = "W" * 120_000
+    preview = full_text[:4_000]
+    fetched_paths = []
+
+    class _Stub(_LiveRunStub):
+        def get_run(self, rid, **_kw):
+            return {"lastSeq": 9,
+                    "primaryOutput": {"kind": "answer", "path": "final/answer.md",
+                                      "text": preview, "bytes": len(full_text),
+                                      "truncated": True},
+                    "summary": {"state": "succeeded", "spendUsd": 0.0}}
+        def get_run_artifact(self, rid, path):
+            fetched_paths.append((rid, path))
+            return full_text.encode("utf-8")
+
+    monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
+    delegate._CUSTODY.clear()
+    delegate._READ_COVERAGE.clear()
+    dc.record_started(tmp_path, delegate._RunCustody(
+        run_id="run-1", task_id="t-a", route_id="r", model="m",
+        project_id="p", project_owned=False, root_task_id="t-a", ledger_root=str(tmp_path)))
+    ctx = _nanny_ctx(tmp_path)
+
+    out = json.loads(delegate._delegate_wait(ctx, "run-1", wait_sec=1))
+    assert fetched_paths == [("run-1", "final/answer.md")], \
+        "the full artifact must be fetched from the artifacts route, not trusted from the preview"
+    delivery = out["output_delivery"]
+    assert delivery["primary_output_full"]["fetched"] is True
+    assert delivery["primary_output_full"]["verified"] == "size"
+    artifact = delivery["artifact"]
+    staged = json.loads(pathlib.Path(artifact["abs_path"]).read_text(encoding="utf-8"))
+    assert staged["primary_output"]["text"] == full_text, "the STAGED result must be the full text"
+    assert staged["primary_output"]["truncated"] is False
+
+    # And the verified-full staging is what makes the acknowledgement reachable.
+    _read_artifact_whole(ctx, artifact)
+    assert sum(1 for t in _event_types(tmp_path) if t == "delegate_run_output_consumed") == 1
+    delegate._CUSTODY.clear()
+
+
+def test_an_unresolvable_truncated_output_is_disclosed_and_never_acknowledged(
+        tmp_path, monkeypatch):
+    """When the full artifact cannot be fetched — or fails size and preview-prefix
+    verification — the result stays a PREVIEW: typed disclosure in the delivery, no
+    acknowledgement ever (even after reading the staged file whole), and the custody
+    replay says the staging was incomplete. Disclosure, not refusal: the preview is
+    still delivered and readable."""
+    import ouroboros.delegate_custody as dc
+    import ouroboros.tools.delegate as delegate
+    from ouroboros.gateways import claudexor as gw
+
+    class _FetchFails(_LiveRunStub):
+        def get_run(self, rid, **_kw):
+            return {"lastSeq": 9,
+                    "primaryOutput": {"kind": "answer", "path": "final/answer.md",
+                                      "text": "small preview", "bytes": 999_999,
+                                      "truncated": True},
+                    "summary": {"state": "succeeded", "spendUsd": 0.0}}
+        def get_run_artifact(self, rid, path):
+            raise gw.ClaudexorUnavailable("http_404", "no such artifact", status_code=404)
+
+    monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _FetchFails())
+    delegate._CUSTODY.clear()
+    delegate._READ_COVERAGE.clear()
+    dc.record_started(tmp_path, delegate._RunCustody(
+        run_id="run-1", task_id="t-a", route_id="r", model="m",
+        project_id="p", project_owned=False, root_task_id="t-a", ledger_root=str(tmp_path)))
+    ctx = _nanny_ctx(tmp_path)
+
+    # Small payload -> the INLINE branch: even inline-fitting must not claim complete.
+    out = json.loads(delegate._delegate_wait(ctx, "run-1", wait_sec=1))
+    delivery = out["output_delivery"]
+    assert delivery["complete"] is False and delivery["consumed"] is False
+    assert delivery["primary_output_full"]["fetched"] is False
+    assert "http_404" in delivery["primary_output_full"]["reason"]
+    assert "INCOMPLETE AT THE SOURCE" in delivery["note"]
+
+    # Large unverifiable payload -> the SPILL branch: staged as incomplete, unackable.
+    big_preview = "P" * 120_000
+
+    class _WrongBytes(_FetchFails):
+        def get_run(self, rid, **_kw):
+            return {"lastSeq": 9,
+                    "primaryOutput": {"kind": "answer", "path": "final/answer.md",
+                                      "text": big_preview, "bytes": 999_999,
+                                      "truncated": True},
+                    "summary": {"state": "succeeded", "spendUsd": 0.0}}
+        def get_run_artifact(self, rid, path):
+            return b"entirely different content"     # fails size AND prefix checks
+
+    monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _WrongBytes())
+    dc.record_started(tmp_path, delegate._RunCustody(
+        run_id="run-2", task_id="t-a", route_id="r", model="m",
+        project_id="p", project_owned=False, root_task_id="t-a", ledger_root=str(tmp_path)))
+    out2 = json.loads(delegate._delegate_wait(ctx, "run-2", wait_sec=1))
+    delivery2 = out2["output_delivery"]
+    assert delivery2["artifact"], "the preview is still delivered, staged and readable"
+    assert delivery2["primary_output_full"]["fetched"] is True
+    assert delivery2["primary_output_full"]["verified"] == ""
+    assert "verification_failed" in delivery2["primary_output_full"]["reason"]
+    spilled = [json.loads(l) for l in (tmp_path / "logs" / "events.jsonl").read_text().splitlines()
+               if '"delegate_run_output_spilled"' in l]
+    assert spilled[-1]["full_content"] is False
+
+    # Reading the staged preview whole must NOT acknowledge: it is not the result.
+    _read_artifact_whole(ctx, delivery2["artifact"])
+    assert "delegate_run_output_consumed" not in _event_types(tmp_path)
+    delegate._CUSTODY.clear()
+    assert dc.replay(tmp_path)["run-2"].output_complete is False
+    assert dc.replay(tmp_path)["run-2"].output_consumed is False
+    delegate._CUSTODY.clear()
+
+
+def test_a_reconciled_run_with_an_unread_artifact_is_visible_as_uncollected(
+        tmp_path, monkeypatch):
+    """The third "launched and never collected" recurrence, made structural: when the
+    reconciler closes a run whose staged artifact has no EOF acknowledgement, its
+    durable RECONCILED row says so — `staged_output_consumed: false` beside the
+    artifact path — instead of the loss being inferable only from ledger discipline."""
+    import ouroboros.delegate_custody as dc
+    import ouroboros.tools.delegate as delegate
+    from ouroboros.gateways import claudexor as gw
+
+    class _Stub(_LiveRunStub):
+        def get_run(self, rid, **_kw):
+            return {"lastSeq": 9, "primaryOutput": "V" * 120_000,
+                    "summary": {"state": "succeeded", "spendUsd": 0.0}}
+        def remove_project(self, pid): pass
+
+    stub = _Stub()
+    monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: stub)
+    # Decoupled: the run is held open for the sweep by an honest ledger
+    # failure, not by a busy project retirement.
+    import ouroboros.usage_accounting as ua
+    ledger_blocked = {"now": True}
+    real_record = ua.record_subscription_session
+
+    def _flaky_ledger(*args, **kwargs):
+        if ledger_blocked["now"]:
+            raise ua.UsageAccountingError("usage accounting lock unavailable")
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(ua, "record_subscription_session", _flaky_ledger)
+    delegate._CUSTODY.clear()
+    dc.record_started(tmp_path, delegate._RunCustody(
+        run_id="run-1", task_id="t-gone", route_id="r", model="m",
+        project_id="prj", project_owned=True, root_task_id="t-gone", ledger_root=str(tmp_path)))
+
+    # Nanny sees the staged preview; settlement cannot finish; the task dies
+    # without reading the artifact to EOF.
+    out = json.loads(delegate._delegate_wait(_nanny_ctx(tmp_path, "t-gone"), "run-1", wait_sec=1))
+    assert out["output_delivery"]["artifact"], "this scenario is about a staged artifact"
+    assert out["settlement"]["settled"] is False
+    delegate._CUSTODY.clear()          # the worker is gone
+
+    ledger_blocked["now"] = False
+    results = dc.reconcile_orphaned_runs(tmp_path, {"t-alive"}, gateway_factory=lambda: stub)
+    assert [r["run_id"] for r in results] == ["run-1"]
+    assert results[0]["staged_output_consumed"] is False
+    staged = out["output_delivery"]["artifact"]
+    assert results[0]["staged_output"] == staged["source"]["path"]
+    assert results[0]["staged_output_source"] == staged["source"], \
+        "the retained source names its staging task beside the store path (#1573)"
+    reconciled = [json.loads(l) for l
+                  in (tmp_path / "logs" / "events.jsonl").read_text().splitlines()
+                  if '"delegate_run_reconciled"' in l]
+    assert reconciled and reconciled[-1]["staged_output_consumed"] is False, \
+        "the uncollected shape must be durable, not only returned"
+    delegate._CUSTODY.clear()
+
+
+def test_the_progress_payload_survives_a_verbose_harness_too(tmp_path, monkeypatch):
+    """The sibling surface of the terminal payload: a harness-supplied timeline title is
+    unbounded, and twelve long ones push the PROGRESS payload past the same cap, where
+    head-truncation severs the same JSON."""
+    from ouroboros.loop_tool_execution import _truncate_tool_result
+    from ouroboros.tool_capabilities import tool_result_limit
+
+    import ouroboros.tools.delegate as delegate
+    from ouroboros.gateways import claudexor as gw
+
+    published = 30                   # what this harness puts on the timeline, in ONE batch
+
+    class _Chatty(_LiveRunStub):
+        def get_run(self, rid, *, timeout_sec=None):
+            return {"lastSeq": 42, "summary": {"state": "running", "effectiveAccess": "readonly"},
+                    "timeline": [{"type": "tool", "title": "T" * 20_000, "severity": "info"}
+                                 for _ in range(published)]}
+
+    monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Chatty())
+    delegate._CUSTODY.clear()
+    delegate._CUSTODY["run-1"] = delegate._RunCustody(
+        run_id="run-1", task_id="t-a", route_id="r", model="m", project_id="p", project_owned=False)
+    raw = delegate._delegate_wait(_nanny_ctx(tmp_path), "run-1", wait_sec=1, since_seq=1)
+    delegate._CUSTODY.clear()
+    assert len(raw) <= tool_result_limit("delegate_wait")
+    assert _truncate_tool_result(raw, "delegate_wait", {}) == raw
+    payload = json.loads(raw)
+    assert payload["status"] == "progress"
+    # P34R.5: the bound is the SHARED disclosed contract, not a hand-rolled slice —
+    # every cut label carries the omission marker AND the original length.
+    assert all("OMISSION NOTE" in row["title"] and "original length 20000" in row["title"]
+               for row in payload["timeline_tail"])
+    assert all(len(row["title"]) < 500 for row in payload["timeline_tail"])
+    # Every advance accounts for its labels: kept + disclosed-shed == what the
+    # harness ACTUALLY PUBLISHED, no kept label past the bound (shedding regime
+    # itself is pinned in test_label_shedding_is_disclosed_...). The old
+    # `== _TIMELINE_TAIL` pinned the defect: kept(12)+shed(0) passed while 18
+    # observation-dropped rows went undisclosed — the tail is display width,
+    # never arrival count.
+    advances = payload["advances"]
+    assert advances, payload
+    for row in advances:
+        assert "advances_omitted" not in row, row      # a head marker has no `events`
+        kept, shed = row["events"], row.get("events_omitted", 0)
+        assert len(kept) + shed == published, row
+        assert kept or shed, row                       # never a silently empty row
+        assert all("OMISSION NOTE" in event["title"] for event in kept), row
+        assert all(len(event["title"]) < 500 for event in kept), row

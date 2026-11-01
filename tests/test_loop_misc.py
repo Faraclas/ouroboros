@@ -1,0 +1,557 @@
+"""Loop miscellaneous regressions: the message stream and pacing seams.
+
+Consolidated from former ``test_loop_incoming_messages.py`` (image payload
+preservation) and ``test_loop_skill_finalization.py``, then divided by theme
+(the v7 L-B test split): the self-authored skill finalization gate lives in
+``test_loop_skill_finalization.py``, the ``run_llm_loop`` round/finalization
+suite in ``test_run_llm_loop.py`` and the image auto-attach seam in
+``test_loop_image_attach.py``.
+
+Kept as the home for loop micro-regressions that do not justify a standalone
+file: message draining, owner directives, self-check and pacing injections,
+the final-answer latch, the provider-death retry wall and the per-task
+web gate.
+"""
+from __future__ import annotations
+
+import json
+import queue
+from types import SimpleNamespace
+
+import pytest
+
+import ouroboros.loop as loop_mod
+from ouroboros.loop_llm_call import RETRY_WALL_EXHAUSTED_KEY
+from ouroboros.loop import (
+    _latch_final_answer_marker,
+    _server_web_allowed_by_task,
+    run_llm_loop,
+)
+from ouroboros.loop_messages import _initialize_owner_directives
+from ouroboros.loop_nudges import _inject_round_checkpoints, _maybe_inject_time_budget_milestone
+from ouroboros.loop_round_limits import _drain_incoming_messages
+
+
+
+# ---------------------------------------------------------------------------
+# _drain_incoming_messages — telegram image payload preservation
+# ---------------------------------------------------------------------------
+
+
+def test_drain_incoming_messages_preserves_image_payload(tmp_path):
+    import base64
+    from tests.test_live_image_delivery import pixels
+
+    raw = pixels()
+    encoded = base64.b64encode(raw).decode()
+    messages: list = []
+    incoming_messages: queue.Queue = queue.Queue()
+    incoming_messages.put({
+        "text": "photo from telegram",
+        "image_base64": encoded,
+        "image_mime": "image/png",
+        "image_caption": "photo from telegram",
+    })
+
+    _drain_incoming_messages(
+        messages=messages,
+        incoming_messages=incoming_messages,
+        drive_root=tmp_path,
+        task_id="",
+        event_queue=None,
+        _owner_msg_seen=set(),
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["role"] == "user"
+    content = messages[0]["content"]
+    assert isinstance(content, list)
+    assert content[0]["type"] == "text"
+    assert content[0]["text"] == "[Message from my human]: photo from telegram"
+    image, = [block for block in content if block["type"] == "image_url"]
+    assert image["image_url"]["url"] == "data:image/png;base64," + encoded
+    from pathlib import Path
+    assert Path(image["_source_path"]).read_bytes() == raw
+
+
+def test_owner_directives_survive_compaction_without_control_prose(tmp_path):
+    from ouroboros import task_pacing
+    from ouroboros.deadline_utils import parse_deadline_ts
+    from ouroboros.owner_mailbox import (
+        KIND_FINALIZE_NOW,
+        drain_owner_entries,
+        write_owner_message,
+    )
+
+    # An owner-started root: the door's stamp keeps the first text an owner row.
+    ctx = SimpleNamespace(task_metadata={"origin_message_ref": {"chat_id": 1, "client_message_id": "cm-root"}})
+    messages = [
+        {"role": "system", "content": "policy"},
+        {"role": "user", "content": "Initial requirement verbatim"},
+    ]
+    _initialize_owner_directives(ctx, messages)
+    incoming: queue.Queue = queue.Queue()
+    incoming.put({"text": "direct follow-up", "client_message_id": "direct-1"})
+    write_owner_message(tmp_path, "mailbox follow-up", task_id="root", msg_id="mail-1")
+    write_owner_message(
+        tmp_path, "deadline control", task_id="root", msg_id="control-1",
+        kind=KIND_FINALIZE_NOW,
+    )
+    control_entry = next(
+        row for row in drain_owner_entries(tmp_path, "root")
+        if row["msg_id"] == "control-1"
+    )
+    expected_deadline = (
+        parse_deadline_ts(control_entry["ts"]).timestamp()
+        + task_pacing.effective_finalization_reserve_sec(ctx)
+    )
+
+    controls = _drain_incoming_messages(
+        messages,
+        incoming,
+        tmp_path,
+        "root",
+        None,
+        set(),
+        owner_ctx=ctx,
+    )
+
+    assert set(controls) == {"finalize_now", "finalize_deadline_ts"}
+    assert controls["finalize_now"] == "deadline control"
+    assert controls["finalize_deadline_ts"] == expected_deadline
+    assert [row["source"] for row in ctx._owner_directives] == [
+        "initial_user", "direct_incoming", "owner_mailbox",
+    ]
+    assert ctx._owner_directives[0]["content"] == "Initial requirement verbatim"
+    assert ctx._owner_directives[1]["msg_id"] == "direct-1"
+    assert ctx._owner_directives[2] == {
+        "source": "owner_mailbox",
+        "content": "mailbox follow-up",
+        "msg_id": "mail-1",
+    }
+    assert "deadline control" not in json.dumps(ctx._owner_directives)
+
+
+def _simulate_rounds(monkeypatch, ctx, *, rounds=60, minutes_per_round=2, cost_ceiling=None, cost_per_round=0.0):
+    """Drive the real per-round injector over a simulated run; return (messages, checkpoints)."""
+    from datetime import datetime, timedelta, timezone
+
+    from ouroboros import loop
+
+    start = datetime(2026, 6, 10, 0, 0, tzinfo=timezone.utc)
+    clock = {"now": start}
+    monkeypatch.setattr("ouroboros.task_pacing.utc_now", lambda: clock["now"])
+    monkeypatch.setattr(loop, "_loop_tree_accounting", lambda **_kw: None)
+    checkpoints: list = []
+    monkeypatch.setattr(loop, "_emit_checkpoint_event", lambda _q, _id, _logs, payload: checkpoints.append(payload))
+    messages = [{"role": "user", "content": "solve"}]
+    usage: dict = {"cost": 0.0}
+    for round_idx in range(1, rounds + 1):
+        clock["now"] = start + timedelta(minutes=minutes_per_round * round_idx)
+        usage["cost"] = cost_per_round * round_idx
+        _inject_round_checkpoints(
+            round_idx=round_idx, messages=messages, accumulated_usage=usage, tools=SimpleNamespace(_ctx=ctx),
+            event_queue=None, task_id="sim", drive_logs=None, budget_remaining_usd=None, cost_ceiling=cost_ceiling)
+    return messages, checkpoints
+
+
+def test_a_two_hour_sixty_round_run_gets_no_periodic_host_note(monkeypatch):
+    """#1748: the 15-round self-check, the 10-minute [PACING] note and the nanny's
+    8-round/$2 economics reminder are gone. A 60-round, 2-hour nanny run without a
+    deadline or an in-task ceiling gets NO host note and NO checkpoint event at all
+    (base witness: the same loop injected checkpoints at rounds 15/30/45/60, a PACING
+    note every 10 minutes and proportional nanny reminders)."""
+    ctx = SimpleNamespace(task_metadata={"created_at": "2026-06-10T00:00:00Z"}, task_contract={},
+                          _nanny_route_dispatched=True, _nanny_delegate_baseline=None,
+                          _nanny_metered_progress={"round": 60, "cost": 30.0})
+    messages, checkpoints = _simulate_rounds(monkeypatch, ctx, cost_per_round=0.5)
+    assert messages == [{"role": "user", "content": "solve"}] and checkpoints == []
+
+
+def test_a_bounded_run_states_each_threshold_crossing_exactly_once(monkeypatch):
+    """Owner 13 Oct: the one-time crossing fact stays. Over the same 2-hour run, a
+    2-hour deadline crosses 50/25/10% once each, and a $10 in-task ceiling crosses
+    50/25% remaining, ~80% spent and 10% remaining once each — no repeats, no advice."""
+    ctx = SimpleNamespace(task_metadata={"created_at": "2026-06-10T00:00:00Z",
+                                         "deadline_at": "2026-06-10T02:00:00Z"}, task_contract={})
+    ceiling = __import__("ouroboros.task_pacing", fromlist=["CostCeiling"]).CostCeiling(state="active", ceiling_usd=10.0)
+    messages, checkpoints = _simulate_rounds(monkeypatch, ctx, rounds=59, cost_ceiling=ceiling, cost_per_round=0.17)
+    kinds = [(row["checkpoint_kind"], row.get("milestone")) for row in checkpoints]
+    assert [k for k in kinds if k[0] == "time_budget_milestone"] == [
+        ("time_budget_milestone", "50%"), ("time_budget_milestone", "25%"), ("time_budget_milestone", "10%")]
+    assert [k for k in kinds if k[0].startswith("cost_budget")] == [
+        ("cost_budget_milestone", "50%"), ("cost_budget_milestone", "25%"),
+        ("cost_budget_wrapup", None), ("cost_budget_milestone", "10%")]
+    text = "\n".join(str(row.get("content")) for row in messages)
+    for advice in ("planning context", "shortest path", "WRITE", "converging", "CHECKPOINT", "[PACING"):
+        assert advice not in text, advice
+
+
+def test_time_budget_milestone_injects_once_per_threshold(monkeypatch):
+    messages = [{"role": "user", "content": "solve"}]
+    ctx = SimpleNamespace(
+        task_metadata={
+            "created_at": "2026-06-10T00:00:00Z",
+            "deadline_at": "2026-06-10T10:00:00Z",
+        },
+    )
+
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr("ouroboros.task_pacing.utc_now", lambda: datetime(2026, 6, 10, 5, 1, tzinfo=timezone.utc))
+
+    injected = _maybe_inject_time_budget_milestone(
+        messages,
+        SimpleNamespace(_ctx=ctx),
+        event_queue=None,
+        task_id="task-time",
+        drive_logs=None,
+    )
+    injected_again = _maybe_inject_time_budget_milestone(messages, SimpleNamespace(_ctx=ctx))
+
+    assert injected is True
+    assert injected_again is False
+    assert "[TIME BUDGET" in messages[-1]["content"]
+    assert "50% remaining" in messages[-1]["content"]
+    assert ctx._time_budget_milestones_seen == {"50%"}
+
+
+def test_no_deadline_gets_no_time_notice_with_or_without_the_protocol(monkeypatch):
+    """No deadline_at and no execution budget: no [PACING] note and no FINAL ANSWER
+    salvage phrase at any elapsed time (the facts line carries elapsed time)."""
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr("ouroboros.task_pacing.utc_now", lambda: datetime(2026, 6, 10, 0, 20, tzinfo=timezone.utc))
+    for contract in ({}, {"answer_protocol": "final_answer_line"}):
+        messages = [{"role": "user", "content": "solve"}]
+        ctx = SimpleNamespace(task_metadata={"created_at": "2026-06-10T00:00:00Z"}, task_contract=contract)
+        assert _maybe_inject_time_budget_milestone(
+            messages, SimpleNamespace(_ctx=ctx), accumulated_usage={"cost": 1.25}, task_id="t") is False
+        assert messages == [{"role": "user", "content": "solve"}]
+
+
+def test_latch_final_answer_marker_captures_explicit_marker_only():
+    trace = {"tool_calls": [{"tool": "read_file"}]}
+    _latch_final_answer_marker(trace, "analysis\nFINAL ANSWER: 123")
+    assert trace["best_valid_final_answer"] == "123"
+    assert trace["best_valid_final_answer_tools"] == 1
+    _latch_final_answer_marker(trace, "answer-ish prose without marker")
+    assert trace["best_valid_final_answer"] == "123"
+
+
+def test_latch_final_answer_marker_counts_same_turn_tool_calls():
+    trace = {"tool_calls": [{"tool": "read_file"}]}
+    current = [{"function": {"name": "run_command"}}, {"function": {"name": "verify_and_record"}}]
+    _latch_final_answer_marker(trace, "FINAL ANSWER: draft", current_tool_calls=current)
+    assert trace["best_valid_final_answer"] == "draft"
+    # Same-turn tool calls are newer grounding and must invalidate this latch unless
+    # the model re-emits the marker after those tools complete.
+    assert trace["best_valid_final_answer_tools"] == 1
+
+
+def test_server_web_allowed_respects_task_resource_contract():
+    assert _server_web_allowed_by_task(SimpleNamespace(task_contract={})) is True
+    assert _server_web_allowed_by_task(SimpleNamespace(task_contract={"allowed_resources": {"web": False}})) is False
+    assert _server_web_allowed_by_task(SimpleNamespace(task_contract={"allowed_resources": {"network": False}})) is False
+    assert _server_web_allowed_by_task(SimpleNamespace(task_contract={"disabled_tools": ["web_search"]})) is True
+
+
+def test_deadline_local_finalize_gate(monkeypatch):
+    """Self-finalize only when a REAL deadline is within the grace window."""
+    from datetime import datetime, timezone
+
+    captured = {}
+
+    def _fake_final(ctx, *, prompt, fallback_text, reason_code):
+        captured["reason_code"] = reason_code
+        return ("BEST EFFORT", {"reason_code": reason_code}, {})
+
+    monkeypatch.setattr(loop_mod, "_forced_final_answer", _fake_final)
+    # v6.54.4: the gate consults the task_pacing effective reserve SSOT.
+    monkeypatch.setattr("ouroboros.task_pacing.effective_finalization_reserve_sec", lambda ctx: 120.0)
+    monkeypatch.setattr(loop_mod, "utc_now", lambda: datetime(2026, 6, 10, 9, 59, 0, tzinfo=timezone.utc))
+
+    # Far from deadline (10:30 vs now 09:59 -> ~31 min left > 120s) -> no finalize.
+    far = SimpleNamespace(_ctx=SimpleNamespace(task_metadata={"deadline_at": "2026-06-10T10:30:00Z"}))
+    assert loop_mod._maybe_deadline_local_finalize(SimpleNamespace(), far) is None
+    # Within grace (10:00 vs now 09:59 -> 60s < 120s) -> finalize best-effort.
+    near = SimpleNamespace(_ctx=SimpleNamespace(task_metadata={"deadline_at": "2026-06-10T10:00:00Z"}))
+    result = loop_mod._maybe_deadline_local_finalize(SimpleNamespace(), near)
+    assert result is not None and result[0] == "BEST EFFORT"
+    assert captured["reason_code"] == "deadline_local"
+    # No deadline_at at all -> never fires (no synthesized deadline).
+    none_ctx = SimpleNamespace(_ctx=SimpleNamespace(task_metadata={}))
+    assert loop_mod._maybe_deadline_local_finalize(SimpleNamespace(), none_ctx) is None
+
+
+# ---------------------------------------------------------------------------
+# Skill finalization gate (self-authored skills must reach ready+enabled
+# before the loop accepts a final text response)
+# ---------------------------------------------------------------------------
+
+
+def test_managed_unknown_waits_without_cross_model_fallback_until_deadline(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from ouroboros import loop_transport
+    from ouroboros.tools.registry import ToolRegistry
+
+    class FakeLLM:
+        def default_model(self):
+            return "test-model"
+
+    calls = {"primary": 0, "fallback": 0}
+
+    def ambiguous(*args, **_kwargs):
+        calls["primary"] += 1
+        usage = args[10]
+        usage["_last_llm_error"] = "provider outcome unknown"
+        usage["_last_llm_error_kind"] = "provider_outcome_unknown"
+        usage["_last_llm_retry_same_request"] = False
+        return None, 0.0
+
+    def forbidden_fallback(**_kwargs):
+        calls["fallback"] += 1
+        raise AssertionError("unknown physical work must stop the paid chain")
+
+    monkeypatch.setattr(loop_mod, "call_llm_with_retry", ambiguous)
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", forbidden_fallback)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    waits = []
+
+    def expire_while_waiting(seconds, wake_check):
+        waits.append(seconds)
+        registry._ctx.task_metadata["deadline_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        return False
+
+    monkeypatch.setattr(loop_transport, "interruptible_wait_sleep", expire_while_waiting)
+
+    result, usage, _trace = run_llm_loop(
+        messages=[{"role": "user", "content": "go"}],
+        tools=registry,
+        llm=FakeLLM(),
+        drive_logs=tmp_path,
+        emit_progress=lambda _text, *, incident=None: None,
+        incoming_messages=queue.Queue(),
+        task_id="unknown-provider-task",
+        drive_root=tmp_path,
+    )
+
+    assert calls == {"primary": 1, "fallback": 0}
+    assert len(waits) == 1
+    assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
+    assert "no retry or paid fallback" in result
+
+
+# ---------------------------------------------------------------------------
+# OB-01 — provider death does not re-burn the budget on a second forced call
+# ---------------------------------------------------------------------------
+
+
+def _provider_death_ctx(tmp_path, accumulated):
+    """A minimal forced-rail context. ``tools=None`` on purpose: every forced
+    helper then takes its documented tool-less path, so the test observes the
+    loop's own decisions instead of a registry stub's."""
+    return loop_mod._RoundLimitContext(
+        messages=[
+            {"role": "user", "content": "do the thing"},
+            {"role": "assistant", "content": "PARTIAL RESULT: step one is done."},
+        ],
+        llm=SimpleNamespace(),
+        active_model="openai/gpt-5.5",
+        active_effort="medium",
+        max_retries=3,
+        drive_logs=tmp_path,
+        task_id="task-provider-death",
+        round_idx=7,
+        event_queue=None,
+        accumulated_usage=accumulated,
+        task_type="task",
+        active_use_local=False,
+        max_rounds=200,
+        drive_root=tmp_path,
+    )
+
+
+def _count_forced_helpers(monkeypatch):
+    """Wrap the non-model work of the forced rail with call counters, keeping the
+    REAL implementations so "it still runs" is observed, not simulated."""
+    seen = {"model": [], "services": [], "drain": []}
+    real_services = loop_mod._finalize_forced_services
+    real_drain = loop_mod._drain_forced_owner_directives
+
+    def _model(ctx):
+        seen["model"].append(1)
+        return "FRESH FORCED ANSWER"
+
+    def _services(ctx, trace):
+        seen["services"].append(1)
+        return real_services(ctx, trace)
+
+    def _drain(ctx, trace):
+        seen["drain"].append(1)
+        return real_drain(ctx, trace)
+
+    monkeypatch.setattr(loop_mod, "_call_forced_model_once", _model)
+    monkeypatch.setattr(loop_mod, "_finalize_forced_services", _services)
+    monkeypatch.setattr(loop_mod, "_drain_forced_owner_directives", _drain)
+    return seen
+
+
+def test_provider_death_skips_the_forced_call_when_the_retry_wall_is_spent(tmp_path, monkeypatch):
+    """The whole point of OB-01: the transport already spent the same-model retry
+    wall, so the forced finalization must NOT re-burn the budget on a request that
+    cannot land. Everything the forced rail owns besides the call still runs."""
+    seen = _count_forced_helpers(monkeypatch)
+    accumulated = {  # realistic transport stamps of an exhausted transient wall
+        RETRY_WALL_EXHAUSTED_KEY: True,
+        "execution_status": "infra_failed",
+        "reason_code": "llm_api_error",
+        "_last_llm_error_kind": "provider_transient",
+    }
+    ctx = _provider_death_ctx(tmp_path, accumulated)
+    messages_before = [dict(m) for m in ctx.messages]
+
+    text, usage, trace = loop_mod._handle_provider_unavailable(ctx)
+
+    assert seen["model"] == []                    # ZERO llm calls from this rail
+    assert len(seen["services"]) == 1             # services still finalized
+    assert len(seen["drain"]) == 1                # exactly ONE directive drain
+    # Salvage still delivered, and the delivery candidate still packaged.
+    assert "PARTIAL RESULT: step one is done." in text
+    assert trace["forced_finalization"]["reason_code"] == "provider_unavailable"
+    # Replay durability: an unsent prompt must never reach the transcript, or a
+    # resume would read it as a request the model ignored.
+    assert [dict(m) for m in ctx.messages] == messages_before
+    assert not any(
+        "[PROVIDER_UNAVAILABLE]" in str(m.get("content") or "") for m in ctx.messages
+    )
+    # False completion: an outage is an INFRA FAILURE, and no model answer was
+    # extracted, so the best_effort gate must not be handed a typed success fact.
+    assert usage["reason_code"] == "provider_unavailable"
+    assert usage["execution_status"] == "infra_failed"
+    assert "_best_effort_extracted" not in usage
+
+
+def test_provider_death_still_makes_the_forced_call_when_the_wall_is_unspent(tmp_path, monkeypatch):
+    """The skip is not the new default. A PERMANENT refusal (auth/quota/bad
+    request) fails fast and leaves the wall unspent, so the forced rail keeps the
+    one chance its class is entitled to."""
+    seen = _count_forced_helpers(monkeypatch)
+    accumulated = {}  # no marker: the transport never exhausted its retries
+    ctx = _provider_death_ctx(tmp_path, accumulated)
+
+    text, usage, _trace = loop_mod._handle_provider_unavailable(ctx)
+
+    assert seen["model"] == [1]
+    assert "FRESH FORCED ANSWER" in text
+    assert usage["execution_status"] == "infra_failed"
+    assert any(
+        "[PROVIDER_UNAVAILABLE]" in str(m.get("content") or "") for m in ctx.messages
+    )
+
+
+@pytest.mark.parametrize(
+    "marker, expect_call",
+    [
+        ("unexpected-string", False),
+        (1, False),
+        ({"nested": "garbage"}, False),
+        (0, True),
+        ("", True),
+        (None, True),
+    ],
+    ids=["truthy_str", "truthy_int", "truthy_dict", "zero", "empty_str", "none"],
+)
+def test_malformed_retry_wall_marker_reads_as_a_plain_truth_value(
+    tmp_path, monkeypatch, marker, expect_call,
+):
+    """A shared usage dict can hold anything, so the read is `bool(...)` and
+    nothing else: any truthy value means the wall is spent, any falsy value means
+    it is not. No shape assumption, no crash, no silent third behaviour."""
+    seen = _count_forced_helpers(monkeypatch)
+    ctx = _provider_death_ctx(tmp_path, {
+        RETRY_WALL_EXHAUSTED_KEY: marker,
+        "execution_status": "infra_failed", "reason_code": "llm_api_error",
+    })
+
+    _text, usage, _trace = loop_mod._handle_provider_unavailable(ctx)
+
+    assert seen["model"] == ([1] if expect_call else [])
+    assert usage["execution_status"] == "infra_failed"
+
+
+@pytest.mark.parametrize(
+    "reason_code, marker",
+    [
+        ("round_limit", "[ROUND_LIMIT] wrap up"),
+        ("finalization_grace", "[FINALIZE_NOW] wrap up"),
+        ("deadline_local", "[DEADLINE] wrap up"),
+        ("owner_requested_finalization", "[OWNER_STOP] wrap up"),
+        ("budget_exhausted", "[BUDGET] wrap up"),
+        ("children_unabsorbed", "[CHILDREN] wrap up"),
+    ],
+)
+def test_other_forced_rails_never_skip_even_with_the_wall_marker_set(
+    tmp_path, monkeypatch, reason_code, marker,
+):
+    """The skip is gated on the provider-death rail SPECIFICALLY. Every OTHER
+    reason code `loop.py` passes to `_forced_final_answer` — round limit,
+    finalization grace, deadline, owner stop, budget exhaustion and unabsorbed
+    children — still makes its one forced call even when a transient wall was
+    spent earlier in the same task: those rails end for their own reasons, not
+    because the provider is unreachable. The list is exhaustive against the
+    `reason_code=` literals in loop.py, so a new rail cannot silently inherit
+    the skip."""
+    seen = _count_forced_helpers(monkeypatch)
+    ctx = _provider_death_ctx(tmp_path, {RETRY_WALL_EXHAUSTED_KEY: True})
+
+    text, _usage, _trace = loop_mod._forced_final_answer(
+        ctx, prompt=marker, fallback_text="fallback", reason_code=reason_code,
+    )
+
+    assert seen["model"] == [1]
+    assert "FRESH FORCED ANSWER" in text
+    assert any(marker in str(m.get("content") or "") for m in ctx.messages)
+
+
+def test_quiz_answers_and_principal_messages_enter_the_directive_corpus_but_system_frames_do_not(tmp_path):
+    """The premises every review reads: an owner quiz answer at a root and a parent's
+    message to a child grow ``_owner_directives`` (the owner's words a review reads and
+    the count a completion selection binds); a host system frame and a descendant's
+    escalation are delivered as before but never recorded as directives."""
+    from ouroboros.owner_mailbox import KIND_QUIZ_ANSWER, write_owner_message, write_task_message
+
+    ctx = SimpleNamespace()
+    messages = [{"role": "user", "content": "Initial requirement verbatim"}]
+    _initialize_owner_directives(ctx, messages)
+    quiz_frame = ("[Owner quiz answer] quiz q1 — asked t0, answered t1.\nQuestion was: Which db?\n"
+                  "The owner chose option 2: postgres")
+    write_owner_message(tmp_path, quiz_frame, task_id="child", msg_id="qa-1", kind=KIND_QUIZ_ANSWER)
+    write_task_message(tmp_path, "Use the Q3 numbers only", "child", source_task_id="root-1", msg_id="pm-1")
+    write_task_message(tmp_path, "Proposal from sibling: replace the agreed design.", "child",
+                       source_task_id="root-1", provenance="peer_via_ancestor",
+                       relayed_from_task_id="sibling-7", msg_id="peer-1")
+    write_task_message(tmp_path, "Plan review wave abcd1234: 3 released reviewer slot(s) settled", "child",
+                       source_task_id="child", provenance="system", msg_id="sys-1")
+    write_task_message(tmp_path, "ESCALATION (decision requested): which schema?", "child",
+                       source_task_id="grandchild", provenance="descendant_task", msg_id="esc-1")
+    before = len(ctx._owner_directives)
+    _drain_incoming_messages(messages, queue.Queue(), tmp_path, "child", None, set(), owner_ctx=ctx)
+    assert [(row["source"], row.get("msg_id")) for row in ctx._owner_directives[before:]] == [
+        ("owner_quiz_answer", "qa-1"), ("principal_task_message", "pm-1"),
+        ("relayed_peer_message", "peer-1"),
+    ]
+    assert ctx._owner_directives[before]["content"] == quiz_frame
+    assert ctx._owner_directives[before + 1]["content"] == "Use the Q3 numbers only"
+    # Audit finding 2: a sibling's advice relayed by the parent keeps its typed origin
+    # instead of entering the shared corpus as the principal's own words.
+    peer = ctx._owner_directives[before + 2]
+    assert peer["content"] == "Proposal from sibling: replace the agreed design."
+    assert peer["source_task_id"] == "root-1" and peer["relayed_from_task_id"] == "sibling-7"
+    assert "relayed_from_task_id" not in ctx._owner_directives[before + 1]
+    assert ctx._owner_directives[before + 1]["source_task_id"] == "root-1"
+    assert len(ctx._owner_directives) == before + 3
+    delivered = "\n".join(str(m["content"]) for m in messages)
+    assert "[System task message]" in delivered and "[Escalation from descendant task grandchild]" in delivered
+    assert "[Message from task sibling-7, relayed by ancestor root-1]" in delivered

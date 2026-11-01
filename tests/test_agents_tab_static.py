@@ -1,0 +1,218 @@
+"""Static guard: the Agents tab exists, and every control it absorbed moved
+ONCE.
+
+D-10 gave the agent surfaces their own Settings tab because they were scattered
+across three others: accounts sat in Providers between API-key cards, reviewer
+slots and subagent routing sat in Models beside model-id fields, and the two
+counts that bound subagents (children per root, nesting depth) sat in Advanced →
+Runtime Limits next to process worker counts they have nothing to do with.
+
+The failure this file exists to prevent is not "a control is missing" — that one
+is loud. It is the SILENT one DEVELOPMENT.md names: "One capability, one
+section. Never render a second control over the same settings key — two controls
+carry two drafts, and the last one collected wins." A move that leaves the old
+markup behind produces two inputs with the same id, and `settings.js` collects
+whichever `getElementById` happens to reach first.
+
+So each moved id is asserted to appear EXACTLY ONCE across the whole rendered
+settings page, and to still be mapped to its settings key.
+
+Pattern follows tests/test_web_dialogs_static.py and
+tests/test_web_typography_static.py: read the sources, assert the structural
+fact, no browser needed.
+"""
+
+from __future__ import annotations
+
+import pathlib
+import re
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+MODULES = REPO_ROOT / "web" / "modules"
+
+# The panels that together produce the settings page markup. `settings_ui.js`
+# renders the shell and inlines the three section renderers.
+PAGE_SOURCES = (
+    "settings_ui.js",
+    "harness_accounts.js",
+    "subagents_settings.js",
+)
+
+# Every control the Agents tab absorbed, with the settings key it round-trips
+# to. The key mapping lives in settings.js (id → key tables); the id lives in
+# whichever module renders it now.
+MOVED_CONTROLS = {
+    "s-allow-mutative-subagents": "OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS",
+    "s-active-subagents": "OUROBOROS_MAX_ACTIVE_SUBAGENTS_PER_ROOT",
+    "s-subagent-depth": "OUROBOROS_MAX_SUBAGENT_DEPTH",
+    "s-subagent-worktree-root": "OUROBOROS_SUBAGENT_WORKTREE_ROOT",
+    "s-subagent-projects-root": "OUROBOROS_SUBAGENT_PROJECTS_ROOT",
+}
+
+# Deliberately NOT moved: worker processes are runtime capacity, not an agent
+# setting, and GC retention governs every disposable artifact.
+STAYED_IN_ADVANCED = ("s-workers", "s-gc-retention-days")
+
+
+# The sweeps below once exempted ONE file — `onboarding_wizard.js`, which
+# belonged to the onboarding worktree while that phase was in flight and still
+# carried the dead addresses its own agent was repointing. The exemption was
+# asserted to still be NEEDED, so it could not outlive its debt: at synthesis
+# the onboarding phase landed its repointing, the assertion fired, and the
+# entry was deleted. Nothing is exempt now.
+
+
+def _read(name: str) -> str:
+    return (MODULES / name).read_text(encoding="utf-8")
+
+
+def _page_markup() -> str:
+    return "\n".join(_read(name) for name in PAGE_SOURCES)
+
+
+def _panel(name: str) -> str:
+    """The markup of one settings panel, by its data-settings-panel value."""
+    css = _read("settings_ui.js")
+    start = css.index(f'data-settings-panel="{name}"')
+    end = css.find('<section class="settings-panel', start)
+    return css[start:end if end != -1 else len(css)]
+
+
+# ---------------------------------------------------------------------------
+# The tab
+# ---------------------------------------------------------------------------
+
+
+def test_agents_tab_sits_between_models_and_behavior() -> None:
+    """Reads as a sequence: keys → secrets → which API models → who among the
+    agents does what → behavior → technical."""
+    source = _read("settings_ui.js")
+    start = source.index("const SETTINGS_TABS = [")
+    strip = source[start:source.index("];", start)]
+    labels = re.findall(r"\{ value: '([a-z]+)', label: '([A-Za-z]+)' \}", strip)
+    values = [value for value, _ in labels]
+    assert values == [
+        "providers", "secrets", "models", "agents", "behavior", "appearance", "advanced", "about",
+    ], f"unexpected settings tab order: {values}"
+    assert ("agents", "Agents") in labels, (
+        "the tab is named 'Agents', not 'Coding agents' (D-10, owner verbatim: "
+        "«эти агенты не только для кода используются»)"
+    )
+    assert '<section class="settings-panel" data-settings-panel="agents">' in source
+
+
+def test_accounts_own_connections_and_agents_own_role_editors() -> None:
+    panel = _panel("agents")
+    assert "renderSubagentsSection()" in panel, "the Agents panel does not render the catalog"
+    # Reviewers are rows of that catalog marked Reviewer: no second review section.
+    assert "renderReviewerSlotsSection" not in _read("settings_ui.js")
+    accounts = _panel("providers")  # Existing internal tab id, owner-facing Accounts.
+    assert "renderAgentsServiceBanner()" in accounts
+    assert "renderAgentAccountsSection()" in accounts
+    # Exactly ONE service banner element on the whole page.
+    assert _page_markup().count('id="agents-service-banner"') == 1
+
+
+def test_the_vacated_tabs_no_longer_render_the_moved_sections() -> None:
+    source = _read("settings_ui.js")
+    for renderer in ("renderAgentAccountsSection()", "renderSubagentsSection()"):
+        assert source.count(renderer) == 1, (
+            f"{renderer} is rendered more than once — a section mounted in two "
+            "panels would carry two drafts of the same settings keys"
+        )
+    assert "renderAgentAccountsSection()" not in _panel("agents")
+    assert "renderSubagentsSection()" not in _panel("models")
+
+
+# ---------------------------------------------------------------------------
+# The moved controls
+# ---------------------------------------------------------------------------
+
+
+def test_every_moved_control_appears_exactly_once() -> None:
+    markup = _page_markup()
+    for control_id in MOVED_CONTROLS:
+        found = re.findall(rf'id="{re.escape(control_id)}"', markup)
+        assert len(found) == 1, (
+            f"#{control_id} is rendered {len(found)} times. DEVELOPMENT.md: "
+            "'One capability, one section… two controls carry two drafts, and "
+            "the last one collected wins.'"
+        )
+
+
+def test_every_moved_control_now_lives_in_the_delegation_section() -> None:
+    delegation = _read("subagents_settings.js")
+    for control_id in MOVED_CONTROLS:
+        assert f'id="{control_id}"' in delegation, (
+            f"#{control_id} was moved out of its old panel but did not land in "
+            "Agents → Delegation"
+        )
+    advanced = _panel("advanced")
+    for control_id in MOVED_CONTROLS:
+        assert f'id="{control_id}"' not in advanced
+
+
+def test_every_moved_control_still_round_trips_to_its_settings_key() -> None:
+    """Moving markup must not detach a control from its key: settings.js maps
+    id → key, so the pair has to survive the move intact."""
+    settings_js = _read("settings.js")
+    for control_id, key in MOVED_CONTROLS.items():
+        if control_id == "s-allow-mutative-subagents":
+            # This one is not in a table: it is collected explicitly because
+            # Auto saves the EMPTY value (SC-4).
+            assert f"byId('{control_id}')" in settings_js
+            assert key in settings_js
+            continue
+        assert re.search(rf"\['{re.escape(control_id)}', '{re.escape(key)}'", settings_js), (
+            f"#{control_id} no longer maps to {key} in settings.js"
+        )
+
+
+def test_process_capacity_stayed_in_advanced() -> None:
+    """Max Workers is runtime worker processes, not an agent setting; GC
+    retention governs every disposable artifact, not just subagent worktrees."""
+    advanced = _panel("advanced")
+    for control_id in STAYED_IN_ADVANCED:
+        assert f'id="{control_id}"' in advanced
+    assert 's-workers' not in _read("subagents_settings.js")
+
+
+def test_the_two_path_roots_are_behind_a_collapsed_disclosure() -> None:
+    """Owner-facing scannability: two paths nobody edits in a normal week must
+    not push the delegation controls below the fold."""
+    delegation = _read("subagents_settings.js")
+    start = delegation.index('<details class="settings-subsection"')
+    end = delegation.index("</details>", start)
+    disclosure = delegation[start:end]
+    assert 'id="s-subagent-worktree-root"' in disclosure
+    assert 'id="s-subagent-projects-root"' in disclosure
+    assert " open" not in delegation[start:delegation.index(">", start)], (
+        "the Advanced disclosure ships collapsed"
+    )
+
+
+def test_a_spent_window_is_emphasised_rather_than_dimmed() -> None:
+    """Caught by looking at the rendered tab: `.harness-exhausted` dimmed the whole
+    row to 0.62 opacity, which greyed out the very sentence reporting the limit
+    and made its still-clickable Remove/Sign-in buttons read as disabled
+    (docs/DESIGN.md: "a control rendered at secondary ink reads as disabled")."""
+    css = (REPO_ROOT / "web" / "style.css").read_text(encoding="utf-8")
+    # The stylesheet now carries several migrated marker pairs (the chat pass);
+    # the harness rules live in ONE of them, so scan every span's concatenation.
+    spans = []
+    cursor = 0
+    while True:
+        start = css.find("design-system:migrated-begin", cursor)
+        if start == -1:
+            break
+        end = css.index("design-system:migrated-end", start)
+        spans.append(css[start:end])
+        cursor = end + 1
+    region = "\n".join(spans)
+    rule = re.search(r"\.harness-exhausted\s*\{([^}]*)\}", region)
+    assert rule, ".harness-exhausted missing from the migrated region"
+    assert "opacity" not in rule.group(1), (
+        "a spent window is emphasis, not de-emphasis — dimming hides the limit "
+        "sentence and disables-looking buttons that still work"
+    )
+    assert "var(--status-warn-" in rule.group(1)

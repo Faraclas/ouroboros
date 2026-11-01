@@ -1,0 +1,346 @@
+"""Reviewer context window resolution — the SSOT for every review surface.
+
+A reviewer's window is a FACT about its route, never an assumption: the
+historical ``context_window=1_000_000`` literal sized a 200K-window slot as if
+it were 1M, which draws a deterministic provider 400 ("prompt is too long") and
+loses that reviewer's whole review. Capability Evidence is the only source of
+the real number — no static per-model table (v6.33.0).
+
+An UNKNOWN non-subscription route keeps the full-window assumption, matching the policy
+``context_fit`` already applies to the main lane: unknown routes try Max and are
+never SILENTLY assumed to be 200K (BIBLE P1). Guessing small is not the safe
+direction here, because the guess DECLINES work rather than risking it: a
+reviewer sized below the prompt it would have received is dropped before
+dispatch, so every cold-evidence install would lose the whole review to an
+assumption instead of learning the real number from the first send. The window
+is a sizing fact only — it neither grants nor removes a reviewer's authority
+(BIBLE P3 "Review evidence and reading diagnostics"). A caller with its own
+fail-closed sizing policy takes the whole :class:`ReviewerWindow` from
+:func:`resolve_reviewer_window` and applies its floor to
+:meth:`~ReviewerWindow.sizing_window`.
+Raw subscriptions with unknown windows retain the assembler's own input budget.
+
+Deliberately outside ``ouroboros.tools``: the triad, scope, plan, and deep
+self-review surfaces plus the top-level ``deep_self_review`` module all consume
+it, and it imports nothing from the tools package.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from ouroboros.context_window import WindowRecord
+
+logger = logging.getLogger(__name__)
+
+REVIEWER_FULL_WINDOW = 1_000_000
+# The provider a RETRIEVING (agent_session) reviewer row fingerprints under. Its
+# target is a harness route spec, never a provider model id, so it gets its own
+# provider name rather than being filed under whatever `provider_for_model`
+# guesses for an unrecognised string. Spelled the same as
+# `reviewer_slot_config.ROUTE_KIND_SESSION`, imported here so this module keeps
+# importing nothing from the tools package.
+SESSION_ROUTE_PROVIDER = "agent_session"
+# Per-route locks that serialise concurrent resolutions of the SAME route —
+# parallel_review runs the triad and the scope slots at once — so they share ONE
+# metadata fetch: the second thread enters after the first has written the evidence
+# store and reads it back from the cache.
+#
+# HOW OFTEN a route may be fetched at all is deliberately NOT answered here.
+# ``capability_evidence.probe`` owns remote fetches through the TTL on the record it stores
+# (confirmed 24h / failed 10 min) and returns the cache without touching the network
+# inside it; local capacity is read from the current serving instance.
+# A process-lifetime ``_LAZY_WINDOW_PROBED`` memo used to answer it here
+# too, and because the memo never expired while the evidence did, a healthy install
+# that stayed up past the 24h TTL read its own reviewers as EXPIRED forever: every
+# later resolution took the no-fetch path, so the whole process sized every review
+# against an unknown route until it restarted (v6.87.45). The TTL owns the rate
+# limit; the locks only share one fetch.
+_LAZY_PROBE_REGISTRY_LOCK = threading.Lock()
+_LAZY_ROUTE_LOCKS: dict = {}
+
+
+def _route_probe_lock(route_fp: str) -> threading.Lock:
+    """The lock guarding one route's metadata probe (created on first use)."""
+    with _LAZY_PROBE_REGISTRY_LOCK:
+        lock = _LAZY_ROUTE_LOCKS.get(route_fp)
+        if lock is None:
+            lock = _LAZY_ROUTE_LOCKS[route_fp] = threading.Lock()
+        return lock
+
+
+def reviewer_window_binding(slot: object) -> dict:
+    """Carry a frozen configured/executable row's identity into capacity lookup.
+
+    Empty profile is explicit Auto, not permission to read Main's setting.
+    This projects row fields only; it never reloads reviewer configuration.
+    """
+    value = slot.get if isinstance(slot, dict) else lambda key, default=None: getattr(slot, key, default)
+    slot_id = str(value("slot_id", "") or "")
+    return {"model_role": f"reviewer:{slot_id}" if slot_id else "",
+            "credential_profile_id": value("session_profile", value("profile_id", "")),
+            "use_local": value("use_local"), "model_route": value("model_route")}
+
+
+@dataclass(frozen=True)
+class ReviewerWindow:
+    """ONE typed answer for a reviewer slot: its window and that number's provenance.
+
+    A bare ``(window, status)`` tuple dropped ``stale`` and the observation time on
+    the floor, so a consumer could not tell a live provider reading from a five-day-old
+    record kept across an outage. Every field a sizing decision needs — and every
+    field its disclosure needs — travels together with the number, or the decision is
+    being made on a rumour.
+
+    Field names deliberately MIRROR ``capability_evidence.CapabilityEvidence`` so the
+    freshness and threshold predicates that module already owns are REUSED here
+    rather than restated."""
+
+    window_tokens: int = 0        # evidence window; 0 == no evidence for this route
+    status: str = ""              # confirmed | asserted | unprobeable | failed | ""
+    stale: bool = False           # past TTL and not re-verifiable (expired / outage)
+    observed_at: str = ""         # ISO timestamp of the observation, "" when unknown
+    model: str = ""
+    # Retain the authored role value beside the resolved record: a refusal may
+    # cap it without erasing the owner's declaration.
+    asserted_window_tokens: int = 0
+    model_route: dict = field(default_factory=dict)
+    window_record: Optional[WindowRecord] = None
+
+    @property
+    def sizing_source(self) -> str:
+        if self.window_record and self.window_record.limiting:
+            return self.window_record.limiting.source
+        if self.window_tokens:
+            return "user_setting" if self.asserted_window_tokens else self.status
+        return "layout_assumption"
+
+    def sizing_window(self, unknown_window: int = REVIEWER_FULL_WINDOW) -> int:
+        """Fresh resolved capacity, then the last evidence window, even if stale.
+
+        A stale number still estimates the route's size; its status, observation
+        time and stale flag disclose that provenance. Unknown subscriptions keep
+        the assembler's input budget.
+        """
+        from ouroboros.provider_models import provider_for_model
+
+        if self.window_record and self.window_record.boundary is not None:
+            value = self.window_record.boundary
+        elif self.window_tokens:
+            value = self.window_tokens
+        elif provider_for_model(self.model) == "claudexor":
+            value = 0  # No made-up provider size for a raw subscription.
+        else:
+            value = unknown_window
+        return SizedWindow(int(value), self.model_route, self.window_record)
+
+
+def reviewer_route(model_id: str, *, session: bool = False) -> tuple:
+    """``(provider, base_url)`` for a reviewer slot's real route.
+
+    ``session=True`` marks a RETRIEVING row, whose ``model_id`` is an opaque
+    Claudexor ``harness[=model]`` spec and not a provider model id at all.
+    ``provider_for_model`` cannot resolve such a spec — it answers ``openrouter``
+    for anything unrecognised — so a session row fingerprinted through the api
+    path would be filed under a provider it never travels, and every capability
+    record kept for that route would sit under the same falsehood. The harness IS
+    the provider here, exactly as the reviewer-slot SSOT spells it, which is what
+    keeps the record honest. The caller passes the ROW's configured kind; nothing
+    sniffs the string."""
+    from ouroboros.config import runtime_settings
+    from ouroboros.provider_models import capability_base_url, provider_for_model
+
+    if session:
+        return SESSION_ROUTE_PROVIDER, ""
+    model = str(model_id or "")
+    return provider_for_model(model), capability_base_url(model, runtime_settings())
+
+
+def resolve_reviewer_window(
+    model_id: str,
+    *,
+    use_local: Optional[bool] = None,
+    session: bool = False,
+    model_role: str = "",
+    credential_profile_id: Optional[str] = None,
+    model_route: Optional[dict] = None,
+    allow_fetch: bool = True,
+) -> ReviewerWindow:
+    """The reviewer's :class:`ReviewerWindow` from Capability Evidence.
+
+    Never fabricates a window: a route with no evidence comes back with
+    ``window_tokens=0`` and the CALLER applies its own fail-closed SIZING
+    policy. The probe is metadata-only — never generative, never
+    a paid call — so an env-only pin can become known through a path it would
+    otherwise never reach, and it stays re-confirmable for as long as the process
+    lives: remote probes serve the cache inside its TTL and reach the network once
+    it expires; local probes read the current serving instance (see the
+    module-level note on ``_LAZY_ROUTE_LOCKS``). ``allow_fetch=False`` is the
+    hot-path reading (:func:`capability_evidence.probe`): the evidence already
+    held, stale or absent, and never a wait on the network.
+
+    ``use_local=None`` (the default) derives the EFFECTIVE route from
+    ``provider_models.review_model_uses_local`` — the same predicate every review
+    dispatch path hands to ``ReviewSlot``. The window is a fact about the route the
+    request will actually travel, so the default must consult the routing authority
+    rather than assume the provider spelled in the model text: with a False default,
+    a local-only install (``USE_LOCAL_MAIN`` and no cloud credentials) fingerprinted
+    the provider route, ignored the local model's real context length, and sized
+    triad/plan prompts against the unknown-route 1M assumption. Callers pass an
+    explicit bool only to pin a route the predicate cannot see.
+
+    Concurrent resolutions of the SAME route serialise on that route's lock,
+    sharing remote fetches through the cache."""
+    model = str(model_id or "")
+    try:
+        from ouroboros.capability_evidence import model_account_options, probe, route_fingerprint, with_role_window
+        from ouroboros.config import DATA_DIR, runtime_settings
+        from ouroboros.context_window import resolve_window, route_observation_scope
+        from ouroboros.model_slots import MODEL_CONTEXT_WINDOWS_KEY, model_role_option
+        from ouroboros.provider_models import review_model_uses_local
+
+        # A retrieving row never travels the local lane: its target is a harness
+        # route, so the local-model predicate has nothing to say about it.
+        if use_local is None:
+            use_local = False if session else review_model_uses_local(model)
+        provider, base_url = reviewer_route(model, session=session)
+        effective_provider = "local" if use_local else provider
+        options = model_account_options(
+            model, role=model_role, credential_profile_id=credential_profile_id,
+            model_route=model_route,
+        ) if effective_provider == "claudexor" else None
+        asserted_window = int(model_role_option(MODEL_CONTEXT_WINDOWS_KEY, model_role))
+        route_fp = route_fingerprint(
+            provider=effective_provider, base_url=base_url, model=model,
+            options=options,
+        )
+        # A metadata probe that needs the key (MiniMax's /models is authenticated)
+        # reads the route's own connection inside capability_evidence.
+        with _route_probe_lock(route_fp):
+            ev = probe(
+                DATA_DIR,
+                provider=effective_provider,
+                model=model,
+                base_url=base_url,
+                use_local=use_local,
+                allow_fetch=allow_fetch,
+                options=options,
+            )
+        ev = with_role_window(ev, asserted_window)
+        options = {**(options or {}), **{key: getattr(ev, key) for key in (
+            "source_id", "credential_profile_id", "account_fingerprint") if getattr(ev, key, "")}}
+        scope = (route_fingerprint(provider=effective_provider, model=model, base_url=base_url,
+                    options={"credential_profile_id": credential_profile_id} if credential_profile_id else None)
+                 if session else route_observation_scope(dict(provider=effective_provider, model=model,
+                    base_url=base_url, options=options, use_local=use_local), runtime_settings()))
+        record = resolve_window(ev, 0, root=DATA_DIR, observation_fp=scope, bound=bool(scope))
+        limit = record.limiting
+        return ReviewerWindow(
+            window_tokens=record.boundary if limit else int(getattr(ev, "window_tokens", 0) or 0),
+            status="confirmed" if limit and limit.source in {"refusal", "accepted"} else str(getattr(ev, "status", "") or ""),
+            stale=False if limit else bool(getattr(ev, "stale", False)),
+            observed_at=limit.observed_at if limit else str(getattr(ev, "ts", "") or ""),
+            model=model,
+            asserted_window_tokens=asserted_window,
+            window_record=record,
+            model_route={
+                "source": str(getattr(ev, "source_id", "") or ""),
+                "model": model.partition("=")[2],
+                "credentialProfileId": str(getattr(ev, "credential_profile_id", "") or ""),
+                "accountFingerprint": str(getattr(ev, "account_fingerprint", "") or ""),
+            } if effective_provider == "claudexor" else {},
+        )
+    except Exception:
+        logger.debug("reviewer window evidence probe failed", exc_info=True)
+    return ReviewerWindow(model=model)
+
+
+class SizedWindow(int):
+    """A sizing window that also carries the subscription account it was observed on.
+
+    The reserve math beside it then reads THAT account's maximum response from the
+    same observation instead of a cache-only lookup under the unbound route; a plain
+    int (an older or substituted caller) carries none."""
+
+    def __new__(cls, value: int, model_route: Optional[dict] = None, window_record: Optional[WindowRecord] = None):
+        sized = super().__new__(cls, value)
+        sized.model_route = dict(model_route or {})
+        sized.window_record = window_record
+        return sized
+
+
+def reviewer_input_limit(window: int, reserve: int) -> int:
+    """Charge the caller's reply reserve only to a total limit; unknowns remain layout hints."""
+    from dataclasses import replace
+
+    record = getattr(window, "window_record", None)
+    return (replace(record, reserve=reserve).usable if record and record.boundary is not None
+            else max(0, int(window) - reserve))
+
+
+def observed_binding(window: Any, binding: Optional[dict]) -> dict:
+    """``binding`` plus the account route ``window`` was observed on, unless one is already carried."""
+    binding = dict(binding or {})
+    if not binding.get("model_route") and getattr(window, "model_route", None):
+        binding["model_route"] = window.model_route
+    return binding
+
+
+def reviewer_context_window(
+    model_id: str,
+    *,
+    unknown_window: int = REVIEWER_FULL_WINDOW,
+    use_local: Optional[bool] = None,
+    model_role: str = "",
+    credential_profile_id: Optional[str] = None,
+    model_route: Optional[dict] = None,
+    allow_fetch: bool = True,
+) -> int:
+    """Reviewer window from Capability Evidence, or ``unknown_window`` when absent.
+
+    The default keeps an unevidenced route at the full window (see the module
+    docstring: sizing a review pack DOWN on a guess declines the review outright,
+    which is why the main lane's unknown-route policy is the same). A caller that
+    must fail closed passes its own sub-floor explicitly. ``use_local=None``
+    derives the effective route exactly as :func:`resolve_reviewer_window` does;
+    so does ``allow_fetch`` (a hot-path reader passes ``False``).
+    The NUMBER only (a :class:`SizedWindow` carrying the account it was observed
+    on) — a caller that also discloses its provenance takes
+    :func:`resolve_reviewer_window` whole."""
+    resolved = resolve_reviewer_window(
+        model_id, use_local=use_local, model_role=model_role,
+        credential_profile_id=credential_profile_id, model_route=model_route,
+        allow_fetch=allow_fetch,
+    )
+    return resolved.sizing_window(unknown_window)
+
+
+def window_scaled_reserves(
+    window: int,
+    *,
+    output_reserve: int,
+    tokenizer_margin: int,
+    min_output_reserve: int = 8_192,
+    model_id: str = "", binding: Optional[dict] = None,
+) -> tuple:
+    """``(output_reserve, tokenizer_margin)`` scaled to a sub-1M reviewer window.
+
+    The absolute 1M-calibrated reserves would swallow a small window whole
+    (a 131K route => input limit 0, bricking the slot — Provider Independence),
+    so sub-floor windows reserve a quarter for output and an eighth for the
+    tokenizer margin instead. >=1M windows keep the absolute reserves. With
+    ``model_id`` the output reserve stays within that route's known maximum
+    response, read on the account ``window`` was observed on (:class:`SizedWindow`)."""
+    if model_id:
+        from ouroboros.response_limits import response_allowance
+        output_reserve = response_allowance(model_id, output_reserve, **observed_binding(window, binding))
+    if int(window) <= 0 or int(window) >= REVIEWER_FULL_WINDOW:
+        return int(output_reserve), int(tokenizer_margin)
+    return (
+        min(int(output_reserve), max(int(min_output_reserve), int(window) // 4)),
+        min(int(tokenizer_margin), int(window) // 8),
+    )

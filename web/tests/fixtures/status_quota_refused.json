@@ -1,0 +1,88 @@
+{
+  "daemon": {
+    "state": "running",
+    "runtime": {
+      "state": "ready",
+      "version": "4.7.0",
+      "target_version": "4.7.0",
+      "source": "release"
+    },
+    "engine_version": "4.7.0"
+  },
+  "config_dir": "/tmp/claudexor",
+  "harnesses": [
+    {
+      "id": "codex",
+      "display_name": "Codex CLI",
+      "status": "ok",
+      "enabled": true,
+      "provider_family": "openai",
+      "access_profiles_supported": [
+        "readonly",
+        "workspace_write"
+      ]
+    }
+  ],
+  "profiles": {
+    "profiles": [
+      {
+        "profile": {
+          "harness_id": "codex",
+          "profile_id": "koshak",
+          "enabled": true
+        },
+        "status": {
+          "verification": "passed",
+          "verification_source": "vendor"
+        },
+        "identity": {
+          "email": "owner@example.com",
+          "plan": "pro"
+        }
+      }
+    ],
+    "harnessAccounts": [],
+    "accountPools": [
+      {
+        "harness_id": "codex",
+        "next_up": {
+          "kind": "profile",
+          "profileId": "koshak"
+        }
+      }
+    ]
+  },
+  "quota": [],
+  "quota_absences": [],
+  "resource_capabilities_read": "ok",
+  "reads": {
+    "catalog": "ok",
+    "accounts": "ok",
+    "quota": "failed"
+  },
+  "unified_accounts": true,
+  "subagent_last_delegation": {},
+  "resource_capabilities": {
+    "read": false,
+    "refresh": false,
+    "reset": false,
+    "inspect_reset": false
+  },
+  "facets": {
+    "catalog": {
+      "observed_at": "2026-10-27T12:00:00+00:00",
+      "stale": false,
+      "error": null
+    },
+    "accounts": {
+      "observed_at": "2026-10-27T12:00:00+00:00",
+      "stale": false,
+      "error": null
+    },
+    "quota": {
+      "observed_at": null,
+      "stale": false,
+      "error": "quota_probe_failed"
+    }
+  }
+}
