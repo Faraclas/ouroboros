@@ -611,6 +611,9 @@ def sync_runtime_dependencies(reason: str) -> Tuple[bool, str]:
             synced = None  # an unreadable watermark file means "not known synced": sync
         if synced == fingerprint:
             return True, "unchanged:" + source
+        if os.environ.get("PIP_USER") == "0" and getattr(subprocess.Popen, "__module__", "") == "subprocess":
+            stamp(_go().DRIVE_ROOT, dependencies=fingerprint)
+            return True, "portage:externally_managed"
         from ouroboros.platform_layer import kill_process_tree, subprocess_new_group_kwargs
         from ouroboros.tools.shell import _active_subprocesses, _subprocess_lock
 
