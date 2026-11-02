@@ -250,6 +250,7 @@ def _copilot_chat_to_responses_payload(payload: Dict[str, Any]) -> Dict[str, Any
                     "name": str(fn.get("name") or ""),
                     "description": str(fn.get("description") or ""),
                     "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+                    "strict": bool(fn.get("strict", False)),
                 })
             else:
                 resp_tools.append(t)
