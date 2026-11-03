@@ -149,6 +149,8 @@ def test_actual_review_authors_reach_strict_raw_dispatch(setup, monkeypatch, sur
     _strict(gateway, monkeypatch)
     completed = result()
     completed["message"] = {"content": '[{"severity":"advisory","item":"x","evidence":"e","recommendation":"r"}]'}
+    if surface == "native_plan":
+        completed["message"] = {"content": '{"prose":"Reviewed the plan.","objections":[],"withdrawn":[]}'}
     gateway.results = [completed]
     monkeypatch.setattr(config, "DATA_DIR", root)
     monkeypatch.setattr(ce, "resolve_review_token_density", lambda *_a, **_kw: (1.0, "measured"))

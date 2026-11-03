@@ -13,8 +13,10 @@ consumes.
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import urlsplit
 
 
 from ouroboros.llm_attempt import (
@@ -88,6 +90,105 @@ def _bounded_response_metadata_label(value: Any) -> Optional[str]:
     if sanitize_tool_result_for_log(label) != label:
         return None
     return label
+
+
+def _copilot_chat_blocks_route(target: Dict[str, Any]) -> bool:
+    """The observed Copilot Chat dialect, not a model-name or URL substring guess."""
+    if target.get("provider") != "openai-compatible":
+        return False
+    try:
+        endpoint = urlsplit(str(target.get("base_url") or ""))
+        return endpoint.scheme == "https" and endpoint.hostname == "api.business.githubcopilot.com"
+    except ValueError:
+        return False
+
+
+def _copilot_block_choice(resp_dict: Dict[str, Any], target: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Project Copilot's unindexed complete blocks into one Chat assistant turn.
+
+    Recorded non-streaming Copilot Chat replies put each content/tool block in a
+    separate *unindexed* choice; the SDK materializes the absent index as None.
+    Our builder requests one answer (never n>1). Indexed choices remain standard
+    alternatives, including on this endpoint. This runs only after physical-send
+    capture/accounting, and never mutates that original response. Unknown singleton
+    continuation fields survive verbatim; conflicting ones cannot be guessed away.
+    Copilot's networking/node/stream.ts specifies latest-value reasoning_opaque
+    and cot_id, unlike its accumulating readable reasoning carriers.
+    """
+    choices = resp_dict.get("choices")
+    if not _copilot_chat_blocks_route(target) or not isinstance(choices, list) or len(choices) < 2:
+        return None
+    if all(isinstance(choice, dict) and choice.get("index") is not None for choice in choices):
+        return None
+
+    from ouroboros.llm_stream import RejectedProviderStream, _tool_call_problem
+
+    def reject(problem: str) -> None:
+        # A complete, already-accounted response is locally unusable. Reuse the
+        # existing no-resend classification, not a transient HTTP-shaped failure.
+        raise RejectedProviderStream("Copilot Chat block response rejected: " + problem,
+                                     usage=resp_dict.get("usage"))
+
+    message: Dict[str, Any] = {}
+    projected: Dict[str, Any] = {}
+    tool_ids: Set[str] = set()
+    for choice in choices:
+        if not isinstance(choice, dict) or choice.get("index") is not None:
+            reject("mixed indexed and unindexed choices")
+        block = choice.get("message")
+        if not isinstance(block, dict) or block.get("role") != "assistant":
+            reject("block is not an assistant message")
+        for key, value in choice.items():
+            if key == "message":
+                continue
+            if value is None:
+                projected.setdefault(key, None)
+                continue
+            if projected.get(key) is not None and projected[key] != value:
+                reject("conflicting choice field " + key)
+            projected[key] = copy.deepcopy(value)
+        for key, value in block.items():
+            if value is None:
+                message.setdefault(key, None)  # SDK-added nulls cannot erase a preceding block.
+                continue
+            current = message.get(key)
+            if key == "function_call":
+                reject("legacy function_call cannot be combined with block tools")
+            if key == "tool_calls":
+                if not isinstance(value, list):
+                    reject("tool_calls is not a list")
+                for call in value:
+                    problem = _tool_call_problem(call)
+                    if problem:
+                        reject("incomplete tool call: " + problem)
+                    if call["id"] in tool_ids:
+                        reject("duplicate tool call id")
+                    tool_ids.add(call["id"])
+            if key in {"tool_calls", "reasoning_details", "annotations"}:
+                if not isinstance(value, list) or (current is not None and not isinstance(current, list)):
+                    reject("conflicting list field " + key)
+                message[key] = (current or []) + copy.deepcopy(value)
+            elif key in {"content", "refusal", "reasoning", "reasoning_text", "reasoning_content", "cot_summary"}:
+                if key == "content" and isinstance(value, list):
+                    if current is not None and not isinstance(current, (str, list)):
+                        reject("conflicting content shape")
+                    prior = ([{"type": "text", "text": current}] if isinstance(current, str) else current) or []
+                    message[key] = copy.deepcopy(prior + value)
+                elif isinstance(value, str):
+                    if key == "content" and isinstance(current, list):
+                        message[key] = copy.deepcopy(current) + [{"type": "text", "text": value}]
+                    elif current is None or isinstance(current, str):
+                        message[key] = (current or "") + value
+                    else:
+                        reject("conflicting text field " + key)
+                else:
+                    reject("unsupported text field " + key)
+            elif key in {"reasoning_opaque", "cot_id"} or current is None or current == value:
+                message[key] = copy.deepcopy(value)
+            else:
+                reject("conflicting continuation field " + key)
+    projected["message"] = message
+    return projected
 
 
 class _OpenAICompatibleLaneMixin:
@@ -460,7 +561,9 @@ class _OpenAICompatibleLaneMixin:
                 else ("provider_transient" if self._is_transient_body_error(_body_err) else "provider_error"),
             }
         choices = resp_dict.get("choices") or [{}]
-        first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+        first_choice = _copilot_block_choice(resp_dict, target)
+        if first_choice is None:
+            first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
         msg = dict(first_choice.get("message") or {})
         # ``finish_reason`` belongs to the response choice, not the assistant
         # message. Preserve it as an observational usage fact so diagnostics can
@@ -521,7 +624,7 @@ class _OpenAICompatibleLaneMixin:
         provider = str(target.get("provider") or "")
         # MiniMax's two continuation carriers stay verbatim, including unknown
         # shapes. Retention does not make an opaque value displayable or portable.
-        if provider not in {"deepseek", "minimax"}:
+        if provider not in {"deepseek", "minimax"} and not _copilot_chat_blocks_route(target):
             msg.pop("reasoning_content", None)
         elif provider == "deepseek" and not isinstance(msg.get("reasoning_content", ""), str):
             # The SDK surfaces server extras verbatim (same hazard the

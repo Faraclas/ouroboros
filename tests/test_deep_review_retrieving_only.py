@@ -65,7 +65,7 @@ def test_a_bare_api_row_runs_the_native_inspection_episode(repo, drive, monkeypa
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     llm = _ScriptedLLM([
         {"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md"}, "c1")]},
-        {"content": _REPORT},
+        {"tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]},
     ])
     progress: list[str] = []
     text, usage = run_deep_self_review(repo, drive, llm, progress.append,
@@ -75,7 +75,12 @@ def test_a_bare_api_row_runs_the_native_inspection_episode(repo, drive, monkeypa
     header = text.split("\n")[0]
     assert "delivery=native_tool_rounds" in header and "attestation=host_observed" in header
     assert "coverage=BIBLE.md:delivered_inline" in header and "incomplete=none" in header
-    assert usage["native_rounds"] == 2 and len(usage["native_tool_receipts"]) == 1
+    assert usage["native_rounds"] == 2 and len(usage["native_tool_receipts"]) == 2
+    read_receipt, submission_receipt = usage["native_tool_receipts"]
+    assert read_receipt["tool"] == "read_file" and read_receipt["outcome"] == "executed"
+    assert read_receipt["delivered"] is True
+    assert submission_receipt == {"round": 2, "tool": "submit_review", "outcome": "submitted",
+                                  "delivered": False, "answer_chars": len(_REPORT)}
     assert usage["host_file_read_attestation"] == "host_observed"
     assert "execution_status" not in usage
     # The first send is the retrieving task (tools to read WITH), never a pack.
@@ -106,7 +111,7 @@ def test_w5_a_bare_review_on_main_sends_under_mains_pinned_account(repo, drive, 
     monkeypatch.setenv("OUROBOROS_MODEL_ACCOUNTS", json.dumps({"main": pin, "light": "someone-else"}))
     llm = _ScriptedLLM([
         {"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md"}, "c1")]},
-        {"content": _REPORT},
+        {"tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]},
     ])
     text, usage = run_deep_self_review(repo, drive, llm, lambda _m: None, task_id="main-pin-1")
 
@@ -134,7 +139,7 @@ def test_a_stored_openrouter_spelling_runs_on_the_direct_openai_route(repo, driv
     assert deep_review_route(_bare_row("openai/gpt-5.6-sol-pro")) == (
         "", OPENAI_DIRECT_DEFAULTS["deep_self_review"])
 
-    llm = _ScriptedLLM([{"content": _REPORT}])
+    llm = _ScriptedLLM([{"tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]}])
     progress: list[str] = []
     text, usage = run_deep_self_review(repo, drive, llm, progress.append,
                                        task_id="direct-deep-1", slot=row)

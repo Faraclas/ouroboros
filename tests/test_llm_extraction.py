@@ -19,6 +19,7 @@ from ouroboros import (
     llm_local,
     llm_messages,
     llm_openai_compatible,
+    llm_observability,
     llm_pricing,
     llm_probe,
     llm_routing,
@@ -46,6 +47,7 @@ _LEAVES = (
     llm_gigachat,
     llm_local,
     llm_openai_compatible,
+    llm_observability,
     llm_pricing,
     # Not a mixin and not an extraction: the probe transport arrived whole from
     # upstream. It is an llm_* leaf all the same, so the leaf rules bind it —

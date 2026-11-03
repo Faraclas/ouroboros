@@ -44,6 +44,7 @@ import logging
 import os
 import pathlib
 import re
+import stat
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from ouroboros.observability import call_manifest_path, new_call_id
@@ -93,10 +94,14 @@ def _manifest_at(roots: Iterable[pathlib.Path], task_id: str, call_id: str,
         if admit is not None:
             admit(path)
         try:
-            if not path.is_file():
+            # Path.is_file() suppresses stat errors on Python 3.14: denied
+            # access would become absence instead of an unknown, retryable read.
+            if not stat.S_ISREG(path.stat().st_mode):
                 continue
             with path.open("rb") as stream:
                 raw = stream.read(_MANIFEST_BYTES + 1)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
         except OSError as exc:
             unreadable = exc
             continue

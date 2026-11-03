@@ -781,8 +781,10 @@ def _execute_candidate(request: AttemptRequest, send: Any, before_dispatch: Any)
     retry_presend(require_physical_dispatch_window, check=False)
     send, before_dispatch = _deadline_checked_send(send, before_dispatch)
     if "before_dispatch" not in inspect.signature(execute_physical_attempt).parameters:
-        return execute_physical_attempt(request, send)
-    return execute_physical_attempt(request, send, before_dispatch=before_dispatch)
+        response = execute_physical_attempt(request, send)
+    else:
+        response = execute_physical_attempt(request, send, before_dispatch=before_dispatch)
+    return _retain_received_candidate(request, response)
 
 
 async def _execute_candidate_async(request: AttemptRequest, send: Any, before_dispatch: Any) -> Any:
@@ -791,8 +793,26 @@ async def _execute_candidate_async(request: AttemptRequest, send: Any, before_di
     await presend_off_loop(retry_presend, require_physical_dispatch_window, check=False)
     send, before_dispatch = _deadline_checked_send(send, before_dispatch)
     if "before_dispatch" not in inspect.signature(execute_physical_attempt_async).parameters:
-        return await execute_physical_attempt_async(request, send)
-    return await execute_physical_attempt_async(request, send, before_dispatch=before_dispatch)
+        response = await execute_physical_attempt_async(request, send)
+    else:
+        response = await execute_physical_attempt_async(request, send, before_dispatch=before_dispatch)
+    from ouroboros._usage_wait import postresponse_off_loop
+    from ouroboros.llm_observability import retain_received_response
+
+    # Disk IO stays off-loop and joined even if the caller is cancelled after
+    # accounting returned. Cancellation still forbids caller continuation.
+    return await postresponse_off_loop(
+        _retain_received_candidate, request, response,
+        retain_on_cancel=lambda value, capture: retain_received_response(
+            request, value, capture=capture, control_reason="caller_cancelled"),
+    )
+
+
+def _retain_received_candidate(request: AttemptRequest, response: Any) -> Any:
+    from ouroboros.llm_observability import retain_received_response
+
+    retain_received_response(request, response)
+    return response
 
 
 def _deadline_checked_send(send: Any, before_dispatch: Any):

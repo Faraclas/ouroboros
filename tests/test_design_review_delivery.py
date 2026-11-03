@@ -53,7 +53,8 @@ def test_deep_review_separates_installed_governance_from_candidate_sources(
     llm = _ScriptedLLM([
         {"tool_calls": [_tool_call("read_file", {"root": "system_repo", "path": "BIBLE.md"}, "c1"),
                         _tool_call("read_file", {"path": "BIBLE.md"}, "c2")]},
-        {"content": _REPORT},
+        ({"content": _REPORT} if delegated else {
+            "tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]}),
     ])
     if delegated:
         monkeypatch.setattr(review_execution, "_review_route_executor", _FakeSessionExecutor)
@@ -68,7 +69,7 @@ def test_deep_review_separates_installed_governance_from_candidate_sources(
         assert request.policy["native_required_sources"] == required
     else:
         brief = _user_text(next(m["content"] for m in llm.calls[0]["messages"] if m["role"] == "user"))
-        installed, subject = usage["native_tool_receipts"]
+        installed, subject = [r for r in usage["native_tool_receipts"] if r["tool"] == "read_file"]
         assert installed["opened_root"] == "system_repo"
         assert subject["opened_root"] == "active_workspace"
         assert subject["source_revision"] == required[0]["source_revision"]

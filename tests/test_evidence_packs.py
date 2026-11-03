@@ -408,8 +408,15 @@ def test_second_generation_packs_only_new_members(root):
 
 # ---- A+ restore and the unpacker ---------------------------------------------------
 
-def test_restore_checkpoint_handles_decodes_only_the_prefix(root, monkeypatch):
-    big = [os.urandom(3 << 20)]  # incompressible: the pack is as large as its blob
+@pytest.mark.parametrize("blob_mib", [3, 8])
+def test_restore_checkpoint_handles_decodes_only_the_prefix(root, monkeypatch, blob_mib):
+    import io
+    try:
+        from compression._common import _streams as compression_streams
+    except ModuleNotFoundError:
+        import _compression as compression_streams
+
+    big = [os.urandom(blob_mib << 20)]  # incompressible: the pack is as large as its blob
     refs, handle = _task(root, "task-a", blobs=1, payloads=big)
     child = root / "task_drives" / "task-a"
     child.mkdir(parents=True)
@@ -434,6 +441,16 @@ def test_restore_checkpoint_handles_decodes_only_the_prefix(root, monkeypatch):
             consumed.append(len(raw))
             return raw
 
+        def read1(self, size=-1):
+            raw = self.handle.read1(size)
+            consumed.append(len(raw))
+            return raw
+
+        def readinto(self, buffer):
+            count = self.handle.readinto(buffer)
+            consumed.append(count or 0)
+            return count
+
     def opened(path, *args, **kwargs):
         handle = real_open(path, *args, **kwargs)
         return Meter(handle) if str(path).endswith(".xz") else handle
@@ -443,7 +460,12 @@ def test_restore_checkpoint_handles_decodes_only_the_prefix(root, monkeypatch):
     assert report["status"] == "restored" and report["handles"] == 2 and report["packs"] == 2
     assert _handle_path(root, "task-a", handle).read_bytes().startswith(b"# focus")
     assert _handle_path(child, "task-a", child_handle).read_bytes() == b"# child focus\n"
-    assert 0 < sum(consumed) < 64 << 10  # bounded compressed prefix, not the 3 MiB blob
+    # CPython 3.14 reads compressed input in 128 KiB chunks (older versions: 8 KiB).
+    # Two packs may each read ahead one buffer; the bound must not grow with the blob.
+    buffer_size = max(getattr(compression_streams, "BUFFER_SIZE", io.DEFAULT_BUFFER_SIZE), io.DEFAULT_BUFFER_SIZE)
+    prefix_bound = 2 * buffer_size + handle["size"] + child_handle["size"] + 4096
+    assert 0 < sum(consumed) <= prefix_bound
+    assert sum(consumed) < (root / "observability" / "packs" / "task-a.xz").stat().st_size // 4
     assert not _loose(refs[0])  # blobs stay packed
     assert packs.pending_restore_bytes(root) == 0
     assert packs.restore_checkpoint_handles(root)["handles"] == 0  # skip-if-present

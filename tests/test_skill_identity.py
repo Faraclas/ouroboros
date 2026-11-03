@@ -36,9 +36,12 @@ def _skill(root: pathlib.Path, name: str = "probe", *, extra: str = "") -> pathl
 
 @pytest.fixture
 def digest_memo(monkeypatch):
-    """A memo and device verdicts of this test's own (both are process-wide)."""
+    """A memo and local-filesystem verdict of this test's own, independent of the temp mount."""
+    from ouroboros import store
+
     monkeypatch.setattr(si, "_DIGESTS", collections.OrderedDict())
     monkeypatch.setattr(si, "_LOCAL_DEVICES", {})
+    monkeypatch.setattr(store, "_filesystem_type", lambda path: "ext4")
 
 
 def _payload_opens(monkeypatch, skill: pathlib.Path) -> list:
@@ -88,14 +91,16 @@ def test_a_file_changed_within_a_clock_tick_of_its_hash_is_read_every_time(tmp_p
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows hashes every time anyway")
-def test_a_filesystem_the_store_does_not_call_local_is_hashed_every_time(tmp_path, monkeypatch, digest_memo):
+@pytest.mark.parametrize("filesystem_type", ["nfs", None], ids=["network", "unknown"])
+def test_a_filesystem_the_store_does_not_call_local_is_hashed_every_time(
+        tmp_path, monkeypatch, digest_memo, filesystem_type):
     """Network, FUSE and unknown filesystems may keep change times dishonestly (a client's attribute cache,
     a userspace driver): there the memo is never consulted, however old the change time."""
     from ouroboros import store
     from ouroboros.skill_loader import compute_content_hash
 
     monkeypatch.setattr(si, "_RACY_NS", 0)
-    monkeypatch.setattr(store, "_filesystem_type", lambda path: "nfs")
+    monkeypatch.setattr(store, "_filesystem_type", lambda path: filesystem_type)
     skill = _skill(tmp_path / "external")
     first = compute_content_hash(skill)
     opened = _payload_opens(monkeypatch, skill)

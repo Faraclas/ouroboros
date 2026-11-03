@@ -131,7 +131,7 @@ def test_native_row_runs_the_inspection_episode_over_repo_and_memory(review_repo
     llm = _ScriptedLLM([
         {"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md"}, "c1")]},
         {"tool_calls": [_tool_call("read_file", {"path": "memory/identity.md", "root": "runtime_data"}, "c2")]},
-        {"content": _REPORT},
+        {"tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]},
     ])
     progress = []
     text, usage = run_deep_self_review(review_repo, review_drive, llm, progress.append,
@@ -141,11 +141,11 @@ def test_native_row_runs_the_inspection_episode_over_repo_and_memory(review_repo
     assert header.startswith(
         "<!-- deep-review provenance: delivery=native_tool_rounds, model=openai/fake-deep, memory=3/6, "
         "memory_missing=registry.md,WORLD.md,index-full.md, "
-        "coverage=BIBLE.md:delivered_inline, incomplete=none, attestation=host_observed, rounds=3, tool_calls=2, receipts=2, "
-        "end_reason=final_answer, coverage_basis=source_ranges, serialized_chars_diagnostic=")
+        "coverage=BIBLE.md:delivered_inline, incomplete=none, attestation=host_observed, rounds=3, tool_calls=3, receipts=3, "
+        "end_reason=submitted_answer, coverage_basis=source_ranges, serialized_chars_diagnostic=")
     assert "previous_prompt_tokens=10" in header
     assert "output_allowance_tokens=" in header and "transcript=" not in header and "landing=" not in header
-    assert "_Deep self-review: native inspection episode on openai/fake-deep — 3 rounds, 2 tool calls" in header
+    assert "_Deep self-review: native inspection episode on openai/fake-deep — 3 rounds, 3 tool calls" in header
     assert "BIBLE.md delivered inline in full; memory 3/6 inlined (omitted: registry.md missing, WORLD.md missing, index-full.md missing); complete_" in header
     assert usage["deep_review_memory"]["inlined"] == 3 and usage["deep_review_memory"]["dispositions"]["memory/WORLD.md"] == "missing"
     assert usage["native_rounds"] == 3 and usage["host_file_read_attestation"] == "host_observed"
@@ -184,7 +184,7 @@ def test_native_row_needs_no_second_read_of_inline_bible(review_repo, review_dri
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     llm = _ScriptedLLM([
         {"tool_calls": [_tool_call("read_file", {"path": "ouroboros/loop.py"}, "c1")]},
-        {"content": _REPORT},
+        {"tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]},
     ])
     text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
     assert text.endswith(_REPORT)
@@ -219,7 +219,7 @@ def test_native_row_needs_no_second_read_of_inline_bible(review_repo, review_dri
     # `read` — one scripted episode per spelling, through the real registry.
     total = len(_BIBLE.splitlines())
     for spelled in (str(review_repo / "BIBLE.md"), " BIBLE.md", "repo/BIBLE.md", "./BIBLE.md", "BIBLE.md"):
-        llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": spelled}, "c1")]}, {"content": _REPORT}])
+        llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": spelled}, "c1")]}, {"tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]}])
         text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
         receipt = usage["native_tool_receipts"][0]
         assert (receipt["path"], receipt["opened_path"], receipt["eof"], receipt["total_lines"]) == (spelled, "BIBLE.md", True, total), receipt
@@ -228,7 +228,7 @@ def test_native_row_needs_no_second_read_of_inline_bible(review_repo, review_dri
     # ...and on the OPENED root: a padded root spelling the registry reads as a
     # repository root credits `read` (the raw `root` stays the model's spelling).
     for root in (" system_repo ", "active_workspace ", "system_repo"):
-        llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md", "root": root}, "c1")]}, {"content": _REPORT}])
+        llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md", "root": root}, "c1")]}, {"tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]}])
         text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
         receipt = usage["native_tool_receipts"][0]
         assert (receipt["root"], receipt["opened_root"], receipt["opened_path"], receipt["eof"]) == (root, root.strip(), "BIBLE.md", True), receipt
@@ -262,13 +262,13 @@ def test_native_row_continues_past_retired_cap_to_final_report(review_repo, revi
     (review_repo / "big.txt").write_text("x" * 60_000, encoding="utf-8")
     draft = "# Deep self-review (draft)\n\nCRITICAL: loop.py finalization race.\n"
     script = [{"content": draft, "tool_calls": [_tool_call("read_file", {"path": "big.txt"}, "c1")]},
-              {"content": _REPORT}]
+              {"tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]}]
     llm = _ScriptedLLM(script)
     text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
     assert text.endswith("\n\n" + _REPORT)
     assert "incomplete=none" in text and "INCOMPLETE" not in text
     assert usage["native_transcript_chars"] > 50_000
-    assert usage["native_end_reason"] == "final_answer" and not usage.get("native_incomplete")
+    assert usage["native_end_reason"] == "submitted_answer" and not usage.get("native_incomplete")
     assert "execution_status" not in usage and len(llm.calls) == 2
     assert "x" * 60_000 in next(m["content"] for m in llm.calls[1]["messages"] if m.get("role") == "tool")
 
@@ -632,7 +632,7 @@ def test_memory_dispositions_are_disclosed_per_whitelisted_entry(review_repo, tm
         assert f"{rel} {disposition}" in line
     # The native episode carries the same fact into usage and the header.
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-    llm = _ScriptedLLM([{"content": _REPORT}])
+    llm = _ScriptedLLM([{"tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]}])
     text, usage = run_deep_self_review(review_repo, drive, llm, lambda _m: None, slot=_native_row())
     assert usage["deep_review_memory"]["dispositions"] == expected
     comment = text.split("\n")[0]
@@ -664,7 +664,7 @@ def test_native_read_extent_rides_the_receipts_and_drives_coverage(review_repo, 
     llm = _ScriptedLLM([
         {"tool_calls": [_tool_call("read_file", {"path": "inspection.md", "max_lines": half}, "c1")]},
         {"tool_calls": [_tool_call("read_file", {"path": "inspection.md", "start_line": half + 1, "max_lines": 500}, "c2")]},
-        {"content": _REPORT},
+        {"tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]},
     ])
     text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row(), required_sources=required())
     receipts = usage["native_tool_receipts"]
@@ -675,7 +675,7 @@ def test_native_read_extent_rides_the_receipts_and_drives_coverage(review_repo, 
     assert not [d for d in usage.get("capability_delta", []) if d["reason"].startswith("deep_review_")]
 
     # One line: partial, with the fraction in the header and a typed delta.
-    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "inspection.md", "max_lines": 1}, "c1")]}, {"content": _REPORT}])
+    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "inspection.md", "max_lines": 1}, "c1")]}, {"tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]}])
     text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row(), required_sources=required())
     assert f"coverage=inspection.md:partial({len(_BIBLE.splitlines(keepends=True)[0]) / len(_BIBLE):.2f})" in text
     assert f"inspection.md {len(_BIBLE.splitlines(keepends=True)[0]) / len(_BIBLE):.0%} read ({len(_BIBLE.splitlines(keepends=True)[0])}/{len(_BIBLE)} characters)" in text
@@ -684,7 +684,7 @@ def test_native_read_extent_rides_the_receipts_and_drives_coverage(review_repo, 
 
     # An inspection.md under the DATA plane does not satisfy the repository read.
     (review_drive / "inspection.md").write_text(_BIBLE, encoding="utf-8")
-    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "inspection.md", "root": "runtime_data"}, "c1")]}, {"content": _REPORT}])
+    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "inspection.md", "root": "runtime_data"}, "c1")]}, {"tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]}])
     text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row(), required_sources=required())
     assert usage["native_tool_receipts"][0]["root"] == "runtime_data" and usage["native_tool_receipts"][0]["eof"] is True
     assert usage["native_tool_receipts"][0]["opened_root"] == "runtime_data"  # the opened root never credits a data-plane read
@@ -692,7 +692,7 @@ def test_native_read_extent_rides_the_receipts_and_drives_coverage(review_repo, 
 
     # The bounded read page still cuts long results, independently of episode size.
     (review_repo / "inspection.md").write_text("".join(f"line {i:05d} " + "b" * 60 + "\n" for i in range(4000)), encoding="utf-8")
-    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "inspection.md"}, "c1")]}, {"content": _REPORT}])
+    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "inspection.md"}, "c1")]}, {"tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]}])
     text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row(), required_sources=required())
     receipt = usage["native_tool_receipts"][0]
     assert receipt["total_lines"] == 4000 and receipt["start_line"] == 1
@@ -726,7 +726,7 @@ def test_a_registry_refused_read_never_inherits_the_previous_reads_extent(review
     llm = _ScriptedLLM([
         {"tool_calls": [_tool_call("read_file", {"path": "docs/ARCHITECTURE.md"}, "c1")]
                        + [_tool_call("read_file", {"path": p}, f"c{i}") for i, p in enumerate(shapes, 2)]},
-        {"content": _REPORT},
+        {"tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]},
     ])
     text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row(), required_sources=required())
     receipts = usage["native_tool_receipts"]
@@ -742,7 +742,7 @@ def test_a_registry_refused_read_never_inherits_the_previous_reads_extent(review
     llm = _ScriptedLLM([
         {"tool_calls": [_tool_call("read_file", {"path": "inspection.md", "max_lines": 1}, "c1"),
                         _tool_call("read_file", {"path": "a/../inspection.md"}, "c2")]},
-        {"content": _REPORT},
+        {"tool_calls": [_tool_call("submit_review", {"answer": _REPORT}, "submit")]},
     ])
     text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row(), required_sources=required())
     assert f"coverage=inspection.md:partial({len(_BIBLE.splitlines(keepends=True)[0]) / len(_BIBLE):.2f})" in text

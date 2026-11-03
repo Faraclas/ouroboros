@@ -56,7 +56,7 @@ def test_large_initial_assignment_and_continuation_reach_transport(tmp_path, mon
     answer = _VERDICT
     llm = _ScriptedLLM([
         {"tool_calls": [_tool_call("read_file", {"path": "source.txt"}, "read")]},
-        {"content": answer},
+        {"tool_calls": [_tool_call("submit_review", {"answer": answer}, "submit")]},
     ])
     executor = _executor(tmp_path, llm, task=task)
     executor.assignment.request.surface = surface

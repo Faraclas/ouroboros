@@ -573,15 +573,22 @@ def test_a_lock_whose_identity_cannot_be_read_is_never_a_hold(tmp_path, monkeypa
     os.close(fd)
 
 
-def test_pid_is_signalable_is_the_kill_question():
+@pytest.mark.parametrize("error,alive", [(errno.EPERM, True), (errno.ESRCH, False)])
+def test_pid_is_signalable_is_the_kill_question(monkeypatch, error, alive):
     """Liveness and ownership are different questions: a pid another user owns
-    (pid 1 on a non-root POSIX host) is ALIVE for a lock owner but NOT signalable,
+    is ALIVE for a lock owner but NOT signalable,
     so a cleanup must not try to kill it; our own pid is both; a vanished pid is neither."""
     assert platform_layer.pid_is_signalable(os.getpid()) is True
     assert platform_layer.pid_is_signalable(0) is False
-    if not platform_layer.IS_WINDOWS and getattr(os, "geteuid", lambda: 1)() != 0:
-        assert platform_layer.pid_is_alive(1) is True
-        assert platform_layer.pid_is_signalable(1) is False
+    if not platform_layer.IS_WINDOWS:
+        def refusing(pid, signum):
+            assert pid == 4242 and signum == 0  # no real pid's ownership or existence is assumed
+            raise OSError(error, "injected signal-zero refusal")
+
+        monkeypatch.setattr(os, "kill", refusing)
+        assert platform_layer.pid_is_alive(4242) is alive
+        assert platform_layer.pid_is_signalable(4242) is False
+        assert platform_layer.pid_provably_gone(4242) is not alive
 
 
 def _windows_kernel_tier(monkeypatch):

@@ -119,7 +119,8 @@ def test_native_deep_review_reports_exact_chapter_gap_without_changing_the_findi
     monkeypatch.setenv("OPENROUTER_API_KEY", "fixture-only")
     report = "Read: Constitution.\n\nCRITICAL: a real consumer violates the contract."
     llm = _ScriptedLLM([
-        {"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md"})]}, {"content": report}])
+        {"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md"})]},
+        {"tool_calls": [_tool_call("submit_review", {"answer": report}, "submit")]}])
     required = [_required(repo, "BIBLE.md"), _required(repo, "docs/architecture/flow.md")]
     text, usage = deep.run_deep_self_review(repo, data, llm, lambda m: None,
         slot=_native_row(), task_id="book-review", required_sources=required)

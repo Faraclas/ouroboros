@@ -47,6 +47,10 @@ from ouroboros.deadline_utils import caller_deadline_arguments, owner_deadline_e
 from ouroboros.event_usage import event_token_counts
 from ouroboros.review_dispatch import bind_api_review_paid_stamp, invoke_review_paid_stamp
 from ouroboros.review_verdict_extraction import canonicalize_session_verdict
+from ouroboros.review_completion import (
+    COMPLETION_REMINDER, SUBMIT_REVIEW, SUBMIT_REVIEW_SCHEMA,
+    legacy_review_answer, review_submission,
+)
 from ouroboros.review_native_images import NativeReviewImages, staged_image_registry
 from ouroboros.triad_review import request_output_shape
 from ouroboros.delegate_custody_usage import observe_failed_review_send
@@ -197,9 +201,11 @@ _NATIVE_REVIEW_INSTRUCTIONS = (
     "coverage. No helper summary is needed for an authored view. Read every source "
     "required by the supplied manifest/checklist. A partial read cannot certify the "
     "whole source, and byte coverage alone does not establish semantic correctness. "
-    "Your FINAL message must contain no tool calls and "
-    "must follow the output contract in the task EXACTLY; your host parses it "
-    "structurally, and prose around the verdict is a non-response."
+    "Finish by calling submit_review alone, putting your complete deliverable in "
+    "its answer string. The task's output contract applies to that string, even "
+    "if the shared work order calls it a final message. Ordinary prose is "
+    "commentary and leaves the episode open. Submission ends the episode without "
+    "certifying the answer: malformed answers and refusals remain such."
 )
 
 # Bounded retrieval pages keep exact full sources and continuation cursors.
@@ -241,7 +247,7 @@ def native_episode_prompt(surface: str, role_hint: str, task: str, output_contra
         "",
         "OUTPUT CONTRACT (your host parses this structurally):",
         output_contract
-        + "\nYour final message must contain the deliverable alone, with no tool calls.",
+        + "\nSubmit the deliverable alone as submit_review(answer=...), with no other tool calls.",
         f"Slot: {slot_id}",
     ])
 
@@ -321,6 +327,7 @@ def inspection_registry(root: str, drive_root: Any, task_id: str = "") -> tuple[
         raise ReviewRouteUnavailable(
             "no inspection tool schemas are projectable for the native "
             "tool-round episode", code="native_inspection_unavailable")
+    schemas.append(copy.deepcopy(SUBMIT_REVIEW_SCHEMA))  # episode-local; never a registry capability
     return registry, ctx, schemas
 
 
@@ -384,6 +391,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         self._view_changes = 0
         self._view_receipt: dict = {}
         self._round_messages: list[dict] = []
+        self._round_response_facts: dict = {}
         self._last_persisted_round = 0
         self._tool_abandoned = False  # a loose worker retires this episode's read attribution
         self._images = NativeReviewImages()
@@ -415,6 +423,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             return
         ref = self._store_source(f"round-{self._rounds_used}", self._images.source_projection({
             "round": self._rounds_used, "messages": self._round_messages,
+            "response_facts": self._round_response_facts,
             "read_receipts": self._tool_receipts, "view_receipt": self._view_receipt,
             "sent_view": getattr(self._inspection_ctx, "_last_context_observation", {}),
         }))
@@ -593,13 +602,13 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             facts["native_incomplete"] = "required_source_coverage_incomplete"
         return facts
 
-    def _complete_tool_round(self, registry, tool_calls, validation_by_id, messages, schemas, round_idx):
+    def _complete_tool_round(self, registry, tool_calls, validation_by_id, messages, schemas, round_idx, submission_error=""):
         """Complete all tool pairs before fitting an actor-requested working view."""
         for tc in tool_calls:
             if not isinstance(tc, dict):
                 continue
             tool_message = self._execute_inspection_call(
-                registry, tc, validation_by_id, round_idx=round_idx)
+                registry, tc, validation_by_id, round_idx=round_idx, submission_error=submission_error)
             self._round_messages.append(copy.deepcopy(tool_message))
             messages.append(tool_message)
         self._round_messages.extend(copy.deepcopy(self._images.append_after_tools(messages, self._inspection_ctx)))
@@ -614,6 +623,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         return {
             "native_episode_prompt": self.episode_prompt,
             "inspection_tools": list(_INSPECTION_TOOL_NAMES),
+            "completion_tool": SUBMIT_REVIEW,
         }
 
     def prompt_chars(self) -> int:
@@ -657,21 +667,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         return self._verdict_result()
 
     def _inspection_registry(self, root: str, drive_root: Any) -> tuple[Any, List[Dict[str, Any]]]:
-        """A fresh instance-local registry pinned to ``root``, read-only.
-
-        Reuses the existing capability machinery wholesale instead of a new
-        allowlist mechanism: the ``local_readonly_subagent`` constraint gives
-        the read-only operation/root matrix, ``disabled_tools`` trims its
-        broader name allowlist down to the inspection six, and the resource
-        contract keeps extension/MCP discovery off. ``registry._ctx`` is
-        per-instance, so the worker's own registry/context is never touched.
-        ``drive_root`` is the data plane the inspection tools may read: an
-        empty scratch directory by default, or the surface's opt-in
-        ``policy["native_data_root"]`` (a stored paged source or skill index
-        resolves there; deep self-review exposes the runtime root while its
-        memory whitelist arrives inline) — the read-only constraint applies to
-        it exactly as to the repository.
-        """
+        """Bind the instance-local read-only context; see ``inspection_registry``."""
         registry, self._inspection_ctx, schemas = inspection_registry(
             root, drive_root, str(self.assignment.request.task_id or "review"))
         return registry, schemas
@@ -822,6 +818,11 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 # Pop the wire-validation sidecar BEFORE accumulation (receipts are per-round facts, not usage).
                 wire_validation = pop_custom_validation_receipts(usage, tool_calls)
                 validation_by_id = custom_validation_by_call_id(wire_validation)
+                self._round_response_facts = {
+                    key: copy.deepcopy(usage[key]) for key in ("response_finish_reason", "ledger_attempt_ids") if key in usage
+                }
+                if isinstance(msg, dict) and "stop_reason" in msg:
+                    self._round_response_facts["stop_reason"] = copy.deepcopy(msg["stop_reason"])
                 add_usage(total_usage, usage)
                 # add_usage accumulates only token/cost keys: carry the ledger
                 # linkage and provenance facts the substrate's actor records
@@ -845,11 +846,21 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 messages.append(assistant)
                 self._round_messages = [copy.deepcopy(assistant)]
                 if not tool_calls:
-                    # The reviewer's answer — or an empty round, which is the
-                    # episode's honest end: the empty answer rides the ordinary
-                    # empty-response rail upstream (a report keeps its draft).
-                    final_answer = content
-                    end_reason = "final_answer" if content else "empty_answer"
+                    if not content.strip() or legacy_review_answer(content, shape):
+                        final_answer = content
+                        end_reason = "final_answer" if content.strip() else "empty_answer"
+                        break
+                    notice = {"role": "user", "content": COMPLETION_REMINDER}
+                    messages.append(notice)
+                    self._round_messages.append(copy.deepcopy(notice))
+                    self._record_round_source()
+                    continue
+                submitted, submission_error = review_submission(tool_calls, validation_by_id)
+                if submitted is not None:
+                    final_answer, end_reason = submitted, "submitted_answer"
+                    self._tool_calls_total += 1
+                    self._tool_receipts.append({"round": round_idx, "tool": SUBMIT_REVIEW,
+                        "outcome": "submitted", "delivered": False, "answer_chars": len(submitted)})
                     break
                 well_formed = [
                     tc for tc in tool_calls
@@ -866,8 +877,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     end_reason = "round_without_progress"
                     break
                 transcript_chars = self._complete_tool_round(
-                    registry, tool_calls, validation_by_id, messages, schemas, round_idx)
-            if shape == "report" and not final_answer and last_content:
+                    registry, tool_calls, validation_by_id, messages, schemas, round_idx, submission_error)
+            if shape == "report" and not final_answer and last_content and end_reason != "submitted_answer":
                 # A report is a product, not a verdict: the collected draft is
                 # delivered marked INCOMPLETE rather than discarded (the budget
                 # or deadline ended, the round made no progress, or the final round came
@@ -1064,7 +1075,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
 
     def _execute_inspection_call(
         self, registry: Any, tc: Dict[str, Any], validation_by_id: Dict[str, Any],
-        *, round_idx: int,
+        *, round_idx: int, submission_error: str = "",
     ) -> Dict[str, Any]:
         """Run ONE inspection tool call of a round and return its tool MESSAGE.
 
@@ -1097,6 +1108,9 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         if verdict is not None and not getattr(verdict, "allows_execution", True):
             outcome = "refused"
             result = f"⚠️ TOOL_ARG_ERROR: {getattr(verdict, 'error', 'invalid arguments')}"
+        elif name == SUBMIT_REVIEW:
+            outcome = "refused"
+            result = f"⚠️ TOOL_ARG_ERROR: {submission_error}"
         elif name not in _INSPECTION_TOOL_NAMES:
             outcome = "refused"
             result = f"⚠️ tool {name[:200]!r} is not available in this read-only inspection episode"

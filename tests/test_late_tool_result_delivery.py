@@ -12,9 +12,11 @@ too, priced with its locator; a rail that sends nothing leaves the locator for t
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
+import pathlib
 import queue
 import threading
 import time
@@ -342,6 +344,48 @@ def test_every_settled_call_reaches_one_request(tmp_path, monkeypatch):
     assert len(refs) == 9 and note.count("\n- slow_probe") == 9
     assert all(f"call_id={ref['call_id']!r}, manifest_sha256={ref['sha256']!r}" in note for ref in refs)
     assert _round(registry, trace, logs) == [] and slow.calls == 9, "announced once"
+
+
+@pytest.mark.parametrize("placement", ["missing", "missing-parent", "not-directory", "directory"])
+def test_manifest_discovery_distinguishes_absent_and_nonregular_paths(tmp_path, placement):
+    from ouroboros.late_tool_results import _manifest_at
+
+    path = call_manifest_path(tmp_path, TASK, "probe")
+    if placement == "not-directory":
+        path.parent.parent.mkdir(parents=True)
+        path.parent.write_text("not a directory", encoding="utf-8")
+    elif placement == "directory":
+        path.mkdir(parents=True)
+    elif placement == "missing":
+        path.parent.mkdir(parents=True)
+    assert _manifest_at([tmp_path], TASK, "probe") is None
+
+
+@pytest.mark.parametrize("operation", ["stat", "open"])
+@pytest.mark.parametrize("error_type,number", [(PermissionError, errno.EACCES), (OSError, errno.EIO)])
+def test_manifest_discovery_keeps_filesystem_failures_unknown(tmp_path, monkeypatch, operation, error_type, number):
+    from ouroboros.late_tool_results import _manifest_at
+
+    path = call_manifest_path(tmp_path, TASK, "probe")
+    path.parent.mkdir(parents=True)
+    manifest = {"task_id": TASK, "call_id": "probe"}
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    real, probes = getattr(pathlib.Path, operation), []
+    error = error_type(number, "injected filesystem failure", str(path))
+
+    def unreadable(self, *args, **kwargs):
+        if self == path:
+            probes.append(self)
+            raise error
+        return real(self, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pathlib.Path, operation, unreadable)
+        with pytest.raises(OSError, match="unreadable now") as caught:
+            _manifest_at([tmp_path], TASK, "probe")
+    assert probes == [path] and caught.value.__cause__ is error
+    found, ref = _manifest_at([tmp_path], TASK, "probe")
+    assert found == manifest and ref["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 @pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="needs POSIX permissions")

@@ -18,9 +18,21 @@ def retain_cancelled_response(request, response, capture, *, control_reason: str
     object (model_dump for SDK responses), not a completed task/review verdict.
     Native transports continue to own any original wire-byte receipt separately.
     """
+    return _retain_physical_response(request, response, capture, control_reason=control_reason)
+
+
+def _retain_physical_response(request, response, capture, *, control_reason: str) -> dict:
     from dataclasses import asdict
 
-    body = response.model_dump() if hasattr(response, "model_dump") else response
+    if callable(getattr(response, "model_dump", None)):
+        body = response.model_dump()
+    elif isinstance(response, (dict, list)):
+        body = response
+    elif callable(getattr(response, "json", None)):
+        body = response.json()
+    else:
+        # Never consume a stream or pass an SDK repr off as its complete body.
+        raise TypeError(f"Unsupported physical response body: {type(response).__name__}")
     return persist_call(
         request.drive_root, task_id=request.task_id or "llm",
         call_id=f"physical_{capture.attempt_id}_response", call_type="physical_response",
@@ -29,6 +41,38 @@ def retain_cancelled_response(request, response, capture, *, control_reason: str
                   "provider": capture.provider, "state": capture.state,
                   "status": "received", "control_reason": control_reason},
     )
+
+
+def retain_received_response(request, response, *, capture=None, control_reason="received") -> dict:
+    """Keep the complete materialized body before lane normalization, best-effort.
+
+    Use only this execution's capture/root, not a prior attempt or a guessed data
+    directory. No response-only evidence is attached to the outbound transcript.
+    Accounting state is preserved verbatim: receipt is not a settlement claim.
+    """
+    from dataclasses import replace
+    from ouroboros.usage_accounting import (
+        current_physical_attempt_drive_root, current_usage_scope, last_physical_attempt_capture,
+    )
+
+    try:
+        current = last_physical_attempt_capture()
+        capture = capture if capture is not None else current
+        root = current_physical_attempt_drive_root()
+        if (capture is None or current is None or root is None
+                or capture.attempt_id != current.attempt_id
+                or (capture.model, capture.provider) != (request.model, request.provider)):
+            raise ValueError("matching physical response capture/root unavailable")
+        scope = current_usage_scope()
+        target = replace(request, drive_root=root,
+                         task_id=request.task_id or (scope.task_id if scope else ""))
+        return _retain_physical_response(target, response, capture, control_reason=control_reason)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Physical response retention gap (%s); useful response preserved", type(exc).__name__,
+            exc_info=True,
+        )
+        return {}
 
 
 def persist_observed_call(root: Any, *, payload: Any, writer: Any = None, **identity: Any) -> dict:

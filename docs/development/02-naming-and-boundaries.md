@@ -291,30 +291,25 @@ is where a deliberate exception states its reason.
 
 ### External facts: unknown is not no
 
-External model/provider facts (inputs, capacity, prices, ids, availability) can change
-without an Ouroboros release.
+Provider inputs, limits, prices, IDs and availability change without releases.
 
-1. Exact-route evidence, not lists: the route's own metadata or refusal, a dated probe
-   beside a provider-keyed wire projection with a recovery path, or the owner's
-   setting; never a model name, prefix or family, nor another route's catalog.
-2. Unknown is not no. Without evidence the owner's input, the tool and the explicit
-   request go through unchanged and the route answers; no shipped literal may drop
-   input, refuse a tool, rewrite a saved choice or narrow a request.
-3. Disclose a refusal as one request's outcome and repair that attempt; a durable "no"
-   needs scoped evidence of absence.
-4. A limit of our own transport is a fact about Ouroboros, declared at the lane and
-   named as such in what the model reads.
-5. A retained wire fact (the table) keeps source and date, exact scope and what happens
-   when stale either way; requested, sent and provider-reported values stay distinct.
+1. Use exact-route metadata/refusal, a dated probe beside its wire projection and
+   recovery path, or the owner's setting—not model names, prefixes, families or another catalog.
+2. Unknown is not no. Unevidenced input, tools and explicit requests pass unchanged;
+   shipped literals cannot drop input, refuse tools, rewrite choices or narrow requests.
+3. A refusal is one attempt; durable "no" needs scoped absence evidence.
+4. Our transport limits are declared at their lane and named to the acting model.
+5. The table keeps source, date, exact scope and stale-either-way effects. Requested,
+   sent and provider-reported values remain distinct.
 
-Guards: `tests/test_image_capability_contract.py` keeps unseen models' images on
-image-capable transports, `tests/test_model_name_invariance.py` unevidenced payloads
-name-independent (exceptions below); `tests/test_tristate_truthiness_guard.py` forbids
-truth-testing yes/no/unknown. Provenance grants no runtime authority; probes live in
-cited docstrings or contracts.
+Guards: `test_image_capability_contract.py` keeps unknown images on capable transports;
+`test_model_name_invariance.py` keeps unevidenced payloads name-independent (exceptions
+below); `test_tristate_truthiness_guard.py` forbids yes/no/unknown truth tests. All are
+under `tests/`. Provenance grants no runtime authority; cited docstrings/contracts own probes.
 
 | Location | Fact | Evidence & re-probe | If stale |
 |---|---|---|---|
+| `llm_openai_compatible.py::_copilot_block_choice` | Copilot business HTTPS Chat uses unindexed content blocks | HTTP probe 2026-11-03; sources/digests in `test_copilot_choice_blocks.py`. Re-probe before widening | Changed dialect: ambiguity rejects without resend; other hosts keep standard choices |
 | `ouroboros/tools/imagegen.py`; `ouroboros/gateways/image_api.py` | Image wire facts | [Dated sources](../IMAGE_GENERATION.md#direct-api-contracts); re-check each exact route | Stale positives refuse requests; negatives hide capability |
 | `ouroboros/llm_attempt.py::supports_message_cache_control` | Cache markers OpenRouter accepts or translates (`anthropic/`, `google/gemini-`, `openai/`) | `openai/`: OpenRouter caching guide in docstring, no live probe; re-probe before widening, never by name resemblance | False positive invalidates a request; false negative loses the prompt cache |
 | `ouroboros/request_wire_recovery.py` | A compatible route refuses a cache hint | Its refusal after a repaired success, 14 days per route profile | A fixed server regains hints at expiry |

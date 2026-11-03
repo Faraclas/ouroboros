@@ -275,7 +275,8 @@ def test_native_review_retires_before_chat_and_records_only_logs(tmp_path, fold,
     second = (_signed_call("compact_context", {"working_note": "The source remains in its checkpoint.", "keep_unit_ids": []}, "fold")
               if fold else _signed_call("read_file", {"path": "source.txt"}, "read-again"))
     llm = _ScriptedLLM([
-        _signed_call("read_file", {"path": "source.txt"}, "read"), second, {"content": _VERDICT},
+        _signed_call("read_file", {"path": "source.txt"}, "read"), second,
+        {"tool_calls": [_tool_call("submit_review", {"answer": _VERDICT}, "submit")]},
     ])
     executor = _executor(tmp_path, llm)
     executor.assignment.request.surface = surface

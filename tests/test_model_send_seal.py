@@ -353,10 +353,7 @@ def test_foreign_serializer_basis_is_never_reinterpreted(data_root, monkeypatch)
 
 
 def test_dispatch_persists_once_without_a_readback_projection(data_root, monkeypatch):
-    """The note budgets ONE read-back and ONE projection per attempt: the raw
-    candidate is never serialized again for the compare (the seam digests are
-    reused), and the CAS-basis projection pipeline runs exactly once more than
-    persist alone (persist: 1, verify: 1)."""
+    """Send sealing never reprojects its candidate; response custody is separate."""
     from ouroboros import llm_attempt, observability
 
     canonical_calls = []
@@ -369,15 +366,20 @@ def test_dispatch_persists_once_without_a_readback_projection(data_root, monkeyp
     real_redact = observability.redact_projection
     monkeypatch.setattr(
         observability, "redact_projection",
-        lambda value: redact_calls.append(1) or real_redact(value),
+        lambda value: redact_calls.append(copy.deepcopy(value)) or real_redact(value),
     )
-    _dispatch(data_root, "task-cost-shape")
+    final = _dispatch(data_root, "task-cost-shape")
     # 2 per _attempt_request (raw + context) × 2 builds (request + seam
     # identity re-check) — verification adds ZERO raw serializations.
     assert len(canonical_calls) == 4, len(canonical_calls)
-    # persist_call redacts once for the CAS write; verification reconstructs
-    # once. Nothing else may redact this candidate.
-    assert len(redact_calls) == 1, len(redact_calls)
+    # One outbound projection and one independent complete-response projection;
+    # neither duplicates the outbound candidate for readback verification.
+    assert len(redact_calls) == 2, len(redact_calls)
+    sent = [value for value in redact_calls if "response" not in value]
+    received = [value for value in redact_calls if "response" in value]
+    assert len(sent) == len(received) == 1
+    assert received[0]["response"] == _Response().model_dump()
+    assert received[0]["physical_attempt_capture"]["attempt_id"] == final["attempt_id"]
     assert not _violation_files(data_root)
 
 

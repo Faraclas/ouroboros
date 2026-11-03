@@ -2,3 +2,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+
+# Packaged runtime downloads are build inputs, not source.
+/claudexor-runtime/
+/betterleaks-standalone/
