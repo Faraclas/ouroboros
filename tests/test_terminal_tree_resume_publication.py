@@ -1,5 +1,6 @@
 """An answered tree's Resume publishes its grant and each child's choice together."""
 import copy
+import json
 
 import pytest
 
@@ -13,6 +14,9 @@ from tests.test_owner_pause import _live_tree, _owner_park
 
 def _park_tree(tmp_path, monkeypatch):
     q, state, workers = _install_queue(tmp_path, monkeypatch)
+    # This roundtrip owns its snapshot producer; another test's acceptance
+    # fence must not be serialized as authority over this fresh tree.
+    monkeypatch.setattr(q, "ACCEPTANCE_FENCES", {})
     monkeypatch.setattr(state, "budget_remaining", lambda *a, **k: 5.0)
     _live_tree(tmp_path, workers)
     workers.RUNNING.pop("root-1")
@@ -79,6 +83,23 @@ def test_tree_resume_publication_and_retry_after_real_boot(tmp_path, monkeypatch
         assert first["ok"] is False
         assert first["error"] == ("grant_not_recorded" if failure == "fence_write" else "snapshot_not_persisted")
         assert restored_in_memory, "rollback must restore the fence, latch and child carriers"
+
+
+def test_publication_fixture_isolates_inherited_acceptance_fence(tmp_path, monkeypatch):
+    from supervisor import queue
+
+    inherited = {"root-1": {"root_task_id": "root-1", "task_id": "root-1",
+                            "status": "sealed", "token": "prior-test"}}
+    monkeypatch.setattr(queue, "ACCEPTANCE_FENCES", inherited)
+    with monkeypatch.context() as isolated:
+        # Exercise the original roundtrip assertions, including the never-started
+        # child's retained hold, against a process contaminated by a prior test.
+        test_tree_resume_publication_and_retry_after_real_boot(tmp_path, isolated, "none")
+        snapshot = json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text())
+        assert snapshot["acceptance_fences"] == []
+        assert queue.ACCEPTANCE_FENCES is not inherited
+    assert queue.ACCEPTANCE_FENCES is inherited
+    assert inherited["root-1"]["status"] == "sealed"
 
 
 def test_old_released_tree_grant_does_not_ack_a_contradicting_restored_latch(tmp_path, monkeypatch):
