@@ -4,13 +4,13 @@ Machine extraction of the `docs/ARCHITECTURE.md` "Data layout (`~/Ouroboros/`)" 
 
 Source: `docs/architecture/01-high-level-architecture.md`, physical LF lines 623-730; UTF-8 SHA-256 `3547f1a1fd7739c01293efc70917c474bf010d970048c9c279cb0706b72115d6`.
 
-- entries: **97** (code-ref: 90, repo-dir: 7)
+- entries: **97** (code-ref: 90, repo-dir: 6, repo-path: 1)
 
 | entry | probe | resolution |
 |---|---|---|
 | `.test-evidence/` | `.test-evidence` | code-ref |
 | `repo/` | `repo` | code-ref |
-| `ouroboros/` | `ouroboros` | repo-dir |
+| `ouroboros/` | `ouroboros` | repo-path |
 | `supervisor/` | `supervisor` | repo-dir |
 | `web/` | `web` | repo-dir |
 | `docs/` | `docs` | repo-dir |
