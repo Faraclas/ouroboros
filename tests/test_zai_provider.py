@@ -327,10 +327,9 @@ class TestVisionSlot:
 
     @pytest.fixture
     def wire(self, monkeypatch):
-        import httpx
-
         from ouroboros import net_transport
 
+        httpx = net_transport._openai_httpx_module()
         sent = []
 
         def answer(request):

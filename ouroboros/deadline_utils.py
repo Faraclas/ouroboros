@@ -63,10 +63,10 @@ def physical_dispatch_timeout(explicit: Any = None) -> Any:
     remaining = require_physical_dispatch_window()
     if remaining is None:
         return explicit
-    import httpx
-
-    if isinstance(explicit, httpx.Timeout):
-        return httpx.Timeout(**{
+    # SDKs can select another compatible HTTP backend. Keep the phase
+    # contract and its concrete type rather than widening it to a scalar.
+    if callable(getattr(explicit, "as_dict", None)):
+        return type(explicit)(**{
             phase: remaining if value is None else min(value, remaining)
             for phase, value in explicit.as_dict().items()
         })

@@ -938,7 +938,7 @@ def test_public_remote_chat_carries_stream_deadline_and_custom_receipts(isolated
     assert calls[0]["stream"] is True and calls[0]["stream_options"] == {"include_usage": True}
     assert calls[0]["max_completion_tokens"] == 1024 and calls[0]["reasoning_effort"] == "high"
     timeout = calls[0]["timeout"]
-    assert (timeout.read if isinstance(timeout, httpx.Timeout) else timeout) == 10
+    assert (timeout.as_dict()["read"] if callable(getattr(timeout, "as_dict", None)) else timeout) == 10
 
 
 def test_late_complete_stream_settles_original_attempt(isolated, monkeypatch):
