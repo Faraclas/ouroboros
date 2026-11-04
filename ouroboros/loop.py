@@ -108,6 +108,16 @@ def _finalize_loop_candidate(content, limit_ctx, tools, emit_progress, *, after_
     """One completion request owner, with ordinary first/direct prose compatibility."""
     from ouroboros.loop_delivery import consume_completion_request, hold_completion_response
     ctx = tools._ctx
+    from ouroboros._usage_response import OUTPUT_LIMIT_FINISH_REASONS
+
+    if assistant_message is not None and limit_ctx.accumulated_usage.pop("_response_finish_reason", None) in OUTPUT_LIMIT_FINISH_REASONS:
+        # A truncated reply is retained dialogue, not a delivery candidate.
+        limit_ctx.messages.append(dict(assistant_message, role=assistant_message.get("role", "assistant")))
+        _append_or_merge_user_message(limit_ctx.messages, _output_exhausted_notice({}, retained_text=True))
+        _emit_round_progress(content, assistant_message, emit_progress, limit_ctx.llm_trace)
+        return None
+    if assistant_message is not None:
+        _latch_final_answer_marker(limit_ctx.llm_trace, content)
     if resume_candidate:
         content = ctx._delivery_candidate.full_text
     if resume_candidate and _owner_generation_changed(ctx):
@@ -320,9 +330,8 @@ def _timeout_repeat_handover(limit_ctx: Any, transport_wait: Any, llm_trace: Dic
     return text, usage, llm_trace
 
 
-def _output_exhausted_notice(facts: Any) -> str:
-    """The one host fact the next ordinary round reads after a reply that ended on its
-    output limit before any visible text or tool call; no retry, no provider terminal.
+def _output_exhausted_notice(facts: Any, *, retained_text: bool = False) -> str:
+    """The next ordinary turn's output-limit fact, with retained or empty text.
 
     Names only what that attempt's own records carry (``_usage_response.output_exhaustion_facts``):
     the allowance its receipt shows was sent and the reasoning tokens its provider reported.
@@ -330,8 +339,11 @@ def _output_exhausted_notice(facts: Any) -> str:
     """
     facts = facts if isinstance(facts, dict) else {}
     sent, reasoning = facts.get("sent_allowance_tokens"), facts.get("reasoning_tokens")
-    return ("[SYSTEM NOTICE]\nThe provider ended your previous reply on its length limit before any "
-            "visible text or tool call; nothing from it was kept."
+    state = ("The provider ended this reply on its output limit. Your text is retained above; no tool call was executed. "
+             "This reply did not complete the task. The next delivered answer must be complete, not only a continuation fragment."
+             if retained_text else "The provider ended your previous reply on its length limit before any "
+             "visible text or tool call; nothing from it was kept.")
+    return ("[SYSTEM NOTICE]\n" + state
             + (f" The reply allowance sent was {sent} tokens." if sent else "")
             + (f" The provider reported {reasoning} reasoning tokens for it." if reasoning is not None else "")
             + " Decide how to continue: a smaller step, a tool, or an honest final report.")
@@ -745,7 +757,6 @@ def run_llm_loop(
             tool_calls = msg.get("tool_calls") or []
             tools._ctx._request_wire_custom_receipts = accumulated_usage.pop(CUSTOM_RECEIPTS_USAGE_KEY, ())
             content = msg.get("content")
-            _latch_final_answer_marker(llm_trace, content, current_tool_calls=tool_calls)
             # Every metered response counts as nanny progress; its delegate verb requests
             # anchor here, before the batch's saves or a park (a cold tail replays none).
             _note_nanny_delegate_activity(tools._ctx, round_idx, accumulated_usage, tool_calls)
@@ -759,6 +770,7 @@ def run_llm_loop(
                     continue
                 return final_result
 
+            _latch_final_answer_marker(llm_trace, content, current_tool_calls=tool_calls)
             assistant_msg = dict(msg, role=msg.get("role", "assistant"))
             messages.append(assistant_msg)
             _emit_round_progress(content, msg, emit_progress, llm_trace)

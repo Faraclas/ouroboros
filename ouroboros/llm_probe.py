@@ -182,6 +182,10 @@ def controlled_probe_error(exc: BaseException) -> dict[str, Any]:
 
         if isinstance(exc, ExtraCaBundleError):
             reason = str(exc)  # the owner's trust bundle, not the provider, is what failed
+        elif getattr(exc, "stream_rejected", False):
+            reason = "Provider response rejected"
+        elif getattr(exc, "stream_incomplete", False):
+            reason = "Provider outcome unknown"
         elif isinstance(exc, timeout_types):
             reason = "Timed out"
         elif isinstance(exc, connect_types):
@@ -259,8 +263,18 @@ def probe_provider_readiness(
             remote_client = client._new_remote_client(target)
 
             def send_openai(payload):
+                from ouroboros.net_transport import copilot_response_failure
+
                 scoped = remote_client.with_options(timeout=timeout)
-                return scoped.chat.completions.create(**payload)
+                try:
+                    return scoped.chat.completions.create(**payload)
+                except Exception as error:
+                    failure = copilot_response_failure(error)
+                    if failure is None:
+                        raise
+                # Restore the typed fact inside accounting, not just in the
+                # display mapper after an SDK connection wrapper was settled.
+                raise failure
 
             dispatch = send_openai
 

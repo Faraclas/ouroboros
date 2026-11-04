@@ -26,6 +26,55 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Dict, Optional, Tuple
 
+from ouroboros.llm_stream import IncompleteProviderStream, RejectedProviderStream, _tool_call_problem
+
+
+class CopilotRejectedResponse(RejectedProviderStream):
+    """A received Responses terminal that must not become a Chat answer."""
+
+    def __init__(self, body: Any, detail: str):
+        super().__init__(detail, usage=_copilot_response_usage(body))
+        self.body = body
+
+
+class CopilotPendingResponse(IncompleteProviderStream):
+    """A received body without a terminal generation witness; never resend it."""
+
+    def __init__(self, body: Any):
+        super().__init__("Copilot Responses body has no terminal status")
+        self.body = body
+
+
+def copilot_response_failure(error: BaseException) -> Optional[BaseException]:
+    """Recover only our typed result from the SDK's explicit transport wrapper.
+
+    Restore the protocol fact inside the physical send before accounting/retry.
+    Ordinary connection/read errors keep their SDK classification.
+    """
+    seen = set()
+    while isinstance(error, BaseException) and id(error) not in seen:
+        if isinstance(error, (CopilotRejectedResponse, CopilotPendingResponse)):
+            return error
+        seen.add(id(error))
+        error = error.__cause__
+    return None
+
+
+def _copilot_response_usage(body: Any) -> Dict[str, Any]:
+    """Translate counters without filling absent observations with measured zeros."""
+    usage = body.get("usage") if isinstance(body, dict) else None
+    usage = dict(usage) if isinstance(usage, dict) else {}
+    for native, chat in (("input_tokens", "prompt_tokens"), ("output_tokens", "completion_tokens"),
+                         ("input_tokens_details", "prompt_tokens_details"),
+                         ("output_tokens_details", "completion_tokens_details")):
+        if native in usage:
+            usage[chat] = usage.pop(native)
+    # A complete rejection still settles a known response, with unknown money.
+    # Existing failure accounting accepts nonempty nullable counter projections.
+    usage.setdefault("prompt_tokens", None)
+    usage.setdefault("completion_tokens", None)
+    return usage
+
 
 class ExtraCaBundleError(RuntimeError):
     """``OUROBOROS_EXTRA_CA_BUNDLE`` names a file that cannot serve as a trust anchor."""
@@ -178,6 +227,8 @@ def _copilot_uses_responses_api(model: str) -> bool:
 
 
 def _copilot_chat_to_responses_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    import json
+
     model = str(payload.get("model") or "")
     out: Dict[str, Any] = {"model": model}
     input_items = []
@@ -226,7 +277,7 @@ def _copilot_chat_to_responses_payload(payload: Dict[str, Any]) -> Dict[str, Any
                     "type": "function_call",
                     "call_id": str(tc.get("id") or f"call_{idx}"),
                     "name": str(fn.get("name") or ""),
-                    "arguments": str(fn.get("arguments") or "{}"),
+                    "arguments": fn["arguments"] if isinstance(fn.get("arguments"), str) else "{}",
                 })
         elif role == "tool":
             out_str = content_val if isinstance(content_val, str) else json.dumps(content_val)
@@ -294,26 +345,50 @@ def _copilot_chat_to_responses_payload(payload: Dict[str, Any]) -> Dict[str, Any
 def _copilot_responses_to_chat_completion(rjson: Dict[str, Any], requested_model: str) -> Dict[str, Any]:
     import time
 
+    if not isinstance(rjson, dict):
+        raise CopilotRejectedResponse(rjson, "Copilot Responses body is not an object")
+    status = rjson.get("status")
+    if status in {"failed", "cancelled"} or rjson.get("error"):
+        raise CopilotRejectedResponse(rjson, "Copilot Responses generation did not complete successfully")
+    if status not in {"completed", "incomplete"}:
+        raise CopilotPendingResponse(rjson)
+    details = rjson.get("incomplete_details")
+    exhausted = status == "incomplete" and isinstance(details, dict) and details.get("reason") == "max_output_tokens"
+    if status == "incomplete" and not exhausted:
+        raise CopilotRejectedResponse(rjson, "Copilot Responses generation is incomplete")
     text_parts = []
+    refusal_parts = []
     reasoning_parts = []
     tool_calls = []
     for idx, item in enumerate(rjson.get("output") or []):
         if not isinstance(item, dict):
             continue
         itype = item.get("type")
+        if not exhausted and itype in {"message", "function_call"} and item.get("status") not in (None, "completed"):
+            raise CopilotRejectedResponse(rjson, "Copilot Responses output item is not complete")
         if itype == "message":
             for c in item.get("content") or []:
                 if isinstance(c, dict) and c.get("type") in ("output_text", "text"):
                     text_parts.append(str(c.get("text") or ""))
-        elif itype == "function_call":
-            tool_calls.append({
-                "id": str(item.get("call_id") or item.get("id") or f"call_{idx}"),
+                elif isinstance(c, dict) and c.get("type") == "refusal":
+                    refusal = str(c.get("refusal") or "")
+                    refusal_parts.append(refusal)
+        elif itype == "function_call" and not exhausted:
+            call = {
+                "id": item.get("call_id"),
                 "type": "function",
                 "function": {
-                    "name": str(item.get("name") or ""),
-                    "arguments": str(item.get("arguments") or "{}"),
+                    "name": item.get("name"),
+                    "arguments": item.get("arguments"),
                 },
-            })
+            }
+            # Native item id is not the call/result correlation key. Preserve
+            # observed strings (including empty arguments); shared execution owns
+            # JSON validation and its existing empty-string no-argument policy.
+            problem = _tool_call_problem(call)
+            if problem:
+                raise CopilotRejectedResponse(rjson, f"Copilot Responses function call {problem}")
+            tool_calls.append(call)
         elif itype == "reasoning":
             for s in item.get("summary") or []:
                 if isinstance(s, dict) and s.get("text"):
@@ -323,18 +398,20 @@ def _copilot_responses_to_chat_completion(rjson: Dict[str, Any], requested_model
     if content_text is None and not tool_calls:
         content_text = ""
     message: Dict[str, Any] = {"role": "assistant", "content": content_text}
+    if refusal_parts:
+        # Shared consumers can mistake refusal text for a summary/answer. Keep
+        # the native refusal in the rejected body's private evidence instead.
+        raise CopilotRejectedResponse(rjson, "Copilot Responses generation contains a refusal")
     if tool_calls:
         message["tool_calls"] = tool_calls
     if reasoning_parts:
         message["reasoning_content"] = "\n".join(reasoning_parts)
 
-    finish_reason = "tool_calls" if tool_calls else ("length" if rjson.get("status") == "incomplete" else "stop")
-    u = rjson.get("usage") if isinstance(rjson.get("usage"), dict) else {}
-    in_tok = int(u.get("input_tokens") or 0)
-    out_tok = int(u.get("output_tokens") or 0)
-    tot_tok = int(u.get("total_tokens") or (in_tok + out_tok))
-    in_det = u.get("input_tokens_details") if isinstance(u.get("input_tokens_details"), dict) else {}
-    out_det = u.get("output_tokens_details") if isinstance(u.get("output_tokens_details"), dict) else {}
+    # Preserve truncated text/length for consumers owning truncation policy,
+    # but never execute incomplete calls even when their JSON happens to parse.
+    if exhausted:
+        message.pop("tool_calls", None)
+    finish_reason = "length" if exhausted else "tool_calls" if tool_calls else "stop"
 
     return {
         "id": str(rjson.get("id") or "chatcmpl-copilot-responses"),
@@ -346,13 +423,7 @@ def _copilot_responses_to_chat_completion(rjson: Dict[str, Any], requested_model
             "message": message,
             "finish_reason": finish_reason,
         }],
-        "usage": {
-            "prompt_tokens": in_tok,
-            "completion_tokens": out_tok,
-            "total_tokens": tot_tok,
-            "prompt_tokens_details": {"cached_tokens": int(in_det.get("cached_tokens") or 0)},
-            "completion_tokens_details": {"reasoning_tokens": int(out_det.get("reasoning_tokens") or 0)},
-        },
+        "usage": _copilot_response_usage(rjson),
     }
 
 
@@ -416,27 +487,35 @@ def _wrap_copilot_responses_transport(base_transport: Any, httpx_mod: Any, async
         return new_req, model, was_stream
 
     def _convert_response(resp: Any, raw_bytes: bytes, request: Any, model: str, was_stream: bool):
+        # read/aread have decoded the body; compression/framing headers belong
+        # to the original bytes. Preserve request/retry and other metadata.
+        headers = [(key, value) for key, value in resp.headers.multi_items()
+                   if key.lower() not in {"content-encoding", "content-length", "transfer-encoding", "content-type"}]
         if resp.status_code != 200:
             return httpx_mod.Response(
                 status_code=resp.status_code,
-                headers=resp.headers,
+                headers=[*headers, ("content-type", resp.headers.get("content-type", "application/json"))],
                 content=raw_bytes,
                 request=request,
             )
-        rjson = json.loads(raw_bytes)
+        try:
+            rjson = json.loads(raw_bytes)
+        except (ValueError, UnicodeError) as error:
+            raise CopilotRejectedResponse(raw_bytes.decode("utf-8", "replace"),
+                                          "Copilot Responses body is not JSON") from error
         chat_comp = _copilot_responses_to_chat_completion(rjson, model)
         if was_stream:
             sse_bytes = _copilot_chat_completion_to_sse(chat_comp)
             return httpx_mod.Response(
                 status_code=200,
-                headers={"content-type": "text/event-stream; charset=utf-8"},
+                headers=[*headers, ("content-type", "text/event-stream; charset=utf-8")],
                 content=sse_bytes,
                 request=request,
             )
         out_bytes = json.dumps(chat_comp).encode("utf-8")
         return httpx_mod.Response(
             status_code=200,
-            headers={"content-type": "application/json"},
+            headers=[*headers, ("content-type", "application/json")],
             content=out_bytes,
             request=request,
         )
@@ -452,7 +531,14 @@ def _wrap_copilot_responses_transport(base_transport: Any, httpx_mod: Any, async
                 return await orig_async(request)
             new_req, model, was_stream = prep
             resp = await orig_async(new_req)
-            raw_bytes = await resp.aread()
+            try:
+                raw_bytes = await resp.aread()
+            except BaseException:
+                try:
+                    await resp.aclose()
+                except BaseException:
+                    pass  # Cleanup cannot replace the read/cancellation cause.
+                raise
             await resp.aclose()
             return _convert_response(resp, raw_bytes, request, model, was_stream)
 
@@ -469,7 +555,14 @@ def _wrap_copilot_responses_transport(base_transport: Any, httpx_mod: Any, async
             return orig_sync(request)
         new_req, model, was_stream = prep
         resp = orig_sync(new_req)
-        raw_bytes = resp.read()
+        try:
+            raw_bytes = resp.read()
+        except BaseException:
+            try:
+                resp.close()
+            except BaseException:
+                pass
+            raise
         resp.close()
         return _convert_response(resp, raw_bytes, request, model, was_stream)
 

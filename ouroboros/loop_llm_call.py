@@ -1207,6 +1207,10 @@ def _send_main_candidate(
 
 def _take_response_facts(usage: Dict[str, Any], msg: Dict[str, Any], accumulated_usage: Dict[str, Any]) -> None:
     model_facts = usage.get("claudexor") or {}
+    # Attempt-local observation, not a response-only field in replayed history.
+    accumulated_usage.pop("_response_finish_reason", None)
+    if (finish := response_finish_reason(usage, msg))[0]:
+        accumulated_usage["_response_finish_reason"] = finish[1]
     accumulated_usage["_model_route"] = dict(model_facts.get("route") or {})
     accumulated_usage["_model_substitutions"] = model_facts.get("substituted") or []
     for stale in ("_last_llm_error", "_last_llm_error_kind", "_last_llm_failure", "_acting_route_failure", "_last_llm_retry_same_request",
