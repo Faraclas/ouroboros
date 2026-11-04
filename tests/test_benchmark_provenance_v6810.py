@@ -567,6 +567,7 @@ def test_task_result_row_publishes_the_runtime_reason_alongside_the_adapter_stag
 # enforces — a new runtime code with no row here fails the suite, which is the only thing
 # that stops the vocabulary from being hand-copied beside the check again.
 _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
+    "invalid_resource": (False, "gateway/projects.py: malformed JSON or resource-association schema input; HTTP 400 before the resource write, never a task terminal or truncated attempt"),
     "project_routing_fence_lookup_failed": (False, "gateway/tasks.py: Project authority unreadable before admission; HTTP 409, no running attempt truncated"),
     "input_source_selection_unsupported": (False, "HTTP 400 before root-task admission; no execution was truncated"),
     "task_source_invalid": (False, "gateway/task_archive.py: source selector basename differs from the requested artifact; HTTP 400, not a task terminal or trial truncation"),
