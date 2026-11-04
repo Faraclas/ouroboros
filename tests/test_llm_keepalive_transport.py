@@ -223,6 +223,7 @@ def test_cached_sync_client_carries_keepalive_transport(monkeypatch):
     class FakeOpenAI:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+            self.base_url = kwargs.get("base_url")
 
     class FakeDefaultHttpxClient:
         def __init__(self, **kwargs):
@@ -249,6 +250,7 @@ def test_cached_async_client_carries_keepalive_transport(monkeypatch):
     class FakeAsyncOpenAI:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+            self.base_url = kwargs.get("base_url")
 
     class FakeDefaultAsyncHttpxClient:
         def __init__(self, **kwargs):
@@ -316,10 +318,12 @@ def test_cached_clients_keep_env_proxy_mounts_on_proxied_installs(monkeypatch):
     class FakeOpenAI:
         def __init__(self, **kwargs):
             sync_captured.update(kwargs)
+            self.base_url = kwargs.get("base_url")
 
     class FakeAsyncOpenAI:
         def __init__(self, **kwargs):
             async_captured.update(kwargs)
+            self.base_url = kwargs.get("base_url")
 
     def _must_not_build(**_kwargs):
         raise AssertionError("proxied installs must keep SDK default construction")
@@ -429,6 +433,7 @@ def test_cached_client_without_default_classes_still_builds(monkeypatch):
     class FakeOpenAI:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+            self.base_url = kwargs.get("base_url")
 
     monkeypatch.setitem(
         sys.modules, "openai", types.SimpleNamespace(OpenAI=FakeOpenAI),
@@ -451,6 +456,7 @@ def test_web_search_openai_client_carries_keepalive_transport(monkeypatch):
     class FakeOpenAI:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+            self.base_url = kwargs.get("base_url")
 
     class FakeDefaultHttpxClient:
         def __init__(self, **kwargs):

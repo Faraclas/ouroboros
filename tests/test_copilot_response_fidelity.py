@@ -42,20 +42,20 @@ def sdk_reply(body, *, asynchronous=False, stream=False, status=200, compressed=
         seen.append(request)
         return hm.Response(status, content=data, headers=headers)
 
-    transport = nt._wrap_copilot_responses_transport(hm.MockTransport(handler), hm, asynchronous)
+    transport = hm.MockTransport(handler)
     import openai
     kwargs = dict(api_key="offline-fixture", base_url="https://api.githubcopilot.com", max_retries=0)
     request = dict(model="gpt-6.1-sol", messages=[{"role": "user", "content": "fixture"}], stream=stream)
     if asynchronous:
         async def run():
-            async with openai.AsyncOpenAI(http_client=hm.AsyncClient(transport=transport), **kwargs) as client:
+            async with nt.attach_copilot_client(openai.AsyncOpenAI(http_client=hm.AsyncClient(transport=transport), **kwargs), async_client=True) as client:
                 result = await client.chat.completions.create(**request)
                 if stream:
                     return [chunk.model_dump() async for chunk in result]
                 return result.model_dump()
         result = asyncio.run(run())
     else:
-        with openai.OpenAI(http_client=hm.Client(transport=transport), **kwargs) as client:
+        with nt.attach_copilot_client(openai.OpenAI(http_client=hm.Client(transport=transport), **kwargs)) as client:
             result = client.chat.completions.create(**request)
             result = [chunk.model_dump() for chunk in result] if stream else result.model_dump()
     assert len(seen) == 1 and seen[0].url.path == "/responses"
@@ -171,7 +171,7 @@ def test_physical_driver_preserves_terminal_separately_from_unknown_money(tmp_pa
     def handler(request):
         sends.append(request)
         return hm.Response(200, json=body)
-    transport = nt._wrap_copilot_responses_transport(hm.MockTransport(handler), hm, asynchronous)
+    transport = hm.MockTransport(handler)
     route = {"provider": "openai-compatible", "resolved_model": "gpt-6.1-sol", "usage_model": "gpt-6.1-sol",
              "base_url": "https://api.githubcopilot.com", "api_key": "fixture", "supports_openrouter_extensions": False}
     kwargs = {"model": "gpt-6.1-sol", "messages": [{"role": "user", "content": "fixture"}],
@@ -182,11 +182,13 @@ def test_physical_driver_preserves_terminal_separately_from_unknown_money(tmp_pa
                 async def run():
                     async with openai.AsyncOpenAI(api_key="fixture", base_url=route["base_url"], max_retries=0,
                                                  http_client=hm.AsyncClient(transport=transport)) as client:
+                        nt.attach_copilot_client(client, async_client=True)
                         return await LLMClient()._create_chat_completion_with_retries_async(client.chat.completions.create, kwargs, route)
                 asyncio.run(run())
             else:
                 with openai.OpenAI(api_key="fixture", base_url=route["base_url"], max_retries=0,
                                    http_client=hm.Client(transport=transport)) as client:
+                    nt.attach_copilot_client(client)
                     LLMClient()._create_chat_completion_with_retries(client.chat.completions.create, kwargs, route)
     assert len(sends) == 1
     assert outcome_unknown_on_chain(caught.value) is (status == "in_progress")
@@ -200,6 +202,8 @@ def test_physical_driver_preserves_terminal_separately_from_unknown_money(tmp_pa
 def test_read_fault_cleanup_keeps_primary_error(asynchronous):
     hm = nt._openai_httpx_module()
     closed = []
+    import openai
+    request = hm.Request("POST", "https://api.githubcopilot.com/chat/completions", json={"model": "gpt-6.1-sol"})
     if asynchronous:
         class Broken(hm.AsyncByteStream):
             async def __aiter__(self):
@@ -207,11 +211,14 @@ def test_read_fault_cleanup_keeps_primary_error(asynchronous):
                 raise asyncio.CancelledError()
             async def aclose(self):
                 closed.append(True)
-                # httpx itself closes its stream before this wrapper regains control.
         async def run():
-            transport = nt._wrap_copilot_responses_transport(hm.MockTransport(lambda req: hm.Response(200, stream=Broken())), hm, True)
-            with pytest.raises(asyncio.CancelledError):
-                await transport.handle_async_request(hm.Request("POST", "https://api.githubcopilot.com/chat/completions", json={"model": "gpt-6.1-sol"}))
+            http = hm.AsyncClient(transport=hm.MockTransport(lambda req: hm.Response(200, stream=Broken())))
+            client = nt.attach_copilot_client(openai.AsyncOpenAI(api_key="fixture", base_url="https://api.githubcopilot.com", http_client=http), async_client=True)
+            try:
+                with pytest.raises(asyncio.CancelledError):
+                    await http.send(request, stream=True)
+            finally:
+                await client.close()
         asyncio.run(run())
     else:
         class Broken(hm.SyncByteStream):
@@ -220,10 +227,14 @@ def test_read_fault_cleanup_keeps_primary_error(asynchronous):
                 raise hm.ReadError("primary read failure")
             def close(self):
                 closed.append(True)
-                # httpx itself closes its stream before this wrapper regains control.
-        transport = nt._wrap_copilot_responses_transport(hm.MockTransport(lambda req: hm.Response(200, stream=Broken())), hm, False)
-        with pytest.raises(hm.ReadError, match="primary read failure"):
-            transport.handle_request(hm.Request("POST", "https://api.githubcopilot.com/chat/completions", json={"model": "gpt-6.1-sol"}))
+        http = hm.Client(transport=hm.MockTransport(lambda req: hm.Response(200, stream=Broken())))
+        client = nt.attach_copilot_client(openai.OpenAI(api_key="fixture", base_url="https://api.githubcopilot.com", http_client=http))
+        try:
+            with pytest.raises(hm.ReadError, match="primary read failure"):
+                http.send(request, stream=True)
+        finally:
+            client.close()
+
     assert closed
 
 
@@ -339,9 +350,10 @@ def test_provider_probe_unwraps_inside_physical_accounting(tmp_path, monkeypatch
     def handler(request):
         sends.append(request)
         return hm.Response(200, json=native(status))
-    transport = nt._wrap_copilot_responses_transport(hm.MockTransport(handler), hm, False)
+    transport = hm.MockTransport(handler)
     remote = openai.OpenAI(api_key="fixture", base_url="https://api.githubcopilot.com",
                           max_retries=0, http_client=hm.Client(transport=transport))
+    nt.attach_copilot_client(remote)
     client = LLMClient()
     monkeypatch.setattr(client, "_new_remote_client", lambda _target: remote)
     result = client.probe_provider_readiness("openai-compatible::gpt-6.1-sol", settings={
@@ -408,10 +420,11 @@ def test_real_loop_registry_tool_backflow(tmp_path, monkeypatch, provider_catalo
         return hm.Response(200, json=body)
 
     def fresh(target, timeout=None):
-        transport = nt._wrap_copilot_responses_transport(hm.MockTransport(handler), hm, False)
+        transport = hm.MockTransport(handler)
         http = hm.Client(transport=transport)
         remote = openai.OpenAI(api_key="fixture", base_url="https://api.githubcopilot.com",
                               max_retries=0, http_client=http)
+        nt.attach_copilot_client(remote)
         return remote, http
 
     remote, http = fresh({})

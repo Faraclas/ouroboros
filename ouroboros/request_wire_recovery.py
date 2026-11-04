@@ -1299,6 +1299,18 @@ def finalize_wire_response(
         from ouroboros.request_wire_attempt import WireUsageDisclosure
 
         disclosure = WireUsageDisclosure.from_candidate(candidate, capture).as_dict()
+        from ouroboros.copilot_responses import copilot_endpoint, _copilot_uses_responses_api
+        translated = (copilot_endpoint(registered.target.get("base_url"))
+                      and _copilot_uses_responses_api(registered.target.get("resolved_model")))
+        projection = normalized_usage.get("http_projection")
+        if translated:
+            disclosure.update(candidate_boundary="sdk_input", applied_effort_source="sdk_input",
+                              compatibility_learning="not_performed_translated_surface")
+            if (isinstance(projection, Mapping) and projection.get("attempt_id") == capture.attempt_id
+                    and projection.get("sdk_candidate_sha256") == candidate.candidate_sha256):
+                disclosure["observed_http"] = copy.deepcopy(dict(projection))
+            else:
+                disclosure["observed_http_gap"] = "matching_observation_unavailable"
         existing = normalized_usage.get("request_wire")
         if isinstance(existing, Mapping) and dict(existing) != disclosure:
             raise ValueError("request-wire disclosure differs from settled candidate")
@@ -1308,6 +1320,10 @@ def finalize_wire_response(
         _WIRE_CALL_STATE.set(state)
     except (TypeError, ValueError):
         _WIRE_CALL_STATE.set(replace(state, settled=None))
+        return
+    if translated:
+        # Responses acceptance cannot teach an unprojected Chat compatibility
+        # profile. The exact SDK candidate remains a truthful input receipt.
         return
     try:
         observation = observe_wire_semantics(

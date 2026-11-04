@@ -38,8 +38,9 @@ from ouroboros.llm_attempt import (
 )
 from ouroboros.deadline_utils import physical_dispatch_timeout
 from ouroboros.llm_stream import consume_stream, consume_stream_async
+from ouroboros.llm_observability import http_observation_scope, bind_http_observations
 from ouroboros.transport_custody import ProviderNotDispatched
-from ouroboros.net_transport import copilot_response_failure
+from ouroboros.copilot_responses import copilot_response_failure
 from ouroboros.reasoning_artifacts import (
     note_replay_omission,
     pop_reasoning_pin_note,
@@ -421,20 +422,22 @@ class _RecoveryLadderMixin:
 
             def dispatch():
                 timeout = physical_dispatch_timeout(transport_timeout)
-                try:
-                    response = create_fn(**candidate, **({"timeout": timeout} if timeout is not None else {}))
-                except Exception as error:
-                    native_failure = copilot_response_failure(error)
-                    if native_failure is None:
-                        refusal = processing_refusal(target, candidate, error)
-                        if refusal is error:
-                            raise
-                        raise refusal from error
-                else:
-                    native_failure = None
-                if native_failure is not None:
-                    raise native_failure
-                return consume_stream(response, expected_choices=candidate.get("n", 1)) if candidate.get("stream") else response
+                with http_observation_scope():
+                    try:
+                        response = create_fn(**candidate, **({"timeout": timeout} if timeout is not None else {}))
+                    except Exception as error:
+                        native_failure = copilot_response_failure(error)
+                        if native_failure is None:
+                            refusal = processing_refusal(target, candidate, error)
+                            if refusal is error:
+                                raise
+                            raise refusal from error
+                    else:
+                        native_failure = None
+                    if native_failure is not None:
+                        raise native_failure
+                    response = consume_stream(response, expected_choices=candidate.get("n", 1)) if candidate.get("stream") else response
+                    return bind_http_observations(response)
 
             try:
                 result = _execute_candidate(
@@ -605,20 +608,22 @@ class _RecoveryLadderMixin:
 
             async def dispatch():
                 timeout = physical_dispatch_timeout(transport_timeout)
-                try:
-                    response = await create_fn(**candidate, **({"timeout": timeout} if timeout is not None else {}))
-                except Exception as error:
-                    native_failure = copilot_response_failure(error)
-                    if native_failure is None:
-                        refusal = processing_refusal(target, candidate, error)
-                        if refusal is error:
-                            raise
-                        raise refusal from error
-                else:
-                    native_failure = None
-                if native_failure is not None:
-                    raise native_failure
-                return await consume_stream_async(response, expected_choices=candidate.get("n", 1)) if candidate.get("stream") else response
+                with http_observation_scope():
+                    try:
+                        response = await create_fn(**candidate, **({"timeout": timeout} if timeout is not None else {}))
+                    except Exception as error:
+                        native_failure = copilot_response_failure(error)
+                        if native_failure is None:
+                            refusal = processing_refusal(target, candidate, error)
+                            if refusal is error:
+                                raise
+                            raise refusal from error
+                    else:
+                        native_failure = None
+                    if native_failure is not None:
+                        raise native_failure
+                    response = await consume_stream_async(response, expected_choices=candidate.get("n", 1)) if candidate.get("stream") else response
+                    return bind_http_observations(response)
 
             try:
                 result = await _execute_candidate_async(

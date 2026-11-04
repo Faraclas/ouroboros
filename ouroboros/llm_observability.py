@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pathlib
 import logging
+import contextlib
+import contextvars
 from typing import Any, Dict, Tuple
 
 from ouroboros.observability import new_call_id, persist_call
@@ -159,3 +161,103 @@ def chat_observed(
     except Exception:
         pass
     return msg, usage
+
+
+_HTTP_OBSERVATIONS = contextvars.ContextVar("http_observations", default=None)
+_HTTP_OBSERVATION_TOKEN = object()
+
+
+@contextlib.contextmanager
+def http_observation_scope():
+    """One sender's host-only observations; no provider JSON is trusted as facts."""
+    token = _HTTP_OBSERVATIONS.set([])
+    try:
+        yield
+    finally:
+        _HTTP_OBSERVATIONS.reset(token)
+
+
+def note_http_projection(request: Any) -> None:
+    observations = _HTTP_OBSERVATIONS.get()
+    if observations is not None:
+        try:
+            observations.append(http_projection(request))
+        except Exception:
+            logging.getLogger(__name__).warning("HTTP projection observation gap", exc_info=True)
+
+
+def bind_http_observations(response: Any) -> Any:
+    observations = _HTTP_OBSERVATIONS.get()
+    if observations:
+        try:
+            object.__setattr__(response, "_ouroboros_http_projection",
+                               (_HTTP_OBSERVATION_TOKEN, observations[-1]))
+        except Exception:
+            logging.getLogger(__name__).warning("HTTP projection attachment gap", exc_info=True)
+    return response
+
+
+def response_http_projection(response: Any):
+    fact = getattr(response, "_ouroboros_http_projection", None)
+    return fact[1] if isinstance(fact, tuple) and len(fact) == 2 and fact[0] is _HTTP_OBSERVATION_TOKEN else None
+
+
+def http_projection(request: Any) -> dict:
+    """Secret-free outgoing application-body facts, joined to this send only."""
+    from ouroboros.usage_accounting import last_physical_attempt_capture
+    from ouroboros.request_wire_contract import physical_candidate_sha256
+    import json
+
+    capture = last_physical_attempt_capture()
+    payload = json.loads(request.content)
+    reasoning = payload.get("reasoning")
+    return {
+        "boundary": "httpx_request_hook", "api_surface": "responses",
+        "attempt_id": capture.attempt_id if capture is not None else None,
+        "sdk_candidate_sha256": capture.candidate_raw_sha256 if capture is not None else None,
+        "payload_sha256": physical_candidate_sha256(payload),
+        "model": payload.get("model"),
+        "effort": reasoning.get("effort") if isinstance(reasoning, dict) else None,
+        "delivery": "not_attested",
+    }
+
+
+def retain_http_observation(kind: str, request: Any, *, response: Any = None, body: bytes | None = None) -> dict:
+    """Keep a header-free HTTP boundary observation in existing private CAS.
+
+    This is distinct from the sealed pre-SDK candidate. A hook observes outgoing
+    application bytes, not TCP delivery. Native response bytes are decoded; no
+    representation is invented on a read fault. Missing capture or retention is
+    a logged gap, never a reason to discard output or send again.
+    """
+    from ouroboros.usage_accounting import (
+        current_physical_attempt_drive_root, current_usage_scope, last_physical_attempt_capture,
+    )
+    import hashlib
+    import json
+
+    try:
+        capture = last_physical_attempt_capture()
+        root = current_physical_attempt_drive_root()
+        if capture is None or root is None or capture.state != "dispatched":
+            raise ValueError("matching dispatched HTTP observation owner unavailable")
+        scope = current_usage_scope()
+        projection = http_projection(request)
+        facts = {"kind": kind, "method": request.method,
+                 "scheme": request.url.scheme, "host": request.url.host, "path": request.url.path,
+                 "projection": projection}
+        if kind == "request_hook":
+            facts["request_body"] = json.loads(request.content)
+        else:
+            facts.update(status_code=response.status_code, decoded_body=body.decode("utf-8", "replace"),
+                         decoded_body_sha256=hashlib.sha256(body).hexdigest())
+        identity = hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
+        return persist_call(root, task_id=scope.task_id if scope else "llm",
+                            call_id=f"physical_{capture.attempt_id}_http_{kind}_{identity[:16]}",
+                            call_type="physical_http", payload=facts, keep_raw=True,
+                            manifest={"attempt_id": capture.attempt_id, "boundary": kind,
+                                      "sdk_candidate_sha256": capture.candidate_raw_sha256,
+                                      "observation_sha256": identity})
+    except Exception:
+        logging.getLogger(__name__).warning("HTTP observation retention gap", exc_info=True)
+        return {}

@@ -263,7 +263,7 @@ def probe_provider_readiness(
             remote_client = client._new_remote_client(target)
 
             def send_openai(payload):
-                from ouroboros.net_transport import copilot_response_failure
+                from ouroboros.copilot_responses import copilot_response_failure
 
                 scoped = remote_client.with_options(timeout=timeout)
                 try:

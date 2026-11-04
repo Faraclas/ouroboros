@@ -516,6 +516,12 @@ class _OpenAICompatibleLaneMixin:
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Normalize a reply without generation lookup; skip_cost_fetch also skips tariffs."""
         usage = dict(resp_dict.get("usage") or {})
+        from ouroboros.llm_observability import response_http_projection
+        projection = response_http_projection(wire_completion)
+        usage.pop("_http_projection", None)
+        usage.pop("http_projection", None)
+        if isinstance(projection, dict):
+            usage["http_projection"] = copy.deepcopy(projection)
         # What the reply consumed (a BYOK reply: gateway charge + provider-billed share).
         usage["cost"], cost_invalid, cost_basis = reported_price(usage, resp_dict.get("total_cost_usd"))
         usage.pop("cost_invalid", None)  # Host fact, never a provider usage extension.
