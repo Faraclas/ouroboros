@@ -13,6 +13,7 @@ def test_success_fingerprint_skips_only_unchanged_install(tmp_path, monkeypatch)
     monkeypatch.setattr(git_ops, "REPO_DIR", tmp_path)
     monkeypatch.setattr(git_ops, "DRIVE_ROOT", tmp_path / "data")
     monkeypatch.delenv("OUROBOROS_PYTEST_ACTIVE")
+    monkeypatch.setattr("ouroboros.runtime_dependencies.install_mode", lambda: "install")
     monkeypatch.setattr("ouroboros.platform_layer.pip_install_target_args", lambda _exe: ["--target", str(tmp_path / "env")])
     calls, code = [], [0]
     monkeypatch.setattr(git_ops_reset.subprocess, "Popen", lambda cmd, **kw: calls.append(cmd) or Mock(wait=lambda **kw: code[0]))
@@ -101,6 +102,7 @@ def test_torn_watermarks_never_fail_a_checkout_or_a_sync(tmp_path, monkeypatch):
     req.write_text("example==1\n", encoding="utf-8")
     monkeypatch.setattr(git_ops, "REPO_DIR", tmp_path)
     monkeypatch.delenv("OUROBOROS_PYTEST_ACTIVE")
+    monkeypatch.setattr("ouroboros.runtime_dependencies.install_mode", lambda: "install")
     monkeypatch.setattr("ouroboros.platform_layer.pip_install_target_args", lambda _exe: ["--target", str(tmp_path / "env")])
     calls = []
     monkeypatch.setattr(git_ops_reset.subprocess, "Popen", lambda cmd, **kw: calls.append(cmd) or Mock(wait=lambda **kw: 0))

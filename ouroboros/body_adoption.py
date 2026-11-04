@@ -35,6 +35,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from ouroboros import body_switch
+from ouroboros.runtime_dependencies import DEPENDENCY_SOURCES, INSTALL_RECIPES
 from ouroboros.utils import append_jsonl, utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ PIN_PREFIX = "refs/ouroboros/adoption/"
 # Files Python parses whole before the hook can run; they must stay present and hooked.
 _HOOK_FILE = "ouroboros/__init__.py"
 _REQUIRED_FILES = ("server.py", _HOOK_FILE, "ouroboros/body_switch.py")
-_DEPENDENCY_FILES = ("requirements-runtime.lock", "requirements.txt")
+_DEPENDENCY_FILES = INSTALL_RECIPES
 _PENDING = ("authorized", "armed", "switching", "switched", "stuck")
 _NOT_ARMED = "not armed: "  # the exit tail's own record of the stop owners' blockers
 
@@ -104,13 +105,31 @@ def _blob_has(repo: pathlib.Path, commit: str, path: str, needle: str = "") -> b
     return shown.returncode == 0 and needle in shown.stdout
 
 
-def _dependency_command(repo: pathlib.Path, rows: List[Dict[str, Any]]) -> Optional[List[str]]:
-    """The owning sync's exact command, only when the switch changes what it installs."""
-    if not {row["path"] for row in rows} & set(_DEPENDENCY_FILES):
+def _dependency_sources(repo: pathlib.Path, commit: str) -> Dict[str, str]:
+    names = DEPENDENCY_SOURCES
+    found = _git(repo, "ls-tree", "--name-only", commit, "--", *names).stdout.splitlines()
+    return {name: _git(repo, "show", f"{commit}:{name}").stdout for name in found}
+
+
+def _dependency_command(repo: pathlib.Path, rows: List[Dict[str, Any]], *, old: str = "", cand: str = "") -> Optional[List[str]]:
+    """Shared command/readiness for the exact target, before any handoff effects."""
+    changed = {row["path"] for row in rows}
+    if not changed & {*_DEPENDENCY_FILES, "pyproject.toml"}:
         return None
+    from ouroboros.runtime_dependencies import DependencyReadinessError, install_mode, project_contract
     from supervisor.git_ops_reset import runtime_dependency_command
 
-    return runtime_dependency_command(repo)
+    try:
+        sources = _dependency_sources(repo, cand) if cand else None
+        if sources is not None and (install_mode() == "externally_managed" or not changed & set(_DEPENDENCY_FILES)):
+            # Version-only edits, and external lock-only refreshes, add no prerequisite.
+            if project_contract(_dependency_sources(repo, old))[1:] == project_contract(sources)[1:]:
+                return None
+        return runtime_dependency_command(repo, sources=sources)
+    except DependencyReadinessError as exc:
+        raise AdoptionRefused("ADOPTION_DEPENDENCIES_UNSATISFIED",
+            f"Target dependency readiness is unverified: {exc}. Prepare packages through the "
+            "system package manager or a runtime venv before adopting; no pip was attempted.") from exc
 
 
 def authorize(ctx: Any, commit: str, *, reason: str) -> Dict[str, Any]:
@@ -206,6 +225,7 @@ def authorize_row(data_dir: pathlib.Path, row: Dict[str, Any], commit: str, *, r
         qualification = adoption_test_evidence(data_dir, candidate, cand, ctx=ctx, local=local)
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         raise AdoptionRefused("ADOPTION_TESTS_REQUIRED", str(exc)) from exc
+    deps_command = _dependency_command(serving, rows, old=old, cand=cand)
     directory = helper_dir(data_dir)
     if directory.exists():
         _archive(data_dir, current, f"replaced:{current.get('phase')}" if current else "stale_helper")
@@ -216,7 +236,7 @@ def authorize_row(data_dir: pathlib.Path, row: Dict[str, Any], commit: str, *, r
         "candidate_id": row.get("candidate_id"), "candidate_branch": row.get("branch"),
         "candidate_path": str(candidate), "task_id": task_id, "reason": str(reason or ""),
         "created_tag": str((row.get("reviewed_release_tags") or {}).get(cand) or ""),
-        "switch": rows, "deps_command": _dependency_command(serving, rows), "authorized_at": utc_now_iso(),
+        "switch": rows, "deps_command": deps_command, "authorized_at": utc_now_iso(),
         "unreviewed_commits": unreviewed, "attempts": 0, "events": [],
         "tests": qualification,
     }

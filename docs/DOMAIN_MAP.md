@@ -9,7 +9,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | domain | name | modules | proposed |
 |---|---|---:|---:|
 | D01 | Agent core & main loop | 55 | 0 |
-| D02 | LLM client, routing & providers | 45 | 0 |
+| D02 | LLM client, routing & providers | 46 | 0 |
 | D03 | Context assembly, fit & compaction | 27 | 0 |
 | D04 | Tool execution: registry, access & typed results | 24 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 45 | 0 |
@@ -17,7 +17,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D07 | Delegation, subagents & Claudexor | 97 | 0 |
 | D08 | Supervisor: queue, workers, events & runtime control | 73 | 0 |
 | D09 | Cancellation, owner control & process custody | 26 | 0 |
-| D10 | Git, update & release machinery | 40 | 0 |
+| D10 | Git, update & release machinery | 41 | 0 |
 | D11 | Gateway, server & Web UI | 108 | 0 |
 | D12 | Settings & configuration | 26 | 0 |
 | D13 | Safety, guards & runtime mode | 11 | 0 |
@@ -28,7 +28,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D18 | Launcher, packaging, platform & shared substrate | 37 | 0 |
 | D19 | Frozen contracts (ABI) | 12 | 0 |
 | D20 | Presence | 20 | 0 |
-| **total** | | **922** | **0** |
+| **total** | | **924** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -262,6 +262,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 ### D02 — LLM client, routing & providers
 
 - `ouroboros/anthropic_native_custody.py`
+- `ouroboros/copilot_native_custody.py`
 - `ouroboros/copilot_responses.py`
 - `ouroboros/fallback_cooldown.py`
 - `ouroboros/gateways/image_api.py`
@@ -724,6 +725,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/github_pr_identity.py`
 - `ouroboros/merge_receipts.py`
 - `ouroboros/repo_remotes.py`
+- `ouroboros/runtime_dependencies.py`
 - `ouroboros/size_ratchet_manifest.py`
 - `ouroboros/store_switch.py`
 - `ouroboros/tools/commit_gate.py`

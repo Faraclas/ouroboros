@@ -100,6 +100,7 @@ def test_dependency_sync_is_panic_tracked_and_killed_on_timeout(monkeypatch, tmp
     # This case deliberately exercises the PRODUCTION install path, so it drops
     # the test-boundary marker the suite sets (see the boundary test below).
     monkeypatch.delenv("OUROBOROS_PYTEST_ACTIVE", raising=False)
+    monkeypatch.setattr("ouroboros.runtime_dependencies.install_mode", lambda: "install")
 
     killed = []
 

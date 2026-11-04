@@ -258,6 +258,7 @@ ouroboros/ — agent core and shared runtime (§6)
   subagent_worktrees.py, worktree_removal.py — private-copy primitive, `state/private_copies/` records, `refs/ouroboros/delegated*/` pins, custody GC, removal retries (§6 Delegated subagents)
   force_remove.py, unindexed.py — shared permission-granting `force_rmtree`; `.noindex` copy names
   body_candidate.py, body_adoption.py, body_switch.py — Own-body worktree authoring and restart-bound adoption of an exact reviewed commit before body imports (§6 Own-body candidates; §2)
+  runtime_dependencies.py — Shared interpreter install eligibility and external dependency verification (§2)
   artifacts.py, artifact_storage.py, artifact_directories.py — artifact_store/attachments/, records/clones, compression, ZIPs, .scratch_manifest.json hashes, output audit, tool-evidence slices (§6)
   chat_uploads.py, confined_files.py — the owner-attachment store (`data/uploads`) with byte-proven media kind; held-directory walks and regular-file opens (POSIX dirfd, Windows NT handles) for attachments, task files and sources (DESIGN "Chat attachments")
   retention.py, workspace_preflight.py — GC clamp, cutoff and exact task-drive retention date; workspace facts and delegated scratch/cache preparation/retirement (§6)

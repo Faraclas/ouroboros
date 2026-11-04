@@ -559,50 +559,74 @@ def checkout_and_reset(branch: str, reason: str = "unspecified",
     return True, "ok"
 
 
-def _dependency_install_plan(repo_dir: pathlib.Path) -> Tuple[List[str], str, pathlib.Path]:
+def _dependency_install_plan(repo_dir: pathlib.Path, *, sources=None) -> Tuple[List[str], str, pathlib.Path]:
     """``(command, source, lock path)`` of the one runtime-dependency install for ``repo_dir``."""
     from ouroboros.platform_layer import pip_install_target_args
+    from ouroboros.runtime_dependencies import INSTALL_RECIPES
 
-    req_path = repo_dir / "requirements-runtime.lock"
-    if not req_path.exists():
-        # Preserve upgrades from managed repositories created before uv locks.
-        req_path = repo_dir / "requirements.txt"
+    def present(name):
+        return name in sources if sources is not None else (repo_dir / name).exists()
+
+    recipe = next((name for name in INSTALL_RECIPES if present(name)), "")
+    req_path = repo_dir / (recipe or INSTALL_RECIPES[-1])
     # The sixth and last pip call site. On a packaged install `sys.executable` IS the
     # bundled interpreter, so an unflagged install wrote into the signed bundle.
     cmd: List[str] = [sys.executable, "-m", "pip", "install", "-q",
                       *pip_install_target_args(sys.executable)]
-    if req_path.exists():
+    if recipe:
         return cmd + ["-r", str(req_path)], f"requirements:{req_path}", req_path
     return cmd + ["openai>=1.0.0", "requests"], "fallback:minimal", req_path
 
 
-def runtime_dependency_command(repo_dir: pathlib.Path) -> Optional[List[str]]:
-    """The same install command for a body switch that runs with no launcher; ``None`` where
-    this chokepoint installs nothing (a frozen bundle, an active test boundary)."""
-    if getattr(sys, 'frozen', False) or os.environ.get("OUROBOROS_PYTEST_ACTIVE") == "1":
+def runtime_dependency_command(repo_dir: pathlib.Path, *, sources=None) -> Optional[List[str]]:
+    """Shared eligibility; an externally managed switch must satisfy its target contract.
+
+    ``sources`` binds an adoption to exact new Git blobs, not the old working tree.
+    """
+    from ouroboros.runtime_dependencies import DependencyReadinessError, install_mode, verify_external_requirements
+
+    mode = install_mode()
+    if mode in {"frozen:bundled", "pytest:suppressed"}:
         return None
-    return _dependency_install_plan(pathlib.Path(repo_dir))[0]
+    if mode.startswith("unverified:"):
+        raise DependencyReadinessError(mode)
+    if mode == "externally_managed":
+        verify_external_requirements(pathlib.Path(repo_dir), sources=sources)
+        return None
+    return _dependency_install_plan(pathlib.Path(repo_dir), sources=sources)[0]
 
 
 def sync_runtime_dependencies(reason: str) -> Tuple[bool, str]:
-    if getattr(sys, 'frozen', False):
-        log.info("Skipping pip install in frozen (PyInstaller) mode — deps are bundled.")
-        return True, "frozen:bundled"
+    """Sync an owned interpreter, or diagnose an externally provisioned one.
 
-    # The one dependency-install chokepoint every caller reaches — bootstrap,
-    # managed update pre-restart and the reset fallbacks all route here — so the
-    # test boundary belongs on THIS line, not on one caller's local-dev branch.
-    # A verification run must never mutate the interpreter it is verifying (the
-    # operator's, or a fixture's dependency-only venv): the marker is set by
-    # tests/conftest.py and re-injected into every scrubbed child environment
-    # (ouroboros/test_environment.py), so a server started by a test inherits it.
-    # Production sets no such marker and keeps its install policy unchanged.
-    if os.environ.get("OUROBOROS_PYTEST_ACTIVE") == "1":
-        log.info("Skipping dependency sync under an active test boundary (%s).", reason)
-        return True, "pytest:suppressed"
+    True means boot may continue to its import smoke, NOT dependency satisfaction:
+    external unverified requirements are explicit warnings, never a synced stamp.
+    """
+    from ouroboros.runtime_dependencies import (
+        DependencyReadinessError, install_mode, verify_external_requirements,
+    )
 
-    cmd, source, req_path = _dependency_install_plan(_go().REPO_DIR)
+    source = "eligibility"
     try:
+        mode = install_mode()
+        if mode in {"frozen:bundled", "pytest:suppressed"}:
+            return True, mode
+        if mode == "externally_managed" or mode.startswith("unverified:"):
+            _forget_dependency_fingerprint()  # retire any older unchecked success
+            try:
+                if mode.startswith("unverified:"):
+                    raise DependencyReadinessError(mode)
+                return True, verify_external_requirements(_go().REPO_DIR)
+            except DependencyReadinessError as exc:
+                message = (f"externally_managed:unverified:{exc}. Use the system package manager "
+                           "or a dedicated runtime venv; no pip install was attempted.")
+                log.warning("Dependency readiness: %s", message)
+                _go().append_jsonl(_go().DRIVE_ROOT / "logs" / "supervisor.jsonl", {
+                    "ts": _go().utc_now_iso(), "type": "deps_sync_unverified",
+                    "reason": reason, "source": mode, "error": message,
+                })
+                return True, message
+        cmd, source, req_path = _dependency_install_plan(_go().REPO_DIR)
         from ouroboros.startup_migrations import watermarks, stamp
         fingerprint = _dependency_fingerprint(req_path, cmd)
         try:
@@ -611,9 +635,6 @@ def sync_runtime_dependencies(reason: str) -> Tuple[bool, str]:
             synced = None  # an unreadable watermark file means "not known synced": sync
         if synced == fingerprint:
             return True, "unchanged:" + source
-        if os.environ.get("PIP_USER") == "0" and getattr(subprocess.Popen, "__module__", "") == "subprocess":
-            stamp(_go().DRIVE_ROOT, dependencies=fingerprint)
-            return True, "portage:externally_managed"
         from ouroboros.platform_layer import kill_process_tree, subprocess_new_group_kwargs
         from ouroboros.tools.shell import _active_subprocesses, _subprocess_lock
 
@@ -863,6 +884,10 @@ def _bootstrap_snapshot() -> Optional[dict]:
     from ouroboros.body_adoption import holds_checkout
 
     try:
+        from ouroboros.runtime_dependencies import install_mode
+
+        if install_mode() not in {"install", "frozen:bundled", "pytest:suppressed"}:
+            return None  # external packages can drift without a lock or interpreter change
         repo, drive = _go().REPO_DIR, _go().DRIVE_ROOT
         if (_go()._bootstrap_pin_marker_path().exists() or _go()._update_intent_marker_path().exists()
                 or holds_checkout(drive, repo)):
