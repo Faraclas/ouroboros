@@ -507,6 +507,42 @@ class ChatUploadDeleteResponse(TypedDict):
     filename: str
 
 
+class ProjectEntry(TypedDict, total=False):
+    """A registry project row. ``provenance`` (attached|cloned|genesis|none) and ``clone_url``
+    are historical facts; operational git data is read live from ``.git``. List rows are a
+    compact projection with ``has_thread_activity``; a create/update answer is the full row
+    (``created: false``: an idempotent repeat create). Public facade: ``contracts.ProjectEntry``.
+    """
+
+    id: str
+    name: str
+    chat_id: int
+    working_dir: str
+    resources: List[ProjectResource]
+    lifecycle_label: Literal["active", "closing", "closed"]
+    reopened_at: str
+    tombstoned_at: str
+    deleting_at: str
+    admission_closed_at: str
+    pinned: bool  # absent on legacy rows means unpinned; no routing/activity effect
+    cognition: ProjectCognition
+    provenance: str
+    clone_url: str
+    trusted_at: str
+    origin: str
+    created_at: str
+    last_active_at: str
+    lifecycle: Literal["active", "deleting", "tombstoned"]
+    routing_generation: int
+    routing_incarnation: str
+    visible_revision: int
+    delete_error: str
+    has_thread_activity: bool
+    thread_activity_seen: bool
+    last_task_result_id: str
+    created: bool
+
+
 class ProjectListResponse(TypedDict):
     """``GET /api/projects``: active and deleting projects, at most 200, most recently active first.
     Rows are the compact projection ``GET /api/state`` also carries: id, name, pinned, chat_id, working_dir,
@@ -514,6 +550,48 @@ class ProjectListResponse(TypedDict):
     has_thread_activity."""
 
     projects: List[ProjectEntry]
+
+
+class ProjectResourceRequest(TypedDict):
+    path: str
+    label: NotRequired[str]
+
+
+class ProjectResourceGit(TypedDict):
+    status: Literal["repository", "not_repository", "unavailable"]
+    branch: str
+    head: str
+    root: str
+    error: NotRequired[str]
+
+
+class ProjectResourceObservation(TypedDict):
+    status: Literal["available", "missing", "unavailable"]
+    kind: Literal["directory", "file", "unknown"]
+    git: ProjectResourceGit
+    error: NotRequired[str]
+
+
+class ProjectResource(TypedDict):
+    id: str
+    path: str
+    label: str
+    added_at: str
+    observation: NotRequired[ProjectResourceObservation]
+
+
+class ProjectCatalogResponse(TypedDict):
+    """Uncapped management population, paginated; no filesystem probes."""
+    projects: List[ProjectEntry]
+    total: int
+    offset: int
+    limit: int
+    has_more: bool
+
+
+class ProjectDetailResponse(TypedDict):
+    """Same room, all lifecycles; resources add fresh read-only observations."""
+    project: ProjectEntry
 
 
 class ProjectCreateResponse(TypedDict):
@@ -741,7 +819,7 @@ class TaskResumeResponse(TypedDict, total=False):
 
 # Last, not first: ``contracts.py`` imports ServedUiState from this module, so the shared
 # SettingsMeta is bound after this module's own envelopes exist, whichever module loads first.
-from ouroboros.gateway.contracts import ProjectEntry, SettingsMeta  # noqa: E402
+from ouroboros.gateway.contracts import ProjectCognition, SettingsMeta  # noqa: E402
 
 __all__ = [
     "ServedUiState",
@@ -757,6 +835,8 @@ __all__ = [
     "PlaceOwnerAccountRequest", "PlaceUpdateRequest",
     "SettingsSecretRequest", "SettingsSecretResponse", "ChatUploadDeleteRequest", "ChatUploadDeleteResponse",
     "ProjectListResponse", "ProjectCreateResponse", "ProjectUpdateRequest", "ProjectUpdateResponse",
+    "ProjectResourceRequest", "ProjectResourceGit", "ProjectResourceObservation", "ProjectResource",
+    "ProjectCatalogResponse", "ProjectDetailResponse",
     "ProjectFromTaskRequest", "ProjectTaskBinding", "ProjectFromTaskResponse",
     "FileBrowserEntry", "FileBrowserListResponse", "FileBrowserReadResponse", "FileMkdirRequest", "FileWriteRequest", "FilePathRequest",
     "FileTransferRequest", "FileChangeResponse",

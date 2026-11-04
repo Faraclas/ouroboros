@@ -158,8 +158,9 @@ def history_row_destination(root, row, thread_id, project_ids, source_refs, room
         if len(homes) != 1:
             return {"state": "ambiguous" if homes else "unavailable"}
         home = homes[0]
-    # Every room's identity, then only the home's routing: a malformed unrelated room blocks nothing.
-    if home != 1 and reserved_project_for_chat(root, home).get("lifecycle") != "active":
+    # Exact history is read-only: a closed room retains its identity and messages,
+    # not execution authority. Deletion in progress still leaves the home unavailable.
+    if home != 1 and reserved_project_for_chat(root, home).get("lifecycle") not in {"active", "tombstoned"}:
         return {"state": "unavailable"}
     return {"state": "found" if home == thread_id else "moved", "chat_id": home}
 

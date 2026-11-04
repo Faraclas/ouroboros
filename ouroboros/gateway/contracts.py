@@ -587,35 +587,6 @@ class ProjectCreateRequest(TypedDict, total=False):
     with_workspace: bool
 
 
-class ProjectEntry(TypedDict, total=False):
-    """A registry project row. ``provenance`` (attached|cloned|genesis|none) and ``clone_url``
-    are historical facts; operational git data is read live from ``.git``. List rows are a
-    compact projection with ``has_thread_activity``; a create/update answer is the full row
-    (``created: false``: an idempotent repeat create)."""
-
-    id: str
-    name: str
-    chat_id: int
-    working_dir: str
-    pinned: bool  # absent on legacy rows means unpinned; no routing/activity effect
-    cognition: ProjectCognition
-    provenance: str
-    clone_url: str
-    trusted_at: str
-    origin: str
-    created_at: str
-    last_active_at: str
-    lifecycle: Literal["active", "deleting", "tombstoned"]
-    routing_generation: int
-    routing_incarnation: str
-    visible_revision: int
-    delete_error: str
-    has_thread_activity: bool
-    thread_activity_seen: bool
-    last_task_result_id: str
-    created: bool
-
-
 class ProjectDeleteResponse(TypedDict):
     """POST /api/projects/{project_id}/delete — fence, quiesce, and tombstone;
     the immutable binding, working folder, history, and memory are preserved."""
@@ -1484,7 +1455,7 @@ class OnboardingPresetFailureResponse(TypedDict):
 
 # Human/test-visible contract index; routers own executable Route objects.
 from ouroboros.gateway.endpoint_index import HTTP_ENDPOINTS
-from ouroboros.gateway.client_contracts import FileBrowserListResponse, ServedUiState  # noqa: E402,F401
+from ouroboros.gateway.client_contracts import FileBrowserListResponse, ServedUiState, ProjectEntry, ProjectResource  # noqa: E402,F401
 
 WS_MESSAGE_TYPES: tuple[str, ...] = (
     "chat",

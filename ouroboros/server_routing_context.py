@@ -404,7 +404,9 @@ def _main_routing_manifest(ctx: Any, roots: Optional[RootSnapshot] = None) -> Di
     from ouroboros import dialogue_store as ds
     from ouroboros.chat_chain import row_address, format_address
     from ouroboros.projects_registry import list_projects
+    from ouroboros.context_runtime_facts import _project_resource_fact
 
+    project_rows = list_projects(ctx.DRIVE_ROOT)
     projects = [{
         "project_id": str(row.get("id") or ""),
         "name": _clip_marked(row.get("name"), 120),
@@ -413,7 +415,11 @@ def _main_routing_manifest(ctx: Any, roots: Optional[RootSnapshot] = None) -> Di
         # Registry-canonical working folder: the router turn's ground truth for
         # where a project's work lives (Q8-A).
         "working_dir": str(row.get("working_dir") or ""),
-    } for row in list_projects(ctx.DRIVE_ROOT)]
+        **_project_resource_fact(ctx.DRIVE_ROOT, str(row.get("id") or ""), row),
+    } for row in project_rows[:40]]
+    resource_rule = projects[0].get("resource_rule", "") if projects else ""
+    for project in projects:
+        project.pop("resource_rule", None)
     snapshot = roots if roots is not None else addressable_roots(ctx)
     roots = snapshot.rows()
     finals, result_omissions = _recent_root_results(ctx)
@@ -451,11 +457,12 @@ def _main_routing_manifest(ctx: Any, roots: Optional[RootSnapshot] = None) -> Di
     dialogue = dialogue_rows[-20:]
     return {
         "projects": projects[:40],
+        "project_resource_rule": resource_rule,
         "root_tasks": roots[:40],
         "final_results": [_result_reference(row) for row in finals],
         "recent_canonical_dialogue": dialogue,
         "omissions": {
-            "projects": max(0, len(projects) - 40),
+            "projects": max(0, len(project_rows) - 40),
             "root_tasks": None if snapshot.gap else max(0, len(roots) - 40),
             **result_omissions,
             # A bounded read cannot count bytes/rows it deliberately did not

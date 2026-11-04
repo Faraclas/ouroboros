@@ -636,6 +636,46 @@
  * @property {import('./api_types.js').ProjectEntry[]} projects
  */
 
+/** @typedef {Object} ProjectResourceRequest
+ * @property {string} path
+ * @property {string=} label
+ */
+
+/** @typedef {Object} ProjectResourceGit
+ * @property {"repository"|"not_repository"|"unavailable"} status
+ * @property {string} branch
+ * @property {string} head
+ * @property {string} root
+ * @property {string=} error
+ */
+
+/** @typedef {Object} ProjectResourceObservation
+ * @property {"available"|"missing"|"unavailable"} status
+ * @property {"directory"|"file"|"unknown"} kind
+ * @property {ProjectResourceGit} git
+ * @property {string=} error
+ */
+
+/** @typedef {Object} ProjectResource
+ * @property {string} id
+ * @property {string} path
+ * @property {string} label
+ * @property {string} added_at
+ * @property {ProjectResourceObservation=} observation
+ */
+
+/** @typedef {Object} ProjectCatalogResponse
+ * @property {Array<import('./api_types.js').ProjectEntry>} projects
+ * @property {number} total
+ * @property {number} offset
+ * @property {number} limit
+ * @property {boolean} has_more
+ */
+
+/** @typedef {Object} ProjectDetailResponse
+ * @property {import('./api_types.js').ProjectEntry} project
+ */
+
 /**
  * `POST /api/projects`: `project` is the full registry row.
  * @typedef {Object} ProjectCreateResponse

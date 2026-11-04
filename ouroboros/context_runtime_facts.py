@@ -259,17 +259,49 @@ def _queue_context_fact(task: Dict[str, Any]) -> Dict[str, Any]:
     return fact
 
 
+def _project_resource_fact(drive_root: Any, project_id: str, project: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Contextual associations, never a filesystem grant or an execution target."""
+    from ouroboros.project_management import ProjectManagementError, list_project_resources, resources_for_project
+
+    fact = {"project_id": project_id, "resource_rule": (
+        "Resources are contextual paths, not ownership, access grants or locks. "
+        "They do not change active_workspace or the shell cwd. Use existing file, "
+        "VCS and shell tools under this task's actual resource rights; association "
+        "does not authorize an otherwise forbidden read or write.")}
+    try:
+        fact["resources"] = (list_project_resources(drive_root, project_id) if project is None
+                             else resources_for_project(project))
+    except ProjectManagementError as exc:
+        if exc.reason == "project_not_found":
+            return {}  # an external workspace scope need not be a registered room
+        fact["resources_unavailable"] = f"{type(exc).__name__}: {exc}"
+    except (OSError, ValueError) as exc:
+        fact["resources_unavailable"] = f"{type(exc).__name__}: {exc}"
+    return fact
+
+
 def _project_room_fact(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """The room's active folder and ordinary tool target, or None.
 
     Conversation keeps its own lifecycle; selecting a room changes the physical
     target without requiring a managed workspace or Git repository. Promotion
-    continues to use its separate workspace admission contract.
+    continues to use its separate workspace admission contract. Declared inputs
+    receive associations only, not the room's workspace narrative.
     """
+    _room_pid = str(task.get("project_id") or "").strip()
+    if not _room_pid:
+        return None
+    from ouroboros.config import DATA_DIR as _DATA_DIR
+
+    fact = _project_resource_fact(_DATA_DIR, _room_pid)
+    if not fact:
+        return None
+    from ouroboros.contracts.task_contract import task_input_sources
+
+    if task_input_sources(task) == "declared":
+        return fact
     try:
-        _room_pid = str(task.get("project_id") or "").strip()
-        if _room_pid and not str(task.get("workspace_root") or "").strip():
-            from ouroboros.config import DATA_DIR as _DATA_DIR
+        if not str(task.get("workspace_root") or "").strip():
             from ouroboros.projects_registry import get_project as _get_project
             from ouroboros.workspace_admission import room_chat_lens_dir as _room_lens, room_lens_applies
 
@@ -280,7 +312,7 @@ def _project_room_fact(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 # and the actual tool surface cannot diverge (the robot incident).
                 _lens_dir, _room_note = _room_lens(_DATA_DIR, _room_pid)
                 _lens_active = room_lens_applies(task) and bool(_lens_dir)
-                fact = {
+                fact.update({
                     "project_id": _room_pid,
                     "working_dir": _room_wd,
                     "rule": (
@@ -299,13 +331,12 @@ def _project_room_fact(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                             "workspace='none' to promote a folder-less task."
                         )
                     ),
-                }
+                })
                 if _room_note:
                     fact["working_dir_warning"] = _room_note
-                return fact
     except Exception:
         log.debug("Failed to inject project_room working_dir fact", exc_info=True)
-    return None
+    return fact
 
 
 def _runtime_budget_info(env: Any, task: Dict[str, Any], ctx: Any = None) -> Dict[str, Any]:

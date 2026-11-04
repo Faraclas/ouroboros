@@ -117,6 +117,8 @@ def test_the_successor_seeds_its_owner_corpus_with_the_owners_words_only(tmp_pat
 @pytest.mark.parametrize("origin,reason_code,refusal", [
     ({"source": "http_single", "reason": "Stop now"}, "", "stopped_by_owner"),
     ({"source": "panic"}, "", "stopped_by_owner"),
+    ({"source": "project_delete", "reason": "project room deleted"}, "", "stopped_by_owner"),
+    ({"source": "project_delete", "reason": "server_shutdown"}, "", "stopped_by_owner"),
     ({}, "", "interruption_cause_unrecorded"),
 ])
 def test_continue_is_refused_after_a_stop_a_panic_or_an_unrecorded_cause(tmp_path, monkeypatch, origin,

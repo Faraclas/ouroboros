@@ -213,7 +213,7 @@ ouroboros/ — agent core and shared runtime (§6)
   knowledge.py, memory_publication.py — linked-Markdown notes with shelf indexes and revision-checked writes, so concurrent cognition cannot silently overwrite a newer note; per-file revision-checked identity/world-map/registry publication, atomic source replacement and origin-stamped history (§6)
   project_facts.py — project_id resolution and per-project knowledge under `projects/<id>/knowledge`, isolated from `memory/knowledge`
   task_tree_ledger.py — append-only `data/task_trees/<root>/blackboard.jsonl`: ephemeral swarm coordination (`tree_note`/`tree_read`), mirrored into the project journal at root completion
-  projects_registry.py, project_admission.py — the owner Project registry (active|deleting|tombstoned) and strict admission claims (§6 Project registry and lease)
+  projects_registry.py, project_admission.py, project_management.py — Project registry, strict admission, catalog/reopen/contextual resources (§6 Project registry and lease)
   project_handoff.py — the Main transfer receipt owed through the terminal outbox after a durable bind (§3 Project handoff receipts)
   project_dialogue.py — read-only chat lens; append-only `logs/chat_annotations.jsonl` (`ROUTING_RECEIPT_FIELDS`) routes only `needs_manual_target` cards; `routing_refusal_cause` (§3 Chat and Projects)
   room_membership.py — canonical stored-row membership for history and inventory; a place row belongs only to its place room (§3 Chat and Projects)
@@ -459,16 +459,16 @@ ouroboros/ — agent core and shared runtime (§6)
     _helpers.py — Shared request-root/coercion/JSON error envelope and `run_sync_to_completion`, the settled worker wait for request-owned blocking work
   tools/ — Auto-discovered tool plugins
     registry.py — Tool registry SSOT: loads tool modules, exposes schemas, executes safely; owns the shell-guard/process-tool membership sets
-    core.py — File/data tools (read_file, list_files, write_file, edit_text), delivery tools (send_photo, send_video, send_file, send_links, show_card), search_code, escalate, forward_to_worker
+    core.py — File/data, human delivery, search, questions and task mail; concrete owners below
     cards.py — `show_card`: a validated card body, stored before its `send_card` event
-    core_file_tools.py, core_secret_paths.py, core_artifacts.py — File reads/lists (opt-in bounded tree); delegated action/runtime helpers; human artifact delivery (§6 Credential mutation and diagnostic redaction)
+    core_file_tools.py, core_secret_paths.py, core_artifacts.py — bounded file reads/trees, delegated runtime helpers and human delivery (§6 Credential mutation and diagnostic redaction)
     shell.py — Process tools `run_command`/`run_script` (§9)
     shell_guards.py — Shared process-path inspection helpers and target extractors; registry_guard_process.py owns process admission (§6)
     registry_core.py, registry_guards.py, registry_guard_process.py, tool_context.py — registry load/schema/dispatch, the capability/resource/update/skill guards, process admission, `ToolContext`/`BrowserState` (protocol: contracts/tool_context.py) (§6 Safety and runtime mode)
-    git.py, git_plumbing.py, git_repo_edit.py, git_vcs_ops.py, vcs_read.py, git_review_cycle.py, git_managed_postcommit.py, git_evolution.py — Git/write tools with the deterministic, test and one-wave review commit gates and the author's optional preflight; its leaves: plumbing, repo write/edit, VCS inspection and rollback, the reviewed-commit cycle, managed-merge post-commit gates, evolution-campaign authority (§6 Git and commit review)
+    git.py, git_plumbing.py, git_repo_edit.py, git_vcs_ops.py, vcs_read.py, git_review_cycle.py, git_managed_postcommit.py, git_evolution.py — Git facade/plumbing/edit/VCS-read-rollback/review/managed-postcommit/evolution; deterministic+test+one-wave gates and optional preflight (§6)
     search.py — `web_search`, one leg per Source/Model of `ouroboros/search_routes.py` (§6 Web access mechanisms)
     browser.py — Playwright browser tools with per-ToolContext lifecycle and thread affinity (§6 MCP and browser-facing external tools)
-    imagegen.py — list_image_models/generate_image/recover_image; explicit routes, artifacts first, separate view/send (docs/IMAGE_GENERATION.md)
+    imagegen.py — Explicit image routes and artifact-first generate/recover, separate view/send (docs/IMAGE_GENERATION.md)
     vision.py — Vision LLM tools for browser screenshots and uploaded images
     vision_process.py — Tracked vision-child IPC: validated receipts, result recovery, parent-owned cancellation
     knowledge.py — Persistent topic-based knowledge files with an auto-maintained index
@@ -476,7 +476,7 @@ ouroboros/ — agent core and shared runtime (§6)
     memory_tools.py — Memory registry tools for data sources, gaps and trust
     health.py — Codebase health tool: complexity metrics and self-assessment
     compact_context.py — LLM-requested tool-history compaction trigger, applied on the next round
-    control.py — control tools: restart, timeout settings, scheduling, review, chat history and model switching; the `schedule_subagent` contract and compact `wait_task` projections (§6 Delegated subagents)
+    control.py — Runtime, routing and delegation facade; schedule_subagent and compact wait_task (§6)
     control_delegation.py — Delegation-budget affordances and `move_to_project` (§6 Project placement)
     control_events.py, control_mind.py, control_relay.py, control_routing.py, control_runtime.py, control_scheduling.py, control_subagent_spec.py, control_task_results.py, control_ui_translation.py, task_result_views.py — the control tools' leaves: events and their durable outcomes, the mind's lifecycle controls, `tell_task` relays, routing, runtime self-control, scheduling, the `schedule_subagent` parameter surface, absorbing a child's result and retained redacted call sources, owner wording pins (§3)
     tool_discovery.py — List/enable owner: callable catalog by namespace in every mode; grants nothing
@@ -489,12 +489,12 @@ ouroboros/ — agent core and shared runtime (§6)
     owner_delivery.py — Owner event delivery: live queue or the `pending_events` fallback with sticky deferral
     deliverables_shell.py — cp/mv/ln into deliverables with symlink checks
     shell_audit.py — Post-exec custody audit for process tools
-    process_facts.py — Per-call selected environment, secret egress masking and typed process/runtime facts for loop_tool_execution.py; `run_script` cites its script's redacted dispatch record (`get_task_result` reads it)
+    process_facts.py — Selected env/masked egress/runtime facts for loop_tool_execution; run_script's redacted dispatch is readable via get_task_result
     write_shape.py — write-shape predicates behind shell_parse.py and shell_guards.py; the task/resource and Supervisor contract owns permission (§6 Safety and runtime mode)
     extension_dispatch.py — Extension tool dispatch; discovery stays in registry.py
     release_sync.py — `sync_release_metadata` for commit-admission preflight; the carrier-span SSOT `VERSION_CARRIER_SPANS` shared by the managed-update resolver and the commit packet (§10 invariant 2)
     review_synthesis.py — Shared synthesis helpers
-    preflight_review.py — `preflight_review` (`advisory_review` alias), one row's early worktree look, its free `deterministic_only` form and `review_status` (§6 Commit preflight)
+    preflight_review.py — one-row early look (advisory_review alias), free deterministic_only and review_status (§6 Commit preflight)
     recent_tasks.py — Read-only context recovery
     commit_gate.py — Commit gate: LLM claim synthesis, block classification, the free identical-verdict refusal, paid review-cycle counting and ceiling, the review-contract fingerprint
     git_rollback.py — Emits `rollback_request`; the supervisor runs the UI Rollback door's procedure (P4-S)
@@ -504,43 +504,34 @@ ouroboros/ — agent core and shared runtime (§6)
     github_workflows.py, github_pr_write.py — read get(run, log)/list(artifact)/download(artifact); write create_pr/update(pr)
     parallel_review.py — Prepares and admits every seat before the review wave sends (§6 Surfaces and money admission)
     plan_review_references.py — Reference projection with its own provenance rows (progress stream); no plan authority
-    plan_review.py — `plan_task` entry: free write and read, the paid ask, typed `PLAN_*` refusals (§6 Plan construction and review)
-    plan_ask.py — One ask: participants, body predicate, delivery, continuation, dispatch, settlement
-    plan_review_runtime.py — Review-slot runtime of an ask (`run_plan_review_slots`, `plan_review_slots`, fit, deadline)
-    plan_spec.py — `resolve_constitutional` and path normalization; earlier-schema spec reads; no I/O
-    plan_evidence.py — Bounded plan-evidence manifest; the runtime data plane is denied
-    plan_packet.py — Delivery builder and `PLAN_REPLY_CONTRACT`
-    plan_delivery.py — A repeat participant's cross-talk and retained texts
+    plan_review.py, plan_ask.py, plan_review_runtime.py — plan_task free write/read and paid ask/PLAN_* refusals; participants/body predicate/delivery/continuation/dispatch/settlement; slot fit/deadline (§6 Plan construction and review)
+    plan_spec.py, plan_evidence.py, plan_packet.py, plan_delivery.py — pure spec/path/legacy reads; bounded evidence (no runtime data); packet/PLAN_REPLY_CONTRACT; repeat cross-talk/retained texts
     review.py — Multi-model review and the unified pre-commit review gate (§6 Review stack)
     review_result.py — `review_change(subject="result")`: the frozen result subject, the result brief and the Required floor at a root delivery (§6 Result review)
     review_skill.py — the skill subject of `review_change`: frozen payload, skill brief (checklist, governance layer, change since the last verdict), post-map to the gate's status, manual-lane ceiling
-    review_multi_model.py, review_file_pack.py, review_prompt_text.py — commit-wave packet fan-out, working-tree file packs and prompt vocabulary; the packet's carrier cut and inline-governance exclusions (§6 Guaranteed-fit ladder)
-    review_checklist.py — the layered change-review checklist as review surfaces read it: one `## Header` section of docs/CHECKLISTS.md, the layers, `checklist_fingerprint` on every ledger record (§6 Change review on any root)
-    review_context_atlas.py — `repository_index`: compact tracked-path map plus touched-file and direct-importer facts; no file bodies (§6 The coupling question)
-    governance_context.py — shared governance tiers for every change-review seat, preflight and deep review; every omitted inline body has an explicit disposition (§6 Governance delivery)
+    review_multi_model.py, review_file_pack.py, review_prompt_text.py — Packet fan-out, worktree packs and vocabulary; carrier/governance cuts (§6 Guaranteed-fit ladder)
+    review_checklist.py, review_context_atlas.py, governance_context.py — layered CHECKLISTS sections/fingerprints; body-free repository_index (tracked/touched/direct-importer facts); shared governance tiers with explicit omissions for change/preflight/deep seats (§6)
     query_code.py — Read-only code navigation (Code navigation below)
     edit_ops.py — `apply_patch` and `edit_batch` with the shared syntax check and unified diff backing write_file; the diff pulse in every system-repository edit result
-    media.py — `extract_pdf_text` (`ocr_pdf` alias; text layer, not OCR), `youtube_transcript`, `extract_video_frames` (dependency-optional, typed capability envelopes; a new `artifact_store/video_frames` directory per call)
+    media.py — extract_pdf_text (ocr_pdf alias, not OCR), youtube_transcript, extract_video_frames; typed optional-dependency facts, fresh artifact_store/video_frames directory per call
     verify.py — Independent checks through the shared pre-exec guards, not a process-command tool by design (§6 Tool capability and execution)
     review_helpers.py — shared review helpers: governance-doc loading, checklist slicing, the prompt-size SSOT, the density-calibrated input cap
     review_binary_context.py — Staged/parent Git object metadata for review packs
-    review_subject.py — Frozen review subjects, managed-resolution deltas and isolated reviewer checkouts; identities and reuse derive from the captured subject (§6 Subject operation)
-    review_change.py — `review_change`: one review wave and ledger record on any registered root, without committing (§6 Change review on any root)
-    review_change_custody.py — Paid-attempt custody and rejoining an open `review_change` wave without paying again (§6 Subject operation)
-    review_admission.py — Review packet fit, retrieving briefs and whole-wave money admission (§6 Surfaces and money admission)
-    review_revalidation.py — Review-contract fingerprint revalidation
-    review_brief_coupling.py — Retrieving review brief: Part 1 the change, Part 2 the coupling questions, over one frozen subject (§6 The coupling question (Part 2 of the brief))
+    review_subject.py — Frozen subjects/managed deltas/isolated checkouts; captured identity owns reuse (§6 Subject operation)
+    review_change.py, review_change_custody.py — registered-root wave/ledger, no commit; paid custody/free rejoin (§6)
+    review_admission.py, review_revalidation.py, review_brief_coupling.py — packet/brief fit and whole-wave money admission; contract fingerprint; change+coupling brief on one frozen subject (§6)
     scope_window.py — Scope window sizing and evidence provenance; fallbacks stay disclosed, never review authority
     scope_review_contract.py — Pure parser of the `coupling` answer (`normalize_scope_items`), also consumed by scripts/validate_scope_receipt.py
     scope_required_sources.py — Change-relative protected/prompt/contract sources, derived families and twins; the final manifest hash and policy version bind review replay
     services.py — Service mini-manager with process-group cleanup
-    skill_exec.py — list_skills/skill_review/toggle_skill/skill_owner_action/skill_exec over a fixed interpreter allowlist; gated by enablement, fresh review and hash
+    skill_exec.py — Skill list/review/toggle/owner/exec; fixed interpreters, enablement+fresh review+hash gates
     skill_publish.py, skill_source_tools.py — PR-receipt-gated publish; source/search/install/update tools
     skill_preflight.py — Read-only syntax/schema preflight; widget entries keep classic grammar unless explicitly ESM (§3)
-    project_journal.py — journal/workpad read and write, `update_focus`, journal_tail_digest; foreign project reads for roots, foreign writes refused; `mirror_tree_coordination_to_journal`
+    project_journal.py — journal/workpad/focus; foreign reads for roots, foreign writes refused; tree-ledger mirror (§6)
+    project_resources.py — contextual associations; roots manage any room, children list their own (§6)
     presence.py — configure_presence (the place verb: list, inspect, state, wakes, notes, folder, model, owner accounts) and presence_cancel_work
     task_tree.py — tree_note/tree_read (storage SSOT: task_tree_ledger.py)
-    followup.py — the agent's two schedule tools over `state/scheduled_tasks.json`: `manage_schedules` (list/get; root-only audited update/disable/delete/restore) and `schedule_followup` (`notify=true` leaves a note)
+    followup.py — state/scheduled_tasks.json tools: manage_schedules list/get, root audited update/disable/delete/restore; schedule_followup notify=true leaves a note
     join_ledger.py — tree-note exact-hash absorption, peek_task and discard_child_result (§6)
     delegate.py — Delegation facade verbs `delegate_start` (with `retry_of`), `delegate_wait`, `delegate_cancel`, `delegate_answer`, `delegate_message`; the host pre-start rides the same wrapper (§6 Delegated subagents)
     delegate_integration.py — Delegated mutation authority, snapshots and terminal capture; skill-payload CAS apply with extension reconciliation (§6 Snapshots, capture and disposition)

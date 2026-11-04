@@ -62,7 +62,7 @@ _NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 # Recorded stop sources that are the owner's explicit decision (never Continue)
 # and the ones that record a technical interruption. Unknown sources refuse.
 OWNER_STOP_SOURCES = frozenset({"http_single", "http_cascade", "http_graceful", "cascade_descendant",
-                                "owner", "owner_stop", "panic"})
+                                "owner", "owner_stop", "panic", "project_delete"})
 TECHNICAL_CANCEL_SOURCES = frozenset({"owner_restart", "snapshot_restore", "server_shutdown"})
 # Terminal reason codes that name an infrastructure failure or a technical
 # execution limit — not a decision about the work. Owner 1A: technical limits

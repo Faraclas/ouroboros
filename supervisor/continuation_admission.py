@@ -572,7 +572,20 @@ def _billing_group(q: Any, predecessor: str, result: Dict[str, Any]) -> Dict[str
     return {key: binding.get(key) for key in ("billing_group_id", "billing_group_limit_usd", "billing_group_limit_source")}
 
 
-def _prepare_project_room(q: Any, predecessor: str, task: Dict[str, Any]) -> Dict[str, Any]:
+def _project_room_basis(q: Any, predecessor: str, room: Dict[str, Any]) -> Dict[str, Any]:
+    """Read an active room before claiming Continue; this performs no binding write."""
+    from ouroboros.projects_registry import project_admission_view, project_binding_for_task
+    from ouroboros.project_admission import project_admission_guard
+
+    bound = project_binding_for_task(q.DRIVE_ROOT, predecessor, strict=True) or {}
+    basis = project_admission_view(q.DRIVE_ROOT, room["project_id"], frozen=True,
+                                   allow_unregistered=bound.get("project_id") != room["project_id"])
+    with project_admission_guard(q.DRIVE_ROOT, basis):
+        pass
+    return basis
+
+
+def _prepare_project_room(q: Any, predecessor: str, task: Dict[str, Any], basis: Any) -> Dict[str, Any]:
     """The successor's prepared Project basis; bound work also binds its successor.
 
     A fresh admission carries the basis (the producer seam schedule_task uses); a
@@ -583,11 +596,14 @@ def _prepare_project_room(q: Any, predecessor: str, task: Dict[str, Any]) -> Dic
     this claim alone: the bind is idempotent, fenced by the basis and made before
     the row exists. Refusals raise; the queue lock is not held here.
     """
-    from ouroboros.projects_registry import bind_task_to_project, project_admission_view, project_binding_for_task
+    from ouroboros.projects_registry import bind_task_to_project, project_binding_for_task
+    from ouroboros.project_admission import project_admission_guard
 
+    # A recorded action never captures a new incarnation on retry. Legacy claims
+    # without this evidence remain unknown rather than laundering a closed room.
+    with project_admission_guard(q.DRIVE_ROOT, basis):
+        pass
     bound = project_binding_for_task(q.DRIVE_ROOT, predecessor, strict=True) or {}
-    basis = project_admission_view(q.DRIVE_ROOT, task["project_id"], frozen=True,
-                                   allow_unregistered=bound.get("project_id") != task["project_id"])
     if (bound.get("project_id"), bound.get("project_chat_id")) == (task["project_id"], task["chat_id"]):
         ref = bound.get("source_ref")
         origin = ({"ref": ref, **({"text": bound["source_text"]} if "source_text" in bound else {})}
@@ -650,6 +666,11 @@ def admit_continuation(predecessor_task_id: str, *, action_nonce: str) -> Dict[s
         "deadline_at": str(result.get("deadline_at") or (result.get("metadata") or {}).get("deadline_at")
                            or (result.get("task_contract") or {}).get("deadline_at") or ""), **billing,
     }
+    if not claim and binding.get("project_id"):
+        try:
+            binding["project_admission"] = _project_room_basis(q, predecessor, binding)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return {"ok": False, "error": getattr(exc, "reason", "project_routing_fence_lookup_failed")}
     binding["admission_token"] = f"continue:{binding_sha({k: v for k, v in binding.items() if k != 'admission_token'})[:40]}"
     if not claim:
         try:
@@ -686,7 +707,7 @@ def admit_continuation(predecessor_task_id: str, *, action_nonce: str) -> Dict[s
     project_basis = None
     if task.get("project_id"):
         try:
-            project_basis = _prepare_project_room(q, predecessor, task)
+            project_basis = _prepare_project_room(q, predecessor, task, binding.get("project_admission"))
         except (OSError, ValueError, RuntimeError) as exc:
             # The claim stays: the same nonce retries once the authority is readable.
             return {"ok": False, "error": getattr(exc, "reason", "project_routing_fence_lookup_failed"),

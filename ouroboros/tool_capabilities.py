@@ -62,7 +62,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     # (kept in the core envelope so the anti-freeze ephemeral turn never needs an
     # enable_tools detour to route — though initial_tool_schemas exposes the full
     # set today, this makes the coupling explicit).
-    "list_projects", "start_task", "tell_task",
+    "list_projects", "project_resources", "start_task", "tell_task",
     "move_to_project",
     *COGNITIVE_MEMORY_TOOL_NAMES,
     "chronicle_write",
@@ -122,6 +122,7 @@ LOCAL_READONLY_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     # has standing can see it. The tool's own authority check refuses every
     # MUTATING action to a delegated task, so the name grants no control here.
     "manage_schedules",
+    "project_resources",  # current room list only; the handler refuses child mutations
     # Task-tree coordination: a child reads the shared frame and raises beacons. tree_note
     # is a bounded tree-scoped write; its tagged child-result disposition branch also
     # updates the existing child result through join_ledger's lineage/hash authority.
@@ -195,6 +196,7 @@ ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "review_change",
     "knowledge_read", "knowledge_list", "knowledge_write", "memory_read", "memory_mark", "chronicle_write",
     "chat_history",
+    "project_resources",  # associations remain root-owned even for acting children
     "tree_note", "tree_read", "override_delegation_constraint",
     # Same nanny verbs, same host-derived profile — an acting child hosts a
     # workspace_write session confined to a private snapshot of its own write
@@ -484,7 +486,7 @@ OBSERVE_WORLD_MUTATION_TOOLS: frozenset[str] = frozenset({
     # the world beyond the repository: forms, skills, project notes, the owner's interface wording
     "browser_action", "submit_skill_to_hub", "toggle_skill", "skill_owner_action",
     "skill_install", "skill_update",
-    "journal_write", "workpad_write", "pin_ui_translation",
+    "journal_write", "workpad_write", "project_resources", "pin_ui_translation",
     "github_write", "pr_merge",
 })
 

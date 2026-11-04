@@ -298,8 +298,8 @@ def test_a_failed_first_snapshot_retries_the_same_nonce_into_the_same_room(host,
 @pytest.mark.parametrize("damage,error,claimed", [
     ("bindings_unreadable", "project_routing_fence_lookup_failed", False),
     ("binding_malformed", "project_routing_fence_lookup_failed", False),
-    ("project_missing", "project_routing_fence_changed", True),
-    ("project_closed", "project_routing_fence", True),
+    ("project_missing", "project_routing_fence_changed", False),
+    ("project_closed", "project_routing_fence", False),
 ])
 def test_unreadable_missing_or_closed_room_refuses_without_falling_back_to_main(host, damage, error, claimed):
     from ouroboros import projects_registry as registry
@@ -332,3 +332,73 @@ def test_unreadable_missing_or_closed_room_refuses_without_falling_back_to_main(
     if claimed:  # the claim keeps the actual room for the same nonce; it never becomes Main
         assert (claim["binding"]["chat_id"], claim["binding"]["project_id"]) == (project["chat_id"], project["id"])
         assert registry.project_binding_for_task(host.root, claim["successor_task_id"]) is None
+
+
+def _closed_room(host, project):
+    from ouroboros.projects_registry import begin_project_deletion, complete_project_deletion
+    begin_project_deletion(host.root, project["id"])
+    complete_project_deletion(host.root, project["id"])
+
+
+def _reopen_basis(host, project):
+    """The lifecycle owner's new incarnation, without importing the parent's pending API."""
+    from ouroboros.projects_registry import _registry_path
+    path = _registry_path(host.root)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    row = next(row for row in data["projects"] if row["id"] == project["id"])
+    row.update(lifecycle="active", routing_incarnation="reopened-incarnation",
+               routing_generation=row["routing_generation"] + 1)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_closed_continue_writes_no_claim_and_a_fresh_action_after_reopen_can_admit(host):
+    from ouroboros.task_results import load_task_result
+    worker_task = _start(host)
+    project = _convert(host)
+    _interrupt(host, worker_task)
+    _closed_room(host, project)
+    refused = _continue(host)
+    assert refused.json()["reason_code"] == "project_routing_fence"
+    assert not load_task_result(host.root, "pred-1").get("continued_by")
+    _reopen_basis(host, project)
+    assert _continue(host, "fresh-after-reopen").status_code == 200
+
+
+def test_claim_pins_project_incarnation_across_same_nonce_authority_recovery(host, monkeypatch):
+    from ouroboros import projects_registry as registry
+    from ouroboros.task_results import load_task_result
+    worker_task = _start(host)
+    project = _convert(host)
+    _interrupt(host, worker_task)
+    persist = host.queue.persist_queue_snapshot
+    monkeypatch.setattr(host.queue, "persist_queue_snapshot", lambda reason="": False)
+    assert _continue(host).json()["reason_code"] == "queue_snapshot_persist_failed"
+    claim = copy.deepcopy(load_task_result(host.root, "pred-1")["continued_by"])
+    monkeypatch.setattr(host.queue, "persist_queue_snapshot", persist)
+    path = registry._registry_path(host.root)
+    original = path.read_bytes()
+    path.write_text("{torn", encoding="utf-8")
+    assert _continue(host).json()["reason_code"] == "project_routing_fence_lookup_failed"
+    assert load_task_result(host.root, "pred-1")["continued_by"] == claim
+    path.write_bytes(original)
+    monkeypatch.setattr(registry, "project_admission_view", lambda *_a, **_kw: pytest.fail("replay recaptured basis"))
+    assert _continue(host).status_code == 200
+
+
+def test_bound_claim_cannot_recapture_reopened_project_incarnation(host, monkeypatch):
+    from ouroboros import projects_registry as registry
+    from ouroboros.task_results import load_task_result
+    worker_task = _start(host)
+    project = _convert(host)
+    _interrupt(host, worker_task)
+    persist = host.queue.persist_queue_snapshot
+    monkeypatch.setattr(host.queue, "persist_queue_snapshot", lambda reason="": False)
+    assert _continue(host).json()["reason_code"] == "queue_snapshot_persist_failed"
+    claim = copy.deepcopy(load_task_result(host.root, "pred-1")["continued_by"])
+    monkeypatch.setattr(host.queue, "persist_queue_snapshot", persist)
+    _closed_room(host, project)
+    _reopen_basis(host, project)
+    monkeypatch.setattr(registry, "project_admission_view", lambda *_a, **_kw: pytest.fail("replay recaptured basis"))
+    assert _continue(host).json()["reason_code"] == "project_routing_fence_changed"
+    assert load_task_result(host.root, "pred-1")["continued_by"] == claim
+    assert host.workers.PENDING == [] and load_task_result(host.root, claim["successor_task_id"]) is None

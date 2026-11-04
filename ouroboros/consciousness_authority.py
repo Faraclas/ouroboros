@@ -57,6 +57,7 @@ OBSERVE_ARGUMENT_NARROWED: frozenset[str] = frozenset({
     # a child must be able to stop the one it started (the nanny's other half).
     "cancel_task",
     "manage_schedules",  # reads and lifecycle controls remain; authoring does not
+    "project_resources",  # list remains available; associations are owner-room state
 })
 # Observe withholds every verb that starts work or changes the world beyond
 # this mind's own memory (the table beside ``ROUTING_VERBS``) plus publication.
@@ -321,6 +322,9 @@ def observe_argument_refusal(task_metadata: Any, name: str, args: Mapping[str, A
                 "⚠️ RESOURCE_CONSTRAINT_BLOCKED: Observe may start a delegated read-only "
                 "research session only; omit root and leave access readonly."
             )
+    elif tool == "project_resources":
+        if str(values.get("action") or "list").strip().lower() != "list":
+            return "⚠️ RESOURCE_CONSTRAINT_BLOCKED: Observe may list project resources, not change associations."
     elif tool == "manage_schedules":
         if str(values.get("action") or "list").strip().lower() == "update":
             return (

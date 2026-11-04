@@ -753,6 +753,12 @@
  * @property {boolean=} pinned  // absent on legacy rows means unpinned
  * @property {number=} chat_id
  * @property {string=} working_dir
+ * @property {Array<ProjectResource>=} resources
+ * @property {"active"|"closing"|"closed"=} lifecycle_label
+ * @property {string=} reopened_at
+ * @property {string=} tombstoned_at
+ * @property {string=} deleting_at
+ * @property {string=} admission_closed_at
  * @property {string=} provenance   // attached | cloned | genesis | none (historical fact)
  * @property {string=} clone_url
  * @property {string=} trusted_at
@@ -770,6 +776,13 @@
  * @property {boolean=} created
  * @property {ProjectCognition} cognition
  */
+
+/** @typedef {import('./client_contract_types.js').ProjectResourceRequest} ProjectResourceRequest */
+/** @typedef {import('./client_contract_types.js').ProjectResourceGit} ProjectResourceGit */
+/** @typedef {import('./client_contract_types.js').ProjectResourceObservation} ProjectResourceObservation */
+/** @typedef {import('./client_contract_types.js').ProjectResource} ProjectResource */
+/** @typedef {import('./client_contract_types.js').ProjectCatalogResponse} ProjectCatalogResponse */
+/** @typedef {import('./client_contract_types.js').ProjectDetailResponse} ProjectDetailResponse */
 
 /** @typedef {Object} ProjectDeleteResponse
  * @property {boolean} ok

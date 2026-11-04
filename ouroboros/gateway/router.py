@@ -143,6 +143,8 @@ def collect_routes(
         api_update_status,
     )
     from ouroboros.gateway.projects import (
+        api_projects_catalog, api_project_detail, api_project_reopen,
+        api_project_resource_add, api_project_resource_detach,
         api_fs_dirs,
         api_project_delete,
         api_project_from_task,
@@ -260,6 +262,11 @@ def collect_routes(
         Route("/api/owner/capability-ack", endpoint=api_acknowledge_capability, methods=["POST"]),
         Route("/api/model-catalog", endpoint=api_model_catalog),
         Route("/api/projects", endpoint=api_projects_list, methods=["GET"]),
+        Route("/api/projects/catalog", endpoint=api_projects_catalog, methods=["GET"]),
+        Route("/api/projects/{project_id}/detail", endpoint=api_project_detail, methods=["GET"]),
+        Route("/api/projects/{project_id}/reopen", endpoint=api_project_reopen, methods=["POST"]),
+        Route("/api/projects/{project_id}/resources", endpoint=api_project_resource_add, methods=["POST"]),
+        Route("/api/projects/{project_id}/resources/{resource_id}/detach", endpoint=api_project_resource_detach, methods=["POST"]),
         Route("/api/projects", endpoint=api_projects_create, methods=["POST"]),
         Route("/api/projects/from-task", endpoint=api_project_from_task, methods=["POST"]),
         Route("/api/projects/{project_id}/update", endpoint=api_project_update, methods=["POST"]),

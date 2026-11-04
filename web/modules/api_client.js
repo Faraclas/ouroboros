@@ -539,6 +539,15 @@ export const apiClient = {
     projectFromTask: (taskId, id, name) => jsonPost('/api/projects/from-task', { task_id: taskId, id, name }),
     /** @param {import('./api_types.js').ProjectCreateRequest} payload */
     projectCreate: (payload) => jsonPost('/api/projects', payload),
+    /** @returns {Promise<import('./api_types.js').ProjectCatalogResponse>} */
+    projectCatalog: ({ lifecycle = 'all', q = '', offset = 0, limit = 50 } = {}) =>
+        fetchJson(`/api/projects/catalog?${new URLSearchParams({ lifecycle, q, offset, limit })}`, { cache: 'no-store' }),
+    /** @returns {Promise<import('./api_types.js').ProjectDetailResponse>} */
+    projectDetail: (projectId) => fetchJson(`/api/projects/${encodeURIComponent(projectId)}/detail`, { cache: 'no-store' }),
+    projectReopen: (projectId) => jsonPost(`/api/projects/${encodeURIComponent(projectId)}/reopen`, {}),
+    projectResourceAdd: (projectId, payload) => jsonPost(`/api/projects/${encodeURIComponent(projectId)}/resources`, payload),
+    projectResourceDetach: (projectId, resourceId) =>
+        jsonPost(`/api/projects/${encodeURIComponent(projectId)}/resources/${encodeURIComponent(resourceId)}/detach`, {}),
     projectUpdate: (projectId, update) => jsonPost(`/api/projects/${encodeURIComponent(projectId)}/update`,
         typeof update === 'string' ? { name: update } : update),
     /** @returns {Promise<import('./api_types.js').ProjectDeleteResponse>} */

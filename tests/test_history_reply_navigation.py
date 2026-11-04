@@ -146,8 +146,13 @@ def test_inactive_home_does_not_fall_back_to_another_origin_room(tmp_path, lifec
         complete_project_deletion(tmp_path, a["id"])
     for chat in (1, a["chat_id"]):
         status, page = _read(tmp_path, chat_id=chat, around=address)
-        assert status == 200 and page["anchor"]["state"] == "unavailable"
-        assert page["messages"] == []
+        assert status == 200
+        if lifecycle == "deleting":
+            assert page["anchor"]["state"] == "unavailable" and page["messages"] == []
+        elif chat == 1:
+            assert page["anchor"] == {"state": "moved", "row_address": address, "chat_id": a["chat_id"]}
+        else:
+            _found(tmp_path, address, a["chat_id"])
 
 
 @pytest.mark.parametrize("chat", [0, -100])

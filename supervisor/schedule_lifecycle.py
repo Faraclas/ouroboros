@@ -421,6 +421,83 @@ def upsert_scheduled_task(record: Dict[str, Any], *, drive_root: pathlib.Path | 
         return {**incoming, "audit": "recorded" if recorded else "incomplete"}
 
 
+def pause_project_schedules(drive_root: Any, project_id: str, chat_id: int) -> dict:
+    """Disable a closed room's future work before Reopen makes it active.
+
+    Reopen holds ``schedule_transaction`` outside the registry writer and calls
+    this reentrantly. A quick Reopen, including one of a legacy tombstone,
+    cannot revive a pre-close promise; Close retains its independent fence.
+    Membership is recorded room scope/address or origin lineage, never a folder
+    association. Already-disabled/consumed rows and accepted occurrences remain.
+    """
+    from ouroboros.project_admission import task_project_membership
+    from ouroboros.projects_registry import _load_bindings
+    from ouroboros.task_results import load_task_result
+    from supervisor.followup_policy import normalize_template, origin_of
+    from supervisor.schedule_occurrence import remember_claim_basis
+
+    root = pathlib.Path(drive_root)
+    with schedule_transaction(root):
+        data = load_schedule_store(root)
+        selected, bindings, origins = [], None, {}
+        for row in data["tasks"]:
+            if not row.get("enabled", True):
+                continue
+            template = normalize_template(row)
+            template.pop("id", None)  # dispatch mints a fresh occurrence id
+            origin = origin_of(row)
+            if origin:
+                template.setdefault("metadata", {}).update(
+                    origin_task_id=origin["task_id"], origin_root_task_id=origin["root_task_id"])
+            # Use dispatch's owner and its complete template. An explicit destination
+            # wins over origin lineage; only unresolved scope needs the bindings read.
+            scope, _known = task_project_membership(root, template, bindings_snapshot={})
+            if not scope:
+                if bindings is None:
+                    bindings = _load_bindings(root, strict=True)["bindings"]
+                scope, _known = task_project_membership(root, template, bindings_snapshot=bindings)
+            member = scope == project_id if scope else template.get("chat_id") == chat_id
+            origin = origin if not scope else {}
+            if not member and origin:
+                if bindings is None:
+                    bindings = _load_bindings(root, strict=True)["bindings"]
+                scope, _known = task_project_membership(root, {
+                    "metadata": {"origin_task_id": origin["task_id"],
+                                 "origin_root_task_id": origin["root_task_id"]}},
+                    bindings_snapshot=bindings)
+                member = scope == project_id
+                for task_id in set(origin.values()) - {""}:
+                    if member:
+                        break
+                    if task_id not in origins:
+                        origins[task_id] = load_task_result(root, task_id, strict=True) or {}
+                    source = origins[task_id]
+                    intent = source.get("resource_intent") or (source.get("metadata") or {}).get("resource_intent") or {}
+                    member = (source.get("project_id") == project_id or source.get("chat_id") == chat_id
+                              or isinstance(intent, dict) and intent.get("project_id") == project_id)
+            if not member:
+                continue
+            before = copy.deepcopy(row)
+            audit = dict(drive_root=root, operation_id=uuid.uuid4().hex[:12],
+                         actor="host:project_lifecycle", task_id="", action="disable",
+                         schedule_id=str(row.get("id") or ""), reason=f"project_closed:{project_id}")
+            if not _audit_schedule_mutation(phase="intent", result="intended", before=before, **audit):
+                raise ScheduleRefused("audit_unavailable", "Project schedules could not be paused; nothing was changed")
+            selected.append((row, before, audit))
+        for row, _before, _audit in selected:
+            remember_claim_basis(row)
+            row.update(enabled=False, updated_at=utc_now_iso())
+        if selected:
+            _write_scheduled_tasks(data, root)
+        recorded = True
+        for row, before, audit in selected:
+            recorded = _audit_schedule_mutation(phase="outcome", result="updated", before=before,
+                                              after=row, **audit) and recorded
+        return {"ok": recorded, "changed": bool(selected),
+                "schedule_ids": [str(row.get("id") or "") for row, _before, _audit in selected],
+                "audit": "recorded" if recorded else "incomplete"}
+
+
 def mutate_scheduled_task(action: str, schedule_id: str, *, reason: str,
                           actor: str, task_id: str = "",
                           drive_root: pathlib.Path | None = None,
@@ -509,6 +586,9 @@ def mutate_scheduled_task(action: str, schedule_id: str, *, reason: str,
                 current["enabled"] = not _is_consumed_once(current)
                 for key in ("delete_requested_at", "delete_requested_by", "delete_reason"):
                     current.pop(key, None)
+                if (not before.get("enabled", True) and current["enabled"]
+                        and (current.get("hold") or {}).get("reason") == "project_routing_fence"):
+                    current.pop("hold", None)
                 status = "updated"
             changed = status not in UNCHANGED_STATUSES
             if changed:

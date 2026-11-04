@@ -300,6 +300,85 @@ async def api_projects_list(request: Request) -> JSONResponse:
         return json_exception(exc)
 
 
+async def api_projects_catalog(request: Request) -> JSONResponse:
+    from ouroboros.project_management import ProjectManagementError, project_catalog
+    from ouroboros.gateway._helpers import run_sync_to_completion
+
+    try:
+        try:
+            offset = int(request.query_params.get("offset", "0"))
+            limit = int(request.query_params.get("limit", "50"))
+        except ValueError:
+            raise ProjectManagementError("invalid_catalog", "offset and limit must be integers")
+        page = await run_sync_to_completion(
+            project_catalog, request_drive_root(request),
+            lifecycle=request.query_params.get("lifecycle", "all"), q=request.query_params.get("q", ""),
+            offset=offset, limit=limit)
+        return JSONResponse(page)
+    except ProjectManagementError as exc:
+        return JSONResponse({"error": str(exc), "reason_code": exc.reason}, status_code=exc.status_code)
+    except Exception as exc:
+        return json_exception(exc)
+
+
+async def api_project_detail(request: Request) -> JSONResponse:
+    from ouroboros.project_management import ProjectManagementError, project_detail
+    from ouroboros.gateway._helpers import run_sync_to_completion
+
+    try:
+        project = await run_sync_to_completion(
+            project_detail, request_drive_root(request), str(request.path_params["project_id"]))
+        return JSONResponse({"project": project})
+    except ProjectManagementError as exc:
+        return JSONResponse({"error": str(exc), "reason_code": exc.reason}, status_code=exc.status_code)
+    except Exception as exc:
+        return json_exception(exc)
+
+
+async def _project_management_write(request: Request, action: str, body: dict | None = None) -> JSONResponse:
+    from ouroboros import project_management as management
+    from ouroboros.gateway._helpers import run_sync_to_completion
+
+    try:
+        root, pid = request_drive_root(request), str(request.path_params["project_id"])
+        if action == "add":
+            row = await run_sync_to_completion(management.add_project_resource, root, pid,
+                                               body["path"], body.get("label", ""))
+        elif action == "detach":
+            row = await run_sync_to_completion(management.detach_project_resource, root, pid,
+                                               str(request.path_params["resource_id"]))
+        else:
+            row = await run_sync_to_completion(management.reopen_project, root, pid)
+        _broadcast_projects_changed(row["id"], row["chat_id"])
+        return JSONResponse({"project": await run_sync_to_completion(management.project_detail, root, row["id"])})
+    except management.ProjectManagementError as exc:
+        return JSONResponse({"error": str(exc), "reason_code": exc.reason}, status_code=exc.status_code)
+    except Exception as exc:
+        return json_exception(exc)
+
+
+async def api_project_reopen(request: Request) -> JSONResponse:
+    return await _project_management_write(request, "reopen")
+
+
+async def api_project_resource_add(request: Request) -> JSONResponse:
+    from ouroboros.gateway.client_contracts import ProjectResourceRequest
+    from ouroboros.gateway.schema import validate_ingress
+
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "body must be a JSON object", "reason_code": "invalid_resource"}, status_code=400)
+    errors = validate_ingress(body, ProjectResourceRequest)
+    if errors:
+        return JSONResponse({"error": errors[0], "reason_code": "invalid_resource"}, status_code=400)
+    return await _project_management_write(request, "add", body)
+
+
+async def api_project_resource_detach(request: Request) -> JSONResponse:
+    return await _project_management_write(request, "detach")
+
+
 async def api_projects_create(request: Request) -> JSONResponse:
     """POST /api/projects — create a project from one of FOUR sources (v6.59.0):
 
@@ -528,17 +607,18 @@ async def api_project_delete(request: Request) -> JSONResponse:
             get_reserved_project,
         )
         from supervisor.task_lifecycle import start_project_deletion
+        from ouroboros.gateway._helpers import run_sync_to_completion
 
         project_id = str(request.path_params.get("project_id") or "").strip()
         drive_root = request_drive_root(request)
-        entry = get_reserved_project(drive_root, project_id, strict=True)
+        entry = await run_sync_to_completion(get_reserved_project, drive_root, project_id, strict=True)
         if entry is None:
             return JSONResponse({"error": f"unknown project: {project_id}"}, status_code=404)
         # All queue/binding comparisons use the canonical registry id.  The
         # lookup accepts a case-variant for compatibility, but cancellation must
         # not compare that raw route token against canonical task.project_id.
         project_id = str(entry.get("id") or project_id)
-        fenced = begin_project_deletion(drive_root, project_id)
+        fenced = await run_sync_to_completion(begin_project_deletion, drive_root, project_id)
         if fenced is None:
             return JSONResponse({"error": f"unknown project: {project_id}"}, status_code=404)
         chat_id = fenced.get("chat_id")
@@ -714,6 +794,8 @@ async def api_project_from_task(request: Request) -> JSONResponse:
 
 
 __all__ = [
+    "api_projects_catalog", "api_project_detail", "api_project_reopen",
+    "api_project_resource_add", "api_project_resource_detach",
     "api_fs_dirs",
     "api_project_delete",
     "api_project_from_task",

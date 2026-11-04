@@ -26,7 +26,7 @@ Admission names runs without model calls; `task_named` never uses status as a ti
 
 ### Schedules and follow-ups
 
-`supervisor/queue_schedules.py` alone writes `state/scheduled_tasks.json`, every mutation inside `schedule_transaction` (Q, then the sidecar lock). `load_schedule_store` reads only absence as empty; an unreadable table raises `ScheduleStoreUnreadable`: no mutation, unknown reads.
+`queue_schedules.py` owns `state/scheduled_tasks.json` under `schedule_transaction` (Q→sidecar); unreadable is `ScheduleStoreUnreadable`, never empty. Reopen pauses recorded room/template/origin schedules through audited `schedule_lifecycle.pause_project_schedules` before activation; Close stays independent. Explicit Restore alone reenables; ordinary overdue cron catch-up and tombstone holds remain. Folder associations confer no membership.
 
 `schedule_occurrence.py` admits one root per occurrence with a frozen receipt; `hold` waits without failing the root. Restart keeps token/task identity: restore holds positive `possible`, replays proven-unsent work and keeps missing/foreign/unreadable receipts unknown. Edits govern unaccepted work; accepted tasks survive deletion (`withdrawn`, restorable: PERSISTENCE). Cron keeps one overdue occurrence. A `kind:"notify"` note is consumed once; `schedule_notes.py` shows its words as a signed `reminder` System row; unconfirmed display sets `last_error`, never retries.
 

@@ -20,6 +20,8 @@ from tests.test_consciousness_authority import _registry, _wake_task
 
 
 _MUTATING_SHAPES = [
+    ("project_resources", {"action": "add", "project_id": "room", "path": "/context"}),
+    ("project_resources", {"action": "detach", "project_id": "room", "resource_id": "default"}),
     ("schedule_subagent", {"objective": "write", "expected_output": "diff",
                            "write_surface": "external_workspace"}),
     ("schedule_subagent", {"objective": "write", "expected_output": "diff", "may_mutate": True}),
@@ -56,6 +58,7 @@ def test_observe_keeps_its_own_research_and_notes(tmp_path, monkeypatch):
     from ouroboros import consciousness_authority as authority
 
     observe_meta = _wake_task("observe")["metadata"]
+    assert authority.observe_argument_refusal(observe_meta, "project_resources", {"action": "list"}) == ""
     assert authority.observe_argument_refusal(observe_meta, "delegate_start", {"prompt": "read"}) == ""
     assert authority.observe_argument_refusal(observe_meta, "delegate_start", {"prompt": "read", "access": "readonly"}) == ""
     assert authority.observe_argument_refusal(observe_meta, "schedule_subagent", {"objective": "read"}) == ""

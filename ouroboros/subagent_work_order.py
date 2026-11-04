@@ -473,6 +473,19 @@ def session_host_references(ctx: Any, *, target_root: str, source_root: str,
     text = (session_design_navigation(ctx, target_root=target_root, source_root=source_root)
             + session_constitution_pointer(ctx, target_root=target_root, source_root=source_root)
             + session_skill_index(ctx))
+    from ouroboros.project_facts import placed_project_id
+
+    project_id = str(placed_project_id(ctx) or "").strip()
+    if project_id:
+        from ouroboros.context_runtime_facts import _project_resource_fact
+        from ouroboros.tool_access_paths import canonical_data_root
+
+        # Pin the start's context beside its authority, not inside the canonical
+        # work order: recovery reconstructs that brief without mutable registry reads.
+        resource_fact = _project_resource_fact(canonical_data_root(ctx), project_id)
+        if resource_fact:
+            text += ("\n\nPROJECT RESOURCE CONTEXT (not additional authority)\n"
+                     + json.dumps(resource_fact, ensure_ascii=False, sort_keys=True))
     if payload_skill:
         from ouroboros.body_candidate import serving_repo_dir_for
 

@@ -546,7 +546,7 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
         # the compact contract beside the manifest closes the former split where
         # server.py computed both but the decision model could see neither.
         runtime_data["routing_contract"] = _routing_contract
-    _room_fact = None if declared else _project_room_fact(task)
+    _room_fact = _project_room_fact(task) if not declared or task.get("project_id") else None
     if _room_fact:
         runtime_data["project_room"] = _room_fact
     # v6.60.0 answer protocol (quiz 16b, C+B): the FINAL ANSWER marker doctrine moved
