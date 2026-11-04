@@ -601,7 +601,7 @@ def _host_pid_matches_record(record: dict[str, Any]) -> bool:
         host_pid = int(record.get("host_pid") or 0)
     except (TypeError, ValueError):
         return False
-    if host_pid <= 0:
+    if host_pid <= 1 or host_pid == os.getpid():
         return False
     expected = str(record.get("host_command_sha256") or "").strip()
     if not expected:
@@ -692,7 +692,7 @@ def _kill_host_pid(host_pid: Any) -> None:
         pid = int(host_pid)
     except (TypeError, ValueError):
         return
-    if pid <= 0:
+    if pid <= 1 or pid == os.getpid():
         return
     if not IS_WINDOWS:
         pgid = process_group_id(pid)

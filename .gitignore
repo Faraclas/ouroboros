@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+web/node_modules/
 
 # Packaged runtime downloads are build inputs, not source.
 /claudexor-runtime/

@@ -187,8 +187,8 @@ def test_executor_cleanup_ignores_unowned_forged_process_records(tmp_path, monke
     assert workspace_executor.kill_all_foreground(data, wait=False) == []
 
 
-@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="under root every live pid is signalable; the forged-record rule (pid 1 refuses signal 0) is a non-root property")
-def test_executor_cleanup_ignores_owner_shaped_forged_host_pid_records(tmp_path, monkeypatch):
+@pytest.mark.parametrize("host_pid", [-1, 0, 1, os.getpid()], ids=["negative", "zero", "init", "self"])
+def test_executor_cleanup_ignores_owner_shaped_forged_host_pid_records(tmp_path, monkeypatch, host_pid):
     import ouroboros.workspace_executor as workspace_executor
 
     data = tmp_path / "data"
@@ -202,7 +202,7 @@ def test_executor_cleanup_ignores_owner_shaped_forged_host_pid_records(tmp_path,
                 "owner": "ouroboros_workspace_executor",
                 "record_type": "foreground",
                 "executor_type": "local",
-                "host_pid": 1,
+                "host_pid": host_pid,
             }
         ),
         encoding="utf-8",
@@ -218,11 +218,21 @@ def test_executor_cleanup_ignores_owner_shaped_forged_host_pid_records(tmp_path,
     assert workspace_executor.kill_all_foreground(data, wait=False) == []
 
 
+@pytest.mark.parametrize("host_pid", [-1, 0, 1, os.getpid()], ids=["negative", "zero", "init", "self"])
+def test_executor_kill_helper_spares_reserved_pids(monkeypatch, host_pid):
+    import ouroboros.workspace_executor as workspace_executor
+
+    def forbidden(*_args):
+        pytest.fail("reserved PID must not reach process/group observation or signalling")
+
+    for name in ("process_group_id", "kill_process_group_id", "kill_pid_tree"):
+        monkeypatch.setattr(workspace_executor, name, forbidden)
+    workspace_executor._kill_host_pid(host_pid)
+
+
 def test_executor_cleanup_kills_a_hash_less_record_of_our_own_live_child(tmp_path, monkeypatch):
-    """A record whose command line could not be captured at register time (macOS
-    `ps` right after the spawn, Windows always) still names OUR child: it is alive
-    and answers signal 0, so the panic cleanup must kill it — the forged-record
-    rule above refuses only pids we cannot signal (macOS full-test 33658408570)."""
+    """The legacy signalability fallback still admits a registered live child
+    whose command capture failed. Protected IDs are never candidates for it."""
     import subprocess
     import sys
 

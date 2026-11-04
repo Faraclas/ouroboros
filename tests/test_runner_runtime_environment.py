@@ -112,16 +112,20 @@ def test_parallel_sibling():
     assert True
 ''', encoding="utf-8")
     (repo / "tests/test_serial.py").write_text(f'''
-import json, multiprocessing, os, pathlib, pytest
+import json, os, pathlib, pytest, tempfile
+from multiprocessing.managers import SyncManager
 @pytest.mark.serial
 def test_real_manager():
-    with multiprocessing.Manager() as manager:
-        queue = manager.Queue()
-        queue.put('owned')
-        assert queue.get(timeout=5) == 'owned'
-        address = manager.address
-        assert len(os.fsencode(address)) < 104
-        pathlib.Path({str(manager_report)!r}).write_text(json.dumps({{'address': address, 'tmpdir': os.environ['TMPDIR']}}), encoding='utf-8')
+    with tempfile.TemporaryDirectory() as directory:
+        address = str(pathlib.Path(directory) / 'manager.sock')
+        assert pathlib.Path(directory).parent == pathlib.Path(os.environ['TMPDIR'])
+        with SyncManager(address=address) as manager:
+            queue = manager.Queue()
+            queue.put('owned')
+            assert queue.get(timeout=5) == 'owned'
+            assert manager.address == address
+            assert len(os.fsencode(address)) < 104
+            pathlib.Path({str(manager_report)!r}).write_text(json.dumps({{'address': address, 'tmpdir': os.environ['TMPDIR']}}), encoding='utf-8')
 ''', encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "real nested runtime witnesses")
@@ -143,13 +147,16 @@ def test_real_manager():
 
 @SHORT_TEMP
 def test_a_gate_rooted_in_the_inherited_long_temp_fails_its_nested_manager(tmp_path, monkeypatch):
-    """The negative of the short default: the same real gate rooted where the old non-macOS rule
-    put it (the inherited TMPDIR) gives its nested multiprocessing manager a socket path past the
-    AF_UNIX limit (#2110: the reporter's Linux fence and saved-pause failures)."""
+    """An explicit filesystem socket falsifies a long root even when the stdlib's
+    default manager independently falls back to /tmp for overlong TMPDIR values."""
     repo = _tiny_repo(tmp_path)
     (repo / "tests/test_serial.py").write_text(
-        "import multiprocessing, pytest\n\n\n@pytest.mark.serial\ndef test_real_manager():\n"
-        "    with multiprocessing.Manager() as manager:\n        assert manager.Queue() is not None\n",
+        "import pathlib, pytest, tempfile\nfrom multiprocessing.managers import SyncManager\n\n"
+        "@pytest.mark.serial\ndef test_real_manager():\n"
+        "    with tempfile.TemporaryDirectory() as directory:\n"
+        "        address = str(pathlib.Path(directory) / 'manager.sock')\n"
+        "        with SyncManager(address=address) as manager:\n"
+        "            assert manager.Queue() is not None\n",
         encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "a nested manager")
