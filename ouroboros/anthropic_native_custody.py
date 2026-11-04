@@ -244,16 +244,21 @@ def mark_replayed_receipts_consumed(message: Mapping[str, Any]) -> Dict[str, Any
 def scrub_native_custody(messages: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
     """Remove direct-route custody before another provider/API/model dispatch."""
     cleaned = copy.deepcopy(list(messages))
+    from ouroboros.copilot_native_custody import COPILOT_NATIVE_KEY, COPILOT_WIRE_KEY
     for message in cleaned:
         if isinstance(message, dict):
             message.pop(ANTHROPIC_NATIVE_RECEIPT_KEY, None)
             message.pop(ANTHROPIC_CONSUMED_RECEIPTS_KEY, None)
+            message.pop(COPILOT_NATIVE_KEY, None)
+            message.pop(COPILOT_WIRE_KEY, None)
     return cleaned
 
 
 def custody_private_key(value: Any) -> bool:
     """Keys withheld from public/summarizer projections, not transport copies."""
+    from ouroboros.copilot_native_custody import COPILOT_NATIVE_KEY, COPILOT_WIRE_KEY
     return str(value) in {
+        COPILOT_NATIVE_KEY, COPILOT_WIRE_KEY,
         ANTHROPIC_NATIVE_RECEIPT_KEY,
         ANTHROPIC_CONSUMED_RECEIPTS_KEY,
         "nativeContinuation",
@@ -295,11 +300,17 @@ def _receipt_projection(receipt: Any) -> Dict[str, Any]:
 
 def observability_custody_projection(value: Any) -> Any:
     """Replace private replay receipts with type/order/size/digest metadata."""
+    from ouroboros.copilot_native_custody import COPILOT_NATIVE_KEY, COPILOT_WIRE_KEY
     if isinstance(value, Mapping):
         projected = {}
         for key, item in value.items():
             if str(key) == ANTHROPIC_NATIVE_RECEIPT_KEY:
                 projected[ANTHROPIC_CUSTODY_PROJECTION_KEY] = _receipt_projection(item)
+            elif str(key) in {COPILOT_NATIVE_KEY, COPILOT_WIRE_KEY}:
+                encoded = item.get("content_json") if isinstance(item, Mapping) else _content_json(item)
+                encoded = encoded if isinstance(encoded, str) else ""
+                projected["_copilot_native_custody"] = {"size_bytes": len(encoded.encode("utf-8")),
+                                                       "sha256": _sha256_bytes(encoded)}
             elif str(key) != ANTHROPIC_CONSUMED_RECEIPTS_KEY:
                 projected[str(key)] = observability_custody_projection(item)
         return projected
@@ -397,6 +408,12 @@ def context_custody_proxy(value: Mapping[str, Any]) -> Dict[str, Any]:
     encoded = receipt.get("content_json") if isinstance(receipt, Mapping) else None
     if isinstance(encoded, str):
         projected["_anthropic_native_opaque_bytes"] = "#" * len(encoded.encode("utf-8"))
+    from ouroboros.copilot_native_custody import COPILOT_NATIVE_KEY, COPILOT_WIRE_KEY
+    native = value.get(COPILOT_NATIVE_KEY)
+    if isinstance(native, Mapping) and isinstance(native.get("content_json"), str):
+        projected["_copilot_native_opaque_bytes"] = "#" * len(native["content_json"].encode("utf-8"))
+    elif COPILOT_WIRE_KEY in value:
+        projected["_copilot_native_opaque_bytes"] = "#" * len(_content_json(value[COPILOT_WIRE_KEY]).encode("utf-8"))
     return projected
 
 

@@ -291,24 +291,17 @@ is where a deliberate exception states its reason.
 
 ### External facts: unknown is not no
 
-Provider inputs, limits, prices, IDs and availability change without releases.
+1. Use exact-route metadata/refusal, dated wire/recovery probes or owner settings—not names, prefixes, families or another catalog.
+2. Unknown is not no: unevidenced input/tools/requests pass unchanged; literals cannot drop input, refuse tools or narrow choices.
+3. One refusal proves one attempt; durable "no" needs scoped absence evidence.
+4. Declare transport limits at their lane and to the acting model.
+5. Keep source/date/scope/stale-either-way effects; requested/sent/reported differ.
 
-1. Use exact-route metadata/refusal, a dated probe beside its wire projection and
-   recovery path, or the owner's setting—not model names, prefixes, families or another catalog.
-2. Unknown is not no. Unevidenced input, tools and explicit requests pass unchanged;
-   shipped literals cannot drop input, refuse tools, rewrite choices or narrow requests.
-3. A refusal is one attempt; durable "no" needs scoped absence evidence.
-4. Our transport limits are declared at their lane and named to the acting model.
-5. The table keeps source, date, exact scope and stale-either-way effects. Requested,
-   sent and provider-reported values remain distinct.
-
-Guards: `test_image_capability_contract.py` keeps unknown images on capable transports;
-`test_model_name_invariance.py` keeps unevidenced payloads name-independent (exceptions
-below); `test_tristate_truthiness_guard.py` forbids yes/no/unknown truth tests. All are
-under `tests/`. Provenance grants no runtime authority; cited docstrings/contracts own probes.
+Tests: `test_image_capability_contract.py` (unknown images), `test_model_name_invariance.py` (name-independent payloads, exceptions below), `test_tristate_truthiness_guard.py` (three-valued truth). Provenance grants no authority; cited owners keep probes.
 
 | Location | Fact | Evidence & re-probe | If stale |
 |---|---|---|---|
+| `copilot_native_custody.py` | `api.business.githubcopilot.com` gpt-6.1-sol/high: encrypted reasoning/phase replay | 2026-11-04 task2df086c5 three-send/two-replay HTTP fixture; Microsoft `responsesApi.ts@3712bd7d` | Re-probe before widening; false trust rejects (one400 strip), excess stripping loses continuity |
 | `llm_openai_compatible.py::_copilot_block_choice` | Copilot business HTTPS Chat uses unindexed content blocks | HTTP probe 2026-11-03; sources/digests in `test_copilot_choice_blocks.py`. Re-probe before widening | Changed dialect: ambiguity rejects without resend; other hosts keep standard choices |
 | `ouroboros/tools/imagegen.py`; `ouroboros/gateways/image_api.py` | Image wire facts | [Dated sources](../IMAGE_GENERATION.md#direct-api-contracts); re-check each exact route | Stale positives refuse requests; negatives hide capability |
 | `ouroboros/llm_attempt.py::supports_message_cache_control` | Cache markers OpenRouter accepts or translates (`anthropic/`, `google/gemini-`, `openai/`) | `openai/`: OpenRouter caching guide in docstring, no live probe; re-probe before widening, never by name resemblance | False positive invalidates a request; false negative loses the prompt cache |

@@ -429,4 +429,8 @@ def estimate_message_chars(messages: Any) -> int:
         # while the wire copy strips it — a conservative over-count, the safe
         # direction for a compaction trigger.
         total += len(str(msg.get("reasoning_content") or ""))
+        from ouroboros.copilot_native_custody import COPILOT_NATIVE_KEY
+        native = msg.get(COPILOT_NATIVE_KEY)
+        if isinstance(native, dict) and isinstance(native.get("content_json"), str):
+            total += len(native["content_json"])
     return total

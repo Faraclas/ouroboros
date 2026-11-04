@@ -164,7 +164,8 @@ def _finalize_loop_candidate(content, limit_ctx, tools, emit_progress, *, after_
             # complete row comparison. Earlier equal answers keep their own continuation.
             for row in limit_ctx.messages[response_start:]:
                 if row == {"role": "assistant", "content": content}:
-                    row.update({key: assistant_message[key] for key in ("reasoning_details", "reasoning_content")
+                    from ouroboros.copilot_native_custody import COPILOT_NATIVE_KEY
+                    row.update({key: assistant_message[key] for key in ("reasoning_details", "reasoning_content", COPILOT_NATIVE_KEY)
                                 if key in assistant_message})
     return result
 

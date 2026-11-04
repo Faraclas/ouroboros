@@ -367,7 +367,7 @@ def test_provider_probe_unwraps_inside_physical_accounting(tmp_path, monkeypatch
     assert row.get("cost_usd") is None and not row.get("cost_final", False)
 
 
-@pytest.mark.parametrize("outcome", ["completed", "failed", "refusal", "in_progress", "exhausted", "length_text", "chat_length", "length_marker"])
+@pytest.mark.parametrize("outcome", ["completed", "native", "failed", "refusal", "in_progress", "exhausted", "length_text", "chat_length", "length_marker"])
 def test_real_loop_registry_tool_backflow(tmp_path, monkeypatch, provider_catalog_offline, outcome):
     import queue
     import openai
@@ -407,7 +407,12 @@ def test_real_loop_registry_tool_backflow(tmp_path, monkeypatch, provider_catalo
                  "finish_reason": "length" if len(sent) == 1 else "stop"}]}
             return hm.Response(200, content=("data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n").encode(),
                                headers={"content-type": "text/event-stream"})
-        if outcome == "completed":
+        if outcome == "native":
+            body = native(output=[
+                {"type": "reasoning", "id": "opaque-id", "encrypted_content": "CIPHER", "summary": []},
+                {**message("checking"), "phase": "commentary"}, call(),
+            ] if len(sent) == 1 else [{**message("ROUNDTRIP_DONE"), "phase": "final_answer"}])
+        elif outcome == "completed":
             body = native(output=[call()] if len(sent) == 1 else [message("ROUNDTRIP_DONE")])
         elif outcome == "refusal":
             body = native(output=[{"type": "message", "content": [{"type": "refusal", "refusal": "No."}]}])
@@ -450,7 +455,7 @@ def test_real_loop_registry_tool_backflow(tmp_path, monkeypatch, provider_catalo
         assert all("finish_reason" not in m for m in history)
         assert all(r["state"] == "settled" for r in ledger_rows(tmp_path))
         return
-    if outcome != "completed":
+    if outcome not in {"completed", "native"}:
         assert not trace["tool_calls"]
         assert answer not in {"PARTIAL", "ROUNDTRIP_DONE"}
         rows = ledger_rows(tmp_path)
@@ -473,6 +478,13 @@ def test_real_loop_registry_tool_backflow(tmp_path, monkeypatch, provider_catalo
     assert len(trace["tool_calls"]) == 1
     assert len(ledger_rows(tmp_path)) == 2
     assert all(r["state"] == "settled" for r in ledger_rows(tmp_path))
+    if outcome == "native":
+        from ouroboros.copilot_native_custody import COPILOT_NATIVE_KEY
+        assistant = next(m for m in messages if m.get("tool_calls"))
+        assert COPILOT_NATIVE_KEY in assistant
+        replay = sent[1]["input"]
+        assert next(row for row in replay if row.get("type") == "reasoning")["encrypted_content"] == "CIPHER"
+        assert next(row for row in replay if row.get("phase") == "commentary")["content"][0]["text"] == "checking"
 
 
 def test_finish_fact_replaced_after_recovery_and_absence():

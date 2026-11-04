@@ -41,6 +41,7 @@ from ouroboros.llm_stream import consume_stream, consume_stream_async
 from ouroboros.llm_observability import http_observation_scope, bind_http_observations
 from ouroboros.transport_custody import ProviderNotDispatched
 from ouroboros.copilot_responses import copilot_response_failure
+from ouroboros.copilot_native_custody import native_output_scope, bind_native_output, has_native_replay
 from ouroboros.reasoning_artifacts import (
     note_replay_omission,
     pop_reasoning_pin_note,
@@ -219,7 +220,11 @@ class _RecoveryLadderMixin:
         kwargs: Dict[str, Any],
         exc: Exception,
     ) -> Optional[Dict[str, Any]]:
-        """Strip replayed reasoning once for a non-overflow OpenRouter 400."""
+        """Strip replayed reasoning once on an eligible 400, preserving content."""
+        if has_native_replay(kwargs.get("messages") or []) and reasoning_strip_retry_allowed(exc):
+            retry = copy.deepcopy(kwargs)
+            retry["messages"] = self._strip_openrouter_roundtrip_metadata(kwargs["messages"])
+            return retry
         if not target.get("supports_openrouter_extensions"):
             return None
         if not reasoning_strip_retry_allowed(exc):
@@ -408,7 +413,8 @@ class _RecoveryLadderMixin:
         # Discard a prior aborted ladder's pin note and omission fact.
         pop_reasoning_pin_note()
         pop_replay_omission()
-        replayed = self._has_replayed_reasoning_metadata(kwargs.get("messages") or [])
+        replayed = (self._has_replayed_reasoning_metadata(kwargs.get("messages") or [])
+                    or has_native_replay(kwargs.get("messages") or []))
         transport_timeout = kwargs.get("timeout")
         prior_capture = None
 
@@ -422,7 +428,7 @@ class _RecoveryLadderMixin:
 
             def dispatch():
                 timeout = physical_dispatch_timeout(transport_timeout)
-                with http_observation_scope():
+                with http_observation_scope(), native_output_scope():
                     try:
                         response = create_fn(**candidate, **({"timeout": timeout} if timeout is not None else {}))
                     except Exception as error:
@@ -437,7 +443,7 @@ class _RecoveryLadderMixin:
                     if native_failure is not None:
                         raise native_failure
                     response = consume_stream(response, expected_choices=candidate.get("n", 1)) if candidate.get("stream") else response
-                    return bind_http_observations(response)
+                    return bind_native_output(bind_http_observations(response))
 
             try:
                 result = _execute_candidate(
@@ -450,7 +456,8 @@ class _RecoveryLadderMixin:
                 self._stage_reasoning_pin_disclosure(candidate)
                 # Only a generated answer means the model read this send; a body error read nothing.
                 note_replay_omission(replayed and _response_body_error(self, result) is None
-                                     and not self._has_replayed_reasoning_metadata(candidate.get("messages") or []))
+                                     and not self._has_replayed_reasoning_metadata(candidate.get("messages") or [])
+                                     and not has_native_replay(candidate.get("messages") or []))
                 return result
             except UsageAccountingError as exc:
                 # Admission failure cannot leave its disclosure for a later call.
@@ -597,7 +604,8 @@ class _RecoveryLadderMixin:
         # Discard a prior aborted ladder's pin note and omission fact.
         pop_reasoning_pin_note()
         pop_replay_omission()
-        replayed = self._has_replayed_reasoning_metadata(kwargs.get("messages") or [])
+        replayed = (self._has_replayed_reasoning_metadata(kwargs.get("messages") or [])
+                    or has_native_replay(kwargs.get("messages") or []))
         transport_timeout = kwargs.get("timeout")
         prior_capture = None
 
@@ -608,7 +616,7 @@ class _RecoveryLadderMixin:
 
             async def dispatch():
                 timeout = physical_dispatch_timeout(transport_timeout)
-                with http_observation_scope():
+                with http_observation_scope(), native_output_scope():
                     try:
                         response = await create_fn(**candidate, **({"timeout": timeout} if timeout is not None else {}))
                     except Exception as error:
@@ -623,7 +631,7 @@ class _RecoveryLadderMixin:
                     if native_failure is not None:
                         raise native_failure
                     response = await consume_stream_async(response, expected_choices=candidate.get("n", 1)) if candidate.get("stream") else response
-                    return bind_http_observations(response)
+                    return bind_native_output(bind_http_observations(response))
 
             try:
                 result = await _execute_candidate_async(
@@ -636,7 +644,8 @@ class _RecoveryLadderMixin:
                 self._stage_reasoning_pin_disclosure(candidate)
                 # Only a generated answer means the model read this send; a body error read nothing.
                 note_replay_omission(replayed and _response_body_error(self, result) is None
-                                     and not self._has_replayed_reasoning_metadata(candidate.get("messages") or []))
+                                     and not self._has_replayed_reasoning_metadata(candidate.get("messages") or [])
+                                     and not has_native_replay(candidate.get("messages") or []))
                 return result
             except UsageAccountingError as exc:
                 # Sync-driver parity: central UAE discard (triad r4).

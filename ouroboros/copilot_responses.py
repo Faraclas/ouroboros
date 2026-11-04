@@ -86,6 +86,10 @@ def _copilot_chat_to_responses_payload(payload: Dict[str, Any]) -> Dict[str, Any
     for msg in payload.get("messages") or []:
         if not isinstance(msg, dict):
             continue
+        from ouroboros.copilot_native_custody import COPILOT_WIRE_KEY
+        if msg.get("role") == "assistant" and COPILOT_WIRE_KEY in msg:
+            input_items.extend(msg[COPILOT_WIRE_KEY])
+            continue
         role = str(msg.get("role") or "user")
         raw_content = msg.get("content")
         content_val: Any = ""
@@ -113,7 +117,8 @@ def _copilot_chat_to_responses_payload(payload: Dict[str, Any]) -> Dict[str, Any
                             img = b.get("image_url")
                             url_str = img.get("url") if isinstance(img, dict) else str(img or "")
                             if url_str:
-                                blocks.append({"type": "input_image", "image_url": url_str})
+                                blocks.append({"type": "input_image", "image_url": url_str,
+                                               **({"detail": img["detail"]} if isinstance(img, dict) and "detail" in img else {})})
                 content_val = blocks
         if role in ("system", "developer", "user"):
             input_items.append({"role": role, "content": content_val})
@@ -345,6 +350,8 @@ def _convert_response(resp: Any, raw: bytes, model: str, stream: bool, hm: Any):
         except (ValueError, UnicodeError) as error:
             raise CopilotRejectedResponse(raw.decode("utf-8", "replace"), "Copilot Responses body is not JSON") from error
         chat = _copilot_responses_to_chat_completion(native, model)
+        from ouroboros.copilot_native_custody import observe_native_output
+        observe_native_output(native, chat, resp.request)
         raw = _copilot_chat_completion_to_sse(chat) if stream else json.dumps(chat).encode("utf-8")
         content_type = "text/event-stream; charset=utf-8" if stream else "application/json"
     result = hm.Response(resp.status_code, headers=[*headers, ("content-type", content_type)],

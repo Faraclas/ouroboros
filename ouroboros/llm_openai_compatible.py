@@ -263,6 +263,8 @@ class _OpenAICompatibleLaneMixin:
                 keep_reasoning_content=provider == "minimax" or bool(target.get("requires_reasoning_echo")),
                 keep_reasoning_details=bool(target.get("reasoning_split")),
             )
+            from ouroboros.copilot_native_custody import prepare_native_replay
+            clean_messages = prepare_native_replay(messages, clean_messages, target)
             if target.get("requires_reasoning_echo"):
                 # A reasoning-echo route (DeepSeek) REQUIRES every assistant
                 # turn's ``reasoning_content`` on tool-bearing requests (v4-pro
@@ -516,6 +518,9 @@ class _OpenAICompatibleLaneMixin:
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Normalize a reply without generation lookup; skip_cost_fetch also skips tariffs."""
         usage = dict(resp_dict.get("usage") or {})
+        # Host-authored attempt disclosures cannot originate in provider JSON.
+        for key in ("request_wire", "request_wire_history", "request_wire_history_omitted"):
+            usage.pop(key, None)
         from ouroboros.llm_observability import response_http_projection
         projection = response_http_projection(wire_completion)
         usage.pop("_http_projection", None)
@@ -725,6 +730,8 @@ class _OpenAICompatibleLaneMixin:
         from ouroboros.openai_chat_dispatch import normalize_direct_openai_completion
 
         msg, usage = normalize_direct_openai_completion(msg, usage, wire_completion)
+        from ouroboros.copilot_native_custody import retain_native_output
+        msg = retain_native_output(msg, target, wire_completion)
         _custom_receipts = usage.get("_request_wire_custom_receipts", ())
         finalize_wire_response(msg, usage, custom_receipts=_custom_receipts)
         return msg, usage
