@@ -610,14 +610,26 @@ def test_request_restart_adopts_only_when_the_exact_commit_is_named(scene):
         scene.cand, "ouroboros", "adopt reviewed fix")
     handoff = body_adoption.read(scene.data)
     assert handoff["phase"] == "authorized" and handoff["reason"] == "adopt reviewed fix"
+    assert handoff["publish"] is False
     assert scene.ctx.pending_restart_reason == "adopt reviewed fix"
     assert body_adoption.authorized_base(scene.data, scene.cand, "adopt reviewed fix") == scene.old
     assert body_adoption.authorized_base(scene.data, scene.cand, "another reason") == ""
     assert git(scene.serving, "rev-parse", "HEAD") == scene.old  # authorizing touched nothing
 
 
+def test_restart_refuses_nonboolean_publication_before_any_effect(scene):
+    from ouroboros.tools.control_runtime import _request_restart
+
+    scene.commit()
+    sent = host_restart_ack(scene.ctx, scene.data)
+    assert "publish must be a boolean" in _request_restart(scene.ctx, "adopt", scene.cand, publish="true")
+    assert sent == [] and body_adoption.read(scene.data) == {}
+    assert not (scene.data / "state/pending_restart_verify.json").exists()
+
+
 @pytest.mark.parametrize("host", ["accepted", "refused", "silent"])
-def test_request_restart_repeated_in_one_attempt_keeps_its_first_request(scene, monkeypatch, host):
+@pytest.mark.parametrize("publish", [False, True])
+def test_request_restart_repeated_in_one_attempt_keeps_its_first_request(scene, monkeypatch, host, publish):
     """A second call in the same attempt sends nothing and only reads the host's answer to the
     first request: its reason and commit stay. Only an accepted request reads as requested."""
     from ouroboros.tools import control_events
@@ -630,9 +642,10 @@ def test_request_restart_repeated_in_one_attempt_keeps_its_first_request(scene, 
     registry.set_context(scene.ctx)
     marker = scene.data / "state" / "pending_restart_verify.json"
 
-    first = registry.execute("request_restart", {"reason": "adopt reviewed fix", "adopt_commit": scene.cand})
+    first = registry.execute("request_restart", {"reason": "adopt reviewed fix", "adopt_commit": scene.cand, "publish": publish})
     receipt, handoff = marker.read_bytes(), body_adoption.read(scene.data)
-    again = registry.execute("request_restart", {"reason": "a different reason"})  # no commit: would not adopt
+    assert handoff["publish"] is publish
+    again = registry.execute("request_restart", {"reason": "a different reason", "publish": not publish})
 
     [intent] = sent
     request_id = intent["request_id"]
@@ -653,8 +666,9 @@ def test_supervisor_evolution_restart_authorizes_the_candidate_commit_or_stops(s
     # No candidate for that task: a commit made in the serving checkout needs no adoption.
     assert body_adoption.authorize_for_task(scene.data, "other-task", scene.old, "evo") is True
     assert scene.phase() == ""
-    assert body_adoption.authorize_for_task(scene.data, "root-adopt", scene.cand, "evo") is True
+    assert body_adoption.authorize_for_task(scene.data, "root-adopt", scene.cand, "evo", publish=True) is True
     assert body_adoption.read(scene.data)["reason"] == "evo"
+    assert body_adoption.read(scene.data)["publish"] is True
     first_id = body_adoption.read(scene.data)["id"]
     assert body_adoption.authorize_for_task(scene.data, "root-adopt", scene.cand, "evo") is True
     assert body_adoption.read(scene.data)["id"] == first_id  # the task's own authorization is reused

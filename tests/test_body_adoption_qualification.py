@@ -318,7 +318,7 @@ def test_a_selected_adoption_switches_and_settles_but_publishes_neither_branch_n
     monkeypatch.setattr(state, "load_state", lambda: {})
     monkeypatch.setattr(message_bus, "send_with_budget", lambda *a, **kw: pytest.fail("no owner chat is configured"))
 
-    _switch(scene)  # the real authorization (selected), bound restart, arming, switch helper and attestation
+    _switch(scene, publish=True)  # real selected authorization, bound restart, helper and attestation
     settled = body_adoption.settle_on_boot(scene.data, scene.serving, supervisor_ready=True)
 
     assert settled["outcome"] == "adopted" and git(scene.serving, "rev-parse", "HEAD") == scene.cand

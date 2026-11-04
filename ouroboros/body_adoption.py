@@ -132,7 +132,7 @@ def _dependency_command(repo: pathlib.Path, rows: List[Dict[str, Any]], *, old: 
             "system package manager or a runtime venv before adopting; no pip was attempted.") from exc
 
 
-def authorize(ctx: Any, commit: str, *, reason: str) -> Dict[str, Any]:
+def authorize(ctx: Any, commit: str, *, reason: str, publish: bool = False) -> Dict[str, Any]:
     """Authorize adopting the bound candidate's exact ``commit`` at the restart named ``reason``."""
     from ouroboros import body_candidate
 
@@ -147,11 +147,12 @@ def authorize(ctx: Any, commit: str, *, reason: str) -> Dict[str, Any]:
 
     mode = effective_runtime_mode(get_runtime_mode(), getattr(ctx, "task_metadata", None))
     return authorize_row(canonical_data_root(ctx), row, commit, reason=reason, runtime_mode=mode,
-                         task_id=str(getattr(ctx, "task_id", "") or ""), ctx=ctx)
+                         task_id=str(getattr(ctx, "task_id", "") or ""), ctx=ctx, publish=publish)
 
 
 def authorize_row(data_dir: pathlib.Path, row: Dict[str, Any], commit: str, *, reason: str,
-                  runtime_mode: str = "advanced", task_id: str = "", ctx: Any = None) -> Dict[str, Any]:
+                  runtime_mode: str = "advanced", task_id: str = "", ctx: Any = None,
+                  publish: bool = False) -> Dict[str, Any]:
     """The checks and the durable handoff; shared by the tool and the evolution supervisor path."""
     from ouroboros import body_candidate
 
@@ -212,6 +213,11 @@ def authorize_row(data_dir: pathlib.Path, row: Dict[str, Any], commit: str, *, r
     if current.get("phase") in _PENDING and current.get("phase") != "authorized":
         raise AdoptionRefused(
             "ADOPTION_PENDING", f"adoption {current.get('id')} is {current.get('phase')}; it must settle first.")
+    if (current.get("phase") == "authorized" and current.get("cand") == cand
+            and current.get("task_id") == task_id):
+        # Marker persistence can fail after authorization. Recovery may rebind the reason,
+        # never promote this same author/commit's intent; an explicit local request may narrow it.
+        publish = publish is True and current.get("publish") is True
     from ouroboros.preflight_qualification import adoption_test_evidence
 
     # Existing green evidence of exactly this commit; adoption never runs the battery itself. A
@@ -238,7 +244,7 @@ def authorize_row(data_dir: pathlib.Path, row: Dict[str, Any], commit: str, *, r
         "created_tag": str((row.get("reviewed_release_tags") or {}).get(cand) or ""),
         "switch": rows, "deps_command": deps_command, "authorized_at": utc_now_iso(),
         "unreviewed_commits": unreviewed, "attempts": 0, "events": [],
-        "tests": qualification,
+        "tests": qualification, "publish": publish is True,
     }
     # The helper is captured from the body that is running, never from the candidate.
     shutil.copyfile(pathlib.Path(body_switch.__file__), directory / "switch.py")
@@ -246,7 +252,7 @@ def authorize_row(data_dir: pathlib.Path, row: Dict[str, Any], commit: str, *, r
     shutil.copyfile(pathlib.Path(installation_stop.__file__), directory / "installation_stop.py")
     _git(serving, "update-ref", f"{PIN_PREFIX}{handoff['id']}", cand)
     body_switch.record(str(directory), handoff, "authorized", f"restart reason: {reason}")
-    _log(data_dir, "body_adoption_authorized", handoff, branch=branch, paths=len(rows))
+    _log(data_dir, "body_adoption_authorized", handoff, branch=branch, paths=len(rows), publish=handoff["publish"])
     return handoff
 
 
@@ -259,12 +265,12 @@ def authorized_base(data_dir: Any, candidate_sha: str, reason: str = "") -> str:
     return ""
 
 
-def authorize_for_task(data_dir: Any, task_id: str, commit_sha: str, reason: str) -> bool:
+def authorize_for_task(data_dir: Any, task_id: str, commit_sha: str, reason: str, *, publish: bool = False) -> bool:
     """Supervisor path (evolution's own restart): may a restart for ``commit_sha`` proceed?
 
     A commit made in the serving checkout needs no adoption. A commit on the
     task's candidate needs an authorized handoff; one the task already authorized
-    for this restart is reused, otherwise it is authorized here.
+    for this restart is reused without changing its publication intent; otherwise it is authorized here.
     """
     try:
         from ouroboros import body_candidate
@@ -277,7 +283,7 @@ def authorize_for_task(data_dir: Any, task_id: str, commit_sha: str, reason: str
         from ouroboros.config import get_runtime_mode
 
         authorize_row(pathlib.Path(data_dir), row, commit_sha, reason=reason,
-                      runtime_mode=get_runtime_mode(), task_id=str(task_id))
+                      runtime_mode=get_runtime_mode(), task_id=str(task_id), publish=publish)
         return True
     except AdoptionRefused as exc:
         log.warning("Evolution restart not requested: adoption refused (%s: %s)", exc.code, exc.text)
@@ -302,7 +308,7 @@ def _archive(data_dir: Any, handoff: Dict[str, Any], outcome: str) -> None:
     if handoff:
         _log(data_dir, "body_adoption_closed", handoff, outcome=outcome, phase=handoff.get("phase"),
              events=handoff.get("events"), interpreter_state=handoff.get("interpreter_state"),
-             tests=handoff.get("tests"))
+             tests=handoff.get("tests"), publish=handoff.get("publish") is True)
     if handoff and not pointer_gone:
         # The hook still finds the pointer: it must read a CLOSED record, never a missing helper
         # (which stops every boot).
@@ -493,7 +499,7 @@ def finalize_on_boot(data_dir: Any, repo_dir: Any, *, supervisor_ready: bool,
     _archive(data_dir, handoff, "adopted")
     kept = sorted({*(loaded.get("later_edits") or []), *(handoff.get("later_edit_kept") or [])})
     return {"outcome": "adopted", "sha": head, "tests": dict(handoff.get("tests") or {}),
-            "created_tag": str(handoff.get("created_tag") or ""),
+            "created_tag": str(handoff.get("created_tag") or ""), "publish": handoff.get("publish") is True,
             "adoption_id": handoff.get("id"), "previous": handoff.get("old"),
             "note": f"Adopted candidate commit {cand} on {handoff.get('branch')}; previous commit "
                     f"{str(handoff.get('old') or '')[:12]}."
@@ -504,7 +510,7 @@ def settle_on_boot(data_dir: Any, repo_dir: Any, *, supervisor_ready: bool) -> D
     """Boot's one call: settle the inherited handoff, then the follow-ups an adopted commit is owed.
 
     The follow-ups are each best-effort: the handoff is already settled when they run. The
-    serving push follows only an adoption that full evidence qualified.
+    serving push needs both recorded publication intent and full evidence. Legacy absence is local-only.
     """
     try:
         from supervisor.update_merge import external_host_restart_smoke
@@ -522,15 +528,16 @@ def settle_on_boot(data_dir: Any, repo_dir: Any, *, supervisor_ready: bool) -> D
         branch = _git(repo_dir, "symbolic-ref", "-q", "--short", "HEAD", check=False).stdout.strip()
         _record_checkout_facts({"current_branch": branch, "current_sha": result["sha"]})
         tier = str(result["tests"].get("tier") or "")
-        if tier != "full":
-            # This boot's automatic push needs full evidence; ordinary later pushes are separate.
-            # Neither the branch nor a tag is pushed and nothing schedules it later: the intent stays
-            # on record, withheld rather than failed or done.
+        requested = result.get("publish") is True
+        if not requested or tier != "full":
+            # Qualification never grants publication. No branch/tag push or deferred retry;
+            # a later deliberate Git publication remains a separate operation.
             result["publication"] = {"status": "withheld", "branch": branch, "sha": result["sha"],
-                                     "tier": tier or "unrecorded",
+                                     "tier": tier or "unrecorded", "reason": "not_requested" if not requested else "tier",
                                      **({"created_tag": result["created_tag"]} if result.get("created_tag") else {})}
-            result["note"] += (f" Publication withheld: this adoption rests on {tier or 'unrecorded'} test evidence "
-                               "and the automatic post-adoption push needs a full run, so nothing was pushed.")
+            result["note"] += (" Publication withheld: no publication was requested, so nothing was pushed." if not requested
+                               else f" Publication withheld: this adoption rests on {tier or 'unrecorded'} test evidence "
+                                    "and the automatic post-adoption push needs a full run, so nothing was pushed.")
             _log(data_dir, "body_adoption_publication",
                  {"id": result["adoption_id"], "cand": result["sha"], "old": result["previous"]}, **result["publication"])
             return

@@ -111,7 +111,7 @@ def _restart_receipt_failure(ctx: ToolContext, receipt: dict, text: str) -> str:
     ))
 
 
-def _request_restart(ctx: ToolContext, reason: str, adopt_commit: str = "") -> str:
+def _request_restart(ctx: ToolContext, reason: str, adopt_commit: str = "", publish: bool | None = None) -> str:
     from ouroboros.tools.control_events import request_restart_intent
 
     prior = getattr(ctx, "pending_restart_request", None)
@@ -120,6 +120,8 @@ def _request_restart(ctx: ToolContext, reason: str, adopt_commit: str = "") -> s
         return ("Restart requested. The previously acknowledged request is unchanged." if receipt.get("status") in {"accepted", "ready"}
                 else _restart_receipt_failure(ctx, receipt,
                     f"RESTART_{receipt['status'].upper()}: request {prior['request_id']}; no new request sent."))
+    if publish is not None and not isinstance(publish, bool):
+        return "⚠️ RESTART_BLOCKED: publish must be a boolean; omit it for the default."
     block_reason = _evolution_restart_block_reason(ctx)
     if block_reason:
         return f"⚠️ RESTART_BLOCKED: in evolution mode, {block_reason}."
@@ -136,7 +138,8 @@ def _request_restart(ctx: ToolContext, reason: str, adopt_commit: str = "") -> s
         if is_evolution and body_candidate.is_bound(ctx) and not str(adopt_commit or "").strip():
             adopt_commit = run_cmd(["git", "rev-parse", "HEAD"], cwd=ctx.repo_dir).strip()
         if str(adopt_commit or "").strip():
-            handoff = body_adoption.authorize(ctx, adopt_commit, reason=restart_reason)
+            handoff = body_adoption.authorize(ctx, adopt_commit, reason=restart_reason,
+                                             publish=is_evolution if publish is None else publish)
             adoption_note = (f" It adopts candidate commit {handoff['cand'][:12]} onto {handoff['branch']} "
                              "once this generation's readers have stopped.")
     except body_adoption.AdoptionRefused as exc:
@@ -233,7 +236,8 @@ def self_change_tool_entries() -> list:
                 "restart, after the running generation's readers have stopped."),
             "parameters": {"type": "object", "properties": {
                 "reason": {"type": "string"},
-                "adopt_commit": {"type": "string", "description": "Exact reviewed candidate commit SHA to adopt at this restart; it needs that commit's passing post-commit run on record: selected over the whole candidate delta, or full (verifier, cutover or broad changes, Cyber Pro's unreviewed commits). Only full evidence permits this adoption's automatic branch/tag push."},
+                "adopt_commit": {"type": "string", "description": "Exact reviewed candidate commit SHA to adopt; needs its passing post-commit run: selected over the whole delta, or full for cutover/broad/unreviewed changes. Qualification alone never requests publication."},
+                "publish": {"type": "boolean", "description": "Request this adoption's postboot branch/operation-tag push, with existing publication authority and full qualification. Omitted: local-only for ordinary work; authorized evolution requests publication. False always means local-only. A repeated restart keeps its original intent."},
             }, "required": ["reason"]},
         }, _request_restart),
     ]

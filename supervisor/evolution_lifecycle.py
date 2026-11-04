@@ -1440,7 +1440,7 @@ def build_evolution_task_text(cycle: int) -> str:
         "- Work as a normal Ouroboros self-improvement task.",
         "- Use standard tests and the normal commit review by the review panel (`commit_reviewed`) before committing code.",
         "- Land at most ONE reviewed self-modification commit in this cycle. Fold reviewer fixes into that commit before committing; do not churn follow-up commits.",
-        "- After a reviewed commit lands, call request_restart once and stop. Restart verification is the absorption boundary for the cycle.",
+        "- After a reviewed commit lands, call request_restart once and stop. Evolution requests publication by default; publish=false keeps adoption local. Restart verification is the absorption boundary.",
         "- An honest no-op is a legitimate outcome when the objective is unsafe, already solved, too broad, or needs owner input; do not commit just to make a cycle non-empty.",
         "- If the best next step is memory/identity/backlog rather than code, update those durable artifacts with provenance, but do not treat that as an absorbed self-evolution cycle.",
         "- A true absorbed self-evolution cycle requires one reviewed self-modification commit followed by successful restart verification before the next campaign cycle.",
@@ -1576,7 +1576,7 @@ def request_evolution_restart(drive_root: pathlib.Path, tx: Dict[str, Any], log:
         )
         from ouroboros import body_adoption
 
-        authorized = body_adoption.authorize_for_task(drive_root, claim["task_id"], commit_sha, restart_reason)
+        authorized = body_adoption.authorize_for_task(drive_root, claim["task_id"], commit_sha, restart_reason, publish=True)
         if not auto:
             if log is not None:
                 log.info("Automatic evolution restart is off; the restart-verify marker for %s awaits "

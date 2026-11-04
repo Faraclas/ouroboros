@@ -66,9 +66,10 @@ def _managed_server(monkeypatch, scene):
     return server
 
 
-def _switch(scene, reason="adopt it"):
+def _switch(scene, reason="adopt it", *, publish=False, reuse=False):
     """Authorize, bind, arm and let the REAL helper switch the tree in this process."""
-    body_adoption.authorize(scene.ctx, scene.cand, reason=reason)
+    if not reuse:
+        body_adoption.authorize(scene.ctx, scene.cand, reason=reason, publish=publish)
     restart_receipt(scene.data, scene.cand, reason)
     assert body_adoption.bind_restart(lambda **_kw: (True, "ok"), scene.data, reason)()[0]
     assert body_adoption.arm(scene.data, worker_exits=EXITED, live_children=[], owner_restart=False,
@@ -341,7 +342,8 @@ def test_boot_settlement_pushes_the_adopted_serving_line_and_tells_the_owner(sce
         scene.cand = candidate_commit(scene.candidate, "neutral follow-up",
                                       files={"ouroboros/mod_b.py": "GEN = 'N'\n"})
         body_candidate.record_reviewed_commit(scene.ctx, scene.cand)
-    _switch(scene)
+    _switch(scene, publish=True)
+    assert body_adoption.read(scene.data)["publish"] is True  # survives the captured helper's records
     assert body_adoption.read(scene.data)["created_tag"] == ("v-new" if tag_evidence == "numbered" else "")
     unready = body_adoption.settle_on_boot(scene.data, scene.serving, supervisor_ready=False)
     assert unready["outcome"] == "unconfirmed" and git(remote, "for-each-ref") == "" and facts == []
@@ -378,19 +380,164 @@ def test_boot_settlement_withholds_branch_and_tag_publication_without_full_evide
     finalize = body_adoption.finalize_on_boot  # sibling #1024 carries the operation-created tag in this result
     monkeypatch.setattr(body_adoption, "finalize_on_boot", lambda *a, **kw: {**finalize(*a, **kw), "created_tag": "v1.0.1"})
 
-    _switch(scene)
+    _switch(scene, publish=True)
     settled = body_adoption.settle_on_boot(scene.data, scene.serving, supervisor_ready=True)
 
     tier = tests.get("tier") or "unrecorded"
     assert settled["outcome"] == "adopted" and facts == [{"current_branch": "ouroboros", "current_sha": scene.cand}]
     assert git(remote, "for-each-ref") == ""  # neither the branch nor a tag reached the remote
     assert settled["publication"] == {"status": "withheld", "branch": "ouroboros", "sha": scene.cand, "tier": tier,
-                                      "created_tag": "v1.0.1"}
+                                      "created_tag": "v1.0.1", "reason": "tier"}
     assert f"Publication withheld: this adoption rests on {tier} test evidence" in sent[0]
     events = [json.loads(line) for line in (scene.data / "logs/supervisor.jsonl").read_text().splitlines()]
     [withheld] = [event for event in events if event["type"] == "body_adoption_publication"]
     assert (withheld["status"], withheld["candidate"], withheld["base"]) == ("withheld", scene.cand, scene.old)
     assert [event["tests"] for event in events if event["type"] == "body_adoption_closed"] == [tests]
+
+
+@pytest.mark.parametrize("intent", ["omitted", False, None, "true", 1, []])
+def test_full_qualification_never_grants_publication_without_literal_intent(scene, monkeypatch, tmp_path, intent):
+    from supervisor import git_ops, git_ops_reset, message_bus, state
+
+    remote = tmp_path / "origin.git"
+    git(tmp_path, "init", "-q", "--bare", str(remote))
+    git(scene.serving, "remote", "add", "origin", str(remote))
+    git(scene.candidate, "tag", "-a", "v-new", "-m", "new")
+    body_candidate.record_reviewed_commit(scene.ctx, scene.cand, created_tag="v-new")
+    monkeypatch.setattr(git_ops, "push_to_remote", lambda *a, **k: pytest.fail("no publication call is authorized"))
+    monkeypatch.setattr(git_ops_reset, "_record_checkout_facts", lambda value: None)
+    monkeypatch.setattr(state, "load_state", lambda: {"owner_chat_id": 7})
+    sent = []
+    monkeypatch.setattr(message_bus, "send_with_budget", lambda chat, text, **kw: sent.append(text))
+    _switch(scene)
+    handoff = body_adoption.read(scene.data)
+    assert handoff["publish"] is False and handoff["tests"]["tier"] == "full"
+    tests = dict(handoff["tests"])
+    # The first cutover's old authorizer writes no intent; malformed legacy values also grant none.
+    if intent == "omitted":
+        handoff.pop("publish")
+    else:
+        handoff["publish"] = intent
+    body_switch.record(str(body_adoption.helper_dir(scene.data)), handoff, "switched", "legacy writer fixture")
+
+    settled = body_adoption.settle_on_boot(scene.data, scene.serving, supervisor_ready=True)
+
+    assert settled["outcome"] == "adopted" and settled["publish"] is False
+    assert settled["tests"] == tests and settled["publication"] == {
+        "status": "withheld", "reason": "not_requested", "branch": "ouroboros", "sha": scene.cand,
+        "tier": "full", "created_tag": "v-new"}
+    assert git(remote, "for-each-ref") == "" and "no publication was requested" in sent[0]
+    events = [json.loads(line) for line in (scene.data / "logs/supervisor.jsonl").read_text().splitlines()]
+    [closed] = [row for row in events if row["type"] == "body_adoption_closed"]
+    assert closed["tests"] == tests and closed["publish"] is False
+    assert [row["reason"] for row in events if row["type"] == "body_adoption_publication"] == ["not_requested"]
+    assert body_adoption.settle_on_boot(scene.data, scene.serving, supervisor_ready=True) == {} and len(sent) == 1
+
+
+@pytest.mark.parametrize("explicit_commit", [False, True])
+@pytest.mark.parametrize("publish", [None, False, True])
+def test_authorized_evolution_tool_then_supervisor_reuses_publication_intent(scene, monkeypatch, explicit_commit, publish):
+    from ouroboros.tools.registry import ToolRegistry
+    from supervisor import evolution_lifecycle, workers, git_ops, git_ops_reset, message_bus, state
+    from tests._evolution_state_shared import _active_transaction, _CaptureQueue
+
+    campaign, tx = _active_transaction(scene.data, task_id="root-consumer")
+    claim = {"campaign_id": campaign["id"], "transaction_id": tx["transaction_id"], "task_id": tx["task_id"]}
+    assert evolution_lifecycle.record_evolution_commit(**claim, commit_sha=scene.cand)["ok"]
+    scene.ctx.current_task_type = "evolution"
+    scene.ctx.last_reviewed_commit_sha = scene.cand
+    scene.ctx.task_metadata = {**scene.ctx.task_metadata, "evolution_transaction": claim}
+    host_restart_ack(scene.ctx, scene.data)
+    registry = ToolRegistry(repo_dir=scene.serving, drive_root=scene.data)
+    registry.set_context(scene.ctx)
+    args = {"reason": "evolution restart"}
+    if explicit_commit:
+        args["adopt_commit"] = scene.cand
+    if publish is not None:
+        args["publish"] = publish
+    assert "adopts candidate commit" in registry.execute("request_restart", args)
+    expected = publish is not False
+    before = body_adoption.read(scene.data)
+    assert before["publish"] is expected
+    monkeypatch.setattr(workers, "get_event_q", lambda: _CaptureQueue())
+    assert evolution_lifecycle.request_evolution_restart(scene.data, {**tx, "commit_sha": scene.cand}) == "requested"
+    assert body_adoption.read(scene.data) == before  # supervisor's true cannot promote explicit false
+    pushes = []
+    monkeypatch.setattr(git_ops, "push_to_remote", lambda *a, **k: pushes.append((a, k)) or (True, "Pushed"))
+    monkeypatch.setattr(git_ops_reset, "_record_checkout_facts", lambda value: None)
+    monkeypatch.setattr(state, "load_state", lambda: {})
+    monkeypatch.setattr(message_bus, "send_with_budget", lambda *a, **k: None)
+    _switch(scene, reason="evolution restart", reuse=True)
+    settled = body_adoption.settle_on_boot(scene.data, scene.serving, supervisor_ready=True)
+    assert settled["outcome"] == "adopted" and settled["tests"]["tier"] == "full"
+    assert len(pushes) == int(expected)
+    if not expected:
+        assert settled["publication"]["reason"] == "not_requested"
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_supervisor_does_not_promote_a_local_or_legacy_authorization(scene, legacy):
+    body_adoption.authorize(scene.ctx, scene.cand, reason="evolution restart")
+    handoff = body_adoption.read(scene.data)
+    if legacy:
+        handoff.pop("publish")
+        body_switch.record(str(body_adoption.helper_dir(scene.data)), handoff, "authorized", "old writer")
+    assert body_adoption.authorize_for_task(scene.data, "root-consumer", scene.cand, "evolution restart", publish=True)
+    assert body_adoption.read(scene.data) == handoff
+
+
+@pytest.mark.parametrize("recovery", ["supervisor", "tool", "narrow"])
+def test_evolution_marker_failure_rebinds_reason_without_promoting_local_intent(scene, monkeypatch, recovery):
+    from ouroboros.tools.control_runtime import _request_restart
+    from supervisor import evolution_lifecycle, workers, git_ops, git_ops_reset, state
+    from tests._evolution_state_shared import _active_transaction, _CaptureQueue
+
+    campaign, tx = _active_transaction(scene.data, task_id="root-consumer")
+    claim = {"campaign_id": campaign["id"], "transaction_id": tx["transaction_id"], "task_id": tx["task_id"]}
+    assert evolution_lifecycle.record_evolution_commit(**claim, commit_sha=scene.cand)["ok"]
+    scene.ctx.current_task_type = "evolution"
+    scene.ctx.last_reviewed_commit_sha = scene.cand
+    scene.ctx.task_metadata = {**scene.ctx.task_metadata, "evolution_transaction": claim}
+    sent = host_restart_ack(scene.ctx, scene.data)
+    marker = evolution_lifecycle.write_pending_restart_marker
+    initially_publish = recovery == "narrow"
+    with monkeypatch.context() as broken:
+        def fail_marker(*a, **k):
+            raise OSError("temporary marker write failure")
+        broken.setattr(evolution_lifecycle, "write_pending_restart_marker", fail_marker)
+        assert "RESTART_BLOCKED" in _request_restart(scene.ctx, "first reason", publish=initially_publish)
+    first = body_adoption.read(scene.data)
+    assert first["publish"] is initially_publish and sent == []
+    assert not (scene.data / "state/pending_restart_verify.json").exists()
+    monkeypatch.setattr(workers, "get_event_q", lambda: _CaptureQueue())
+    if recovery == "supervisor":
+        assert evolution_lifecycle.request_evolution_restart(scene.data, {**tx, "commit_sha": scene.cand}) == "requested"
+    else:
+        assert "Restart requested" in _request_restart(scene.ctx, "second reason",
+                                                        publish=False if initially_publish else None)
+    rebound = body_adoption.read(scene.data)
+    assert rebound["reason"] != first["reason"] and rebound["publish"] is False
+    assert rebound["tests"] == first["tests"]
+    assert evolution_lifecycle.write_pending_restart_marker is marker
+    monkeypatch.setattr(git_ops, "push_to_remote", lambda *a, **k: pytest.fail("recovery cannot authorize publication"))
+    monkeypatch.setattr(git_ops_reset, "_record_checkout_facts", lambda value: None)
+    monkeypatch.setattr(state, "load_state", lambda: {})
+    _switch(scene, reason=rebound["reason"], reuse=True)
+    settled = body_adoption.settle_on_boot(scene.data, scene.serving, supervisor_ready=True)
+    assert settled["outcome"] == "adopted" and settled["publication"]["reason"] == "not_requested"
+
+
+def test_supervisor_fresh_evolution_authorization_explicitly_requests_publication(scene, monkeypatch):
+    from supervisor import evolution_lifecycle, workers
+    from tests._evolution_state_shared import _active_transaction, _CaptureQueue
+
+    campaign, tx = _active_transaction(scene.data, task_id="root-consumer")
+    assert evolution_lifecycle.record_evolution_commit(campaign["id"], tx["transaction_id"], tx["task_id"], scene.cand)["ok"]
+    sent = _CaptureQueue()
+    monkeypatch.setattr(workers, "get_event_q", lambda: sent)
+    assert evolution_lifecycle.request_evolution_restart(scene.data, {**tx, "commit_sha": scene.cand}) == "requested"
+    assert body_adoption.read(scene.data)["publish"] is True
+    assert len(sent.items) == 1 and sent.items[0]["evolution_restart"] is True
 
 
 def test_runtime_fact_lists_retained_candidates_for_a_deliberate_resume(scene):
@@ -782,7 +929,7 @@ def test_boot_reports_partial_tag_publication_and_does_not_retry_it(scene, monke
         return network(command, **kwargs)
 
     monkeypatch.setattr(git_ops, "_git_network_bounded", tag_refusal)
-    _switch(scene)
+    _switch(scene, publish=True)
     result = body_adoption.settle_on_boot(scene.data, scene.serving, supervisor_ready=True)
     assert result["outcome"] == "adopted"
     assert len(attempts) == 2 and len(sent) == 1
