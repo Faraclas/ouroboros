@@ -139,6 +139,7 @@ def record_process(
     scope: str,
     owner_task_id: str = "",
     reap_process_group: bool = True,
+    service_info: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Append a custody record for an already-spawned process."""
     if scope not in _VALID_SCOPES:
@@ -160,6 +161,8 @@ def record_process(
         "owner_task": str(owner_task_id or ""),
         "session_id": _SESSION_ID,
     }
+    if service_info is not None:
+        entry["service_info"] = dict(service_info)
     if not append_jsonl(ledger_path(drive_root), entry):
         raise OSError("process custody record could not be written")
     from ouroboros.owned_shutdown import record_ledgered_process
@@ -179,6 +182,7 @@ def spawn_supervised(
     owner_task_id: str = "",
     new_process_group: bool = True,
     on_spawn: Any = None,
+    service_info: Optional[Dict[str, Any]] = None,
     **popen_kwargs: Any,
 ) -> subprocess.Popen:
     """Popen + durable custody record (the single supervised chokepoint).
@@ -220,6 +224,7 @@ def spawn_supervised(
             purpose=purpose,
             scope=scope,
             owner_task_id=owner_task_id,
+            **({"service_info": service_info} if service_info is not None else {}),
         )
     except Exception as exc:
         log.warning("process custody record failed for pid %s (%s)", proc.pid, purpose, exc_info=True)
@@ -233,6 +238,62 @@ def spawn_supervised(
         raise RuntimeError("spawned process could not enter durable custody") from exc
     confirmed()
     return proc
+
+
+def _ledger_process_state(ledger: Dict[str, Any], pid: int, *, probe_backend: bool) -> str:
+    """The strongest recorded birth/group evidence owns the answer, never a weaker command fallback."""
+    from ouroboros.platform_layer import pid_provably_gone
+    from ouroboros.process_containment import pid_is_zombie
+
+    if _fingerprint_matches(ledger):
+        return "live"
+    group = _service_group_observation(ledger, allow_subprocess=probe_backend)
+    if group in {"live", "unknown"}:
+        return group
+    if pid > 0 and pid_is_zombie(pid):
+        return "ended"
+    if measured_identity_mismatch(ledger):
+        return "ended"  # positive refutation, not a failed read
+    return "ended" if pid > 0 and pid_provably_gone(pid) else "unknown"
+
+
+def owned_process_state(entry: Dict[str, Any], *, probe_backend: bool = True) -> str:
+    """Current live/ended/unknown for one indexed ownership entry; never a kill licence.
+
+    Passive display disables backend commands. Identity mismatch is not death;
+    a service group can outlive its leader. Both candidate retention and work
+    display use this classifier, rather than inventing separate liveness rules.
+    """
+    from ouroboros import workspace_executor as executor
+    from ouroboros.platform_layer import pid_provably_gone
+
+    if entry.get("unconfirmed_since"):
+        return "unknown"
+    pid = int(entry.get("host_pid") or 0)
+    ledger = entry.get("ledger_entry")
+    if isinstance(ledger, dict):
+        return _ledger_process_state(ledger, pid, probe_backend=probe_backend)
+    path = pathlib.Path(str(entry.get("record_path") or ""))
+    record = executor._load_process_record(path)
+    if record is None or not executor._valid_process_record(path, record, check_identity=False):
+        return "unknown"
+    if record.get("executor_type") == "local":
+        service_custody = record.get("service_custody")
+        if record.get("record_type") == "service" and isinstance(service_custody, dict):
+            return _ledger_process_state(service_custody, pid, probe_backend=probe_backend)
+        elif record.get("record_type") == "service" and pid > 0 and pid_provably_gone(pid):
+            return "unknown"  # legacy leader-only record cannot prove its service group ended
+        if pid > 0 and pid_provably_gone(pid):
+            return "ended"
+        return "live" if executor._valid_process_record(path, record, check_identity=True) else "unknown"
+    if record.get("record_type") == "foreground" and record.get("backend_completed") is True \
+            and (pid <= 0 or pid_provably_gone(pid)):
+        return "ended"
+    if probe_backend and record.get("record_type") == "service" and (pid <= 0 or pid_provably_gone(pid)) \
+            and executor._docker_pid_state(str(record.get("container_name") or ""),
+                                          str(record.get("backend_pid") or "")) == "exited":
+        return "ended"
+    return "unknown"
 
 
 def _legacy_start_matches(pid: int, recorded: str, current: str) -> bool:
@@ -384,18 +445,30 @@ def record_not_ours(drive_root: Any, entry: Dict[str, Any], evidence: Dict[str, 
     }, lock_timeout_sec=lock_timeout_sec)
 
 
-def _service_group_survives_leader(entry: Dict[str, Any]) -> bool:
-    """Keep dead/unknown-leader evidence; a measured foreign leader refutes the group."""
+def _service_group_id(entry: Dict[str, Any]) -> int:
+    """A measured foreign leader refutes this recorded service group."""
     purpose = str(entry.get("purpose") or "")
     scope = str(entry.get("scope") or "")
     pgid = int(entry.get("pgid") or 0)
-    return bool(
-        (purpose.startswith(("service:", "workspace_service:")) or purpose == "maintenance")
-        and scope in {"task", "session"}
-        and pgid > 0
-        and not (pgid == int(entry.get("pid") or 0) and measured_identity_mismatch(entry))
-        and process_group_has_live_members(pgid)
-    )
+    if not ((purpose.startswith(("service:", "workspace_service:")) or purpose == "maintenance")
+            and scope in {"task", "session"} and pgid > 0):
+        return 0
+    if pgid == int(entry.get("pid") or 0) and measured_identity_mismatch(entry):
+        return 0
+    return pgid
+
+
+def _service_group_observation(entry: Dict[str, Any], *, allow_subprocess: bool = True) -> Optional[str]:
+    from ouroboros.process_containment import process_group_state
+
+    pgid = _service_group_id(entry)
+    return process_group_state(pgid, allow_subprocess=allow_subprocess) if pgid else None
+
+
+def _service_group_survives_leader(entry: Dict[str, Any]) -> bool:
+    """Retention keeps unknown group evidence; display never calls it confirmed live."""
+    pgid = _service_group_id(entry)
+    return bool(pgid and process_group_has_live_members(pgid))
 
 
 def _read_ledger_records(

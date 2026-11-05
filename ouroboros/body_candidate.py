@@ -254,10 +254,8 @@ def live_lineage_processes(results_root: Any, task_id: str) -> List[int]:
     """
     try:
         from ouroboros.owned_shutdown import owned_records
-        from ouroboros.platform_layer import pid_provably_gone
-        from ouroboros.process_custody import _fingerprint_matches, _service_group_survives_leader
+        from ouroboros.process_custody import owned_process_state
         from ouroboros.task_status import load_effective_task_result
-        from ouroboros import workspace_executor as executor
 
         root = _wt._data_dir(results_root)
         effective = load_effective_task_result(root, task_id, materialize_artifacts=False)
@@ -277,33 +275,9 @@ def live_lineage_processes(results_root: Any, task_id: str) -> List[int]:
                 if lineage[member] not in owners:
                     continue
             pid = int(entry.get("host_pid") or 0)
-            if entry.get("unconfirmed_since"):
-                active.append(pid or -1)
-                continue
-            ledger = entry.get("ledger_entry")
-            if isinstance(ledger, dict):
-                if _fingerprint_matches(ledger) or _service_group_survives_leader(ledger):
+            if isinstance(entry.get("ledger_entry"), dict) or entry.get("kind") in {"foreground", "service"}:
+                if owned_process_state(entry) != "ended":
                     active.append(pid or -1)
-                continue
-            if entry.get("kind") not in {"foreground", "service"}:
-                continue
-            path = pathlib.Path(str(entry.get("record_path") or ""))
-            record = executor._load_process_record(path)
-            if record is None or not executor._valid_process_record(path, record, check_identity=False):
-                active.append(-1)  # a named record vanished or became unreadable/invalid
-                continue
-            if record.get("executor_type") == "local":
-                if pid <= 0 or not pid_provably_gone(pid):
-                    active.append(pid or -1)  # identity mismatch is not proof of exit
-            elif (record.get("record_type") == "foreground"
-                  and record.get("backend_completed") is True and (pid <= 0 or pid_provably_gone(pid))):
-                continue
-            elif (record.get("record_type") == "service" and (pid <= 0 or pid_provably_gone(pid))
-                  and executor._docker_pid_state(str(record.get("container_name") or ""),
-                                                 str(record.get("backend_pid") or "")) == "exited"):
-                continue
-            else:
-                active.append(pid or -1)  # Docker backend may live despite host_pid=0
         return active
     except Exception:
         log.debug("ownership set unavailable for %s", task_id, exc_info=True)

@@ -5,7 +5,7 @@ Descriptive, not runtime validation. The browser twin is ``web/modules/work_type
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union
 
 try:  # Python 3.11+
     from typing import NotRequired, TypedDict  # type: ignore[attr-defined]
@@ -22,6 +22,24 @@ class WorkReason(TypedDict):
     ids: NotRequired[List[str]]
     since: NotRequired[Any]
     by: NotRequired["PauseAuthor"]
+    wake: NotRequired["WakeSources"]
+
+
+class WakeService(TypedDict):
+    service_id: str
+    name: str
+    started_at: Any  # UTC ISO or null; exact selected start, not a process identity
+
+
+class WakeSources(TypedDict):
+    """OR triggers, not semantic prerequisites/ETA; owner/control/question wakes are independent."""
+    mode: str
+    any_mail: bool
+    senders: List[str]
+    tasks: List[str]
+    runs: List[str]
+    services: List[WakeService]
+    at: Any  # UTC ISO or null
 
 
 class PauseAuthor(TypedDict):
@@ -35,12 +53,24 @@ class PauseAuthor(TypedDict):
 class WorkTail(TypedDict):
     """What still runs beside or after the current episode, said as a second fact, never as the work's word."""
 
-    kind: str  # helper | run | review | model
-    state: str  # live | unknown
+    kind: str  # helper | run | review | model | service
+    state: str  # live | unknown | ended (service only)
     code: str
     text: str
     count: NotRequired[int]
     ids: NotRequired[List[str]]
+
+
+class ServiceWorkTail(WorkTail):
+    """One original service start; unknown output metadata does not change liveness."""
+    task_id: str
+    service_id: str
+    name: str
+    started_at: Any  # UTC ISO or null
+    observed_at: Any  # UTC ISO or null, dated per service probe
+    returncode: Any  # integer or null (Docker never invents one)
+    output_bytes: Any  # integer or null
+    output_updated_at: Any  # UTC ISO or null; no progress/ETA inference
 
 
 class WorkTurn(TypedDict):
@@ -89,7 +119,7 @@ class Work(TypedDict):
     transition: str
     call: str
     because: List[WorkReason]
-    tails: List[WorkTail]
+    tails: List[Union[WorkTail, ServiceWorkTail]]
     live: bool
     turn: List[WorkTurn]
     release: str

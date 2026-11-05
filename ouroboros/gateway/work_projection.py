@@ -207,6 +207,64 @@ def _member_raw(row: Mapping[str, Any], raw: Mapping[str, Any], obs: _Observatio
     return facts
 
 
+def _service_tails(task_id: str, attempt: int, row: Mapping[str, Any], raw: Mapping[str, Any],
+                   obs: _Observations) -> list:
+    """Owner handles are authoritative while present; retained exits never age to unknown."""
+    import time
+
+    stored = (obs.result(task_id) or {}).get("service_observations") or {}
+    view = raw.get("service_observations") or row.get("service_observations") or {}
+    sources = []
+    if stored.get("task_attempt") == attempt:
+        sources.extend(stored.get("services") or [])
+    if view.get("task_id") == task_id and view.get("task_attempt") == attempt:
+        sources.extend(view.get("services") or [])
+    wait = raw.get("owner_wait") or row.get("sleep_wait") or {}
+    if wait.get("task_attempt") == attempt:
+        sources.extend({**pin, "task_id": task_id} for pin in (wait.get("sleep") or {}).get("services") or [])
+    return _typed_services(sources, time.time())
+
+
+def _typed_services(sources: Iterable[Mapping[str, Any]], now: float) -> list:
+    from ouroboros.peer_roster import iso_from_epoch
+    from datetime import timezone
+
+    def stamp(value):
+        epoch = iso_from_epoch(value)
+        if epoch:
+            return epoch
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
+        except (ValueError, TypeError):
+            return None
+
+    selected = {}
+    for service in sources:
+        key = (service.get("service_id"), stamp(service.get("started_at")))
+        previous = selected.get(key)
+        if previous is None or float(service.get("observed_at") or 0) > float(previous.get("observed_at") or 0):
+            selected[key] = service
+    tails = []
+    for service in selected.values():
+        state = service.get("state")
+        observed = float(service.get("observed_at") or 0)
+        if state == "running" and not 0 <= now - observed <= 90:
+            state = "unknown"  # three missed owner heartbeats; an exit never decays
+        state = {"running": "live", "exited": "ended"}.get(state, "unknown")
+        code = {"live": "service_running", "ended": "service_exited", "unknown": "service_unknown"}[state]
+        name = str(service.get("name") or "Service")
+        tails.append({"kind": "service", "state": state, "code": code,
+                      "text": f"{name}: " + {"live": "running", "ended": "exited", "unknown": "status unconfirmed"}[state],
+                      "task_id": str(service.get("task_id") or ""),
+                      "service_id": str(service.get("service_id") or ""), "name": name,
+                      "started_at": stamp(service.get("started_at")),
+                      "observed_at": iso_from_epoch(observed) or None,
+                      "returncode": service.get("returncode") if state == "ended" else None,
+                      "output_bytes": service.get("output_bytes"),
+                      "output_updated_at": iso_from_epoch(service.get("output_updated_at")) or None})
+    return tails
+
+
 def _inflight_upkeep(drive_root: Any, known: set) -> List[Dict[str, Any]]:
     """Answer upkeep this process still runs for a task no census row names (a direct turn after its answer)."""
     from ouroboros.post_task_checkpoint import POST_TASK_SYNTHESIS_INFLIGHT, POST_TASK_SYNTHESIS_LOCK
@@ -260,10 +318,10 @@ def _since(row: Mapping[str, Any]) -> Optional[float]:
 
 
 def works_snapshot(drive_root: Any, owners: Iterable[Mapping[str, Any]], raw_facts: Mapping[str, Mapping[str, Any]],
-                   *, complete: bool = True) -> Dict[str, Any]:
+                   *, complete: bool = True, bindings: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     """``works``, ``rooms``, ``work_summary``, ``works_complete`` and ``works_gaps`` for ``/api/state``. Never raises."""
     try:
-        return _snapshot(drive_root, list(owners or ()), dict(raw_facts or {}), complete)
+        return _snapshot(drive_root, list(owners or ()), dict(raw_facts or {}), complete, bindings or {})
     except Exception:
         log.debug("Work projection unavailable for /api/state", exc_info=True)
         return {"works": [], "rooms": {}, "work_summary": ws.roll_up_summary({}, [], complete=False),
@@ -271,7 +329,7 @@ def works_snapshot(drive_root: Any, owners: Iterable[Mapping[str, Any]], raw_fac
 
 
 def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, Mapping[str, Any]],
-              complete: bool) -> Dict[str, Any]:
+              complete: bool, bindings: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     obs = _Observations(drive_root)
     rows: Dict[str, Dict[str, Any]] = {}
     for row in owners:
@@ -296,7 +354,7 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
     groups: Dict[str, Dict[str, Any]] = {}
 
     def group(work_id: str) -> Dict[str, Any]:
-        return groups.setdefault(work_id, {"rows": [], "roots": set(), "runs": [], "name": ""})
+        return groups.setdefault(work_id, {"rows": [], "roots": set(), "runs": [], "services": [], "name": ""})
 
     for task_id, row in rows.items():
         facts = raw.get(task_id) or {}
@@ -313,10 +371,30 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
         entry["roots"].add(root_id)
         entry["name"] = entry["name"] or name
     works: List[Dict[str, Any]] = []
+    controllable_roots = {work_id: set(entry["roots"]) for work_id, entry in groups.items()}
+    from ouroboros.service_observations import discover
+    import time
+
+    service_rows, service_gaps = discover(drive_root, skip_tasks=set(rows))
+    obs.gaps.extend(service_gaps)
+    if service_gaps:
+        complete = False  # unreadable ownership set, not one unknown service
+    for service in service_rows:
+        task_id = str(service.get("task_id") or "")
+        if task_id in rows or service.get("state") == "exited":
+            continue  # owner heartbeat covers live authors; no resurrection of long-ended work
+        stored = obs.result(task_id) or {}
+        root_id = str(stored.get("root_task_id") or task_id)
+        work_id, name = _work_of(root_id, raw, obs, memo)
+        entry = group(work_id)
+        entry["roots"].add(root_id)
+        entry["services"].extend(_typed_services([service], time.time()))
+        entry["name"] = entry["name"] or name
     for work_id, entry in groups.items():
         members, live_roots, owners_by_root = [], [], {}
         for row, facts, root_id in entry["rows"]:
             member = ws.classify_member(row, _member_raw(row, facts, obs, root_id))
+            member["services"] = _service_tails(str(row["activity_id"]), int(row.get("task_attempt") or 1), row, facts, obs)
             members.append(member)
             owners_by_root.setdefault(root_id, []).append(member)
             if _episode_row(row, facts, root_id):
@@ -329,27 +407,35 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
             outcome = ws.shown_outcome(row) if row.get("phase") == "finalizing" else ""
             room_row, current_row, current_state = row, row, member
         else:
-            episode_id = sorted(entry["roots"])[-1] if entry["roots"] else work_id
+            episode_roots = controllable_roots.get(work_id) or entry["roots"]
+            episode_id = sorted(episode_roots)[-1] if episode_roots else work_id
             stored = obs.result(episode_id) or {}
             episode = {"task_id": episode_id}
             outcome = ws.shown_outcome(stored)
             room_row = next((item[0] for item in entry["rows"]), stored)
+            binding = next(((bindings or {}).get(key) for key in (episode_id, stored.get("parent_task_id"),
+                stored.get("root_task_id")) if isinstance((bindings or {}).get(key), dict)
+                and not (bindings or {})[key].get("origin_bound")), None)
+            if binding:
+                room_row = {**room_row, **{key: binding[key] for key in ("chat_id", "project_id", "project_name")
+                                           if binding.get(key)}}
             facts = raw.get(episode_id) or stored
-        if not members and not entry["runs"]:
+        if not members and not entry["runs"] and not entry["services"]:
             continue
         name = entry["name"] or _first_name(facts)
         work = ws.roll_up_work(work_id, members, episode=episode, name=name, room=room_row.get("chat_id"),
-                               focus=(facts or {}).get("focus"), runs=entry["runs"], outcome=outcome)
+                               focus=(facts or {}).get("focus"), runs=entry["runs"], services=entry["services"], outcome=outcome)
         current_id = str(episode["task_id"])
         # Every root grouped here owns a live queue or direct row of its tree (each member is one) or an open
         # delegated run: exactly what the Stop door reaches (queue_transitions.task_subtree_is_live), so each root
         # takes Stop. A writer the door cannot reach (an unbound start, a handoff, a process) is no member and adds
         # no root, so no control is offered for it.
         # Every other root is the earlier attempt; a retry attempt's own original stands for the same episode.
-        earlier = sorted(root for root in entry["roots"] if root not in {current_id, current_root})
+        controlled = controllable_roots.get(work_id, set())
+        earlier = sorted(root for root in controlled if root not in {current_id, current_root})
         # Stop ends the whole work: a retry's logical original carries its tree too (never an earlier attempt).
         logical = [current_root] if current_root and current_root != current_id else []
-        ended = [] if current_state is not None else [current_id]
+        ended = [] if current_state is not None or current_id not in controlled else [current_id]
         controls = ws.controls_for(current_state, current_row, earlier_live=earlier, live_roots=ended + logical + earlier)
         if current_state is None and members and any(m["activity"] in {"working", "queued", "waiting"} for m in members):
             controls.insert(0, {"action": "pause", "target": current_id})
@@ -359,6 +445,8 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
             controls.extend({"action": "resume", "target": member["task_id"], "scope": "single"}
                             for member in members if member["activity"] == "paused" and member.get("resumable")
                             and member.get("stop", {}).get("scope") != "tree")
+        if not members and not entry["runs"]:
+            controls = []  # retained service ownership grants no task control over an ended author
         work.update(kind="direct" if str(room_row.get("kind") or "") == "direct_chat" else "task",
                     project_id=str(room_row.get("project_id") or ""), since=_since(room_row), controls=controls)
         cmid = str(room_row.get("client_message_id") or "")

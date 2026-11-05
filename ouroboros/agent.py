@@ -1443,12 +1443,23 @@ class OuroborosAgent:
             log.warning("Failed to emit typing start event", exc_info=True)
 
     def _emit_task_heartbeat(self, task_id: str, phase: str) -> None:
-        if self._event_queue is None:
-            return
+        observations = getattr(self, "_service_observations", None)
+        attempt = 1
         try:
+            from ouroboros.service_observations import collect
+
+            attempt = int(getattr(getattr(self.tools, "_ctx", None), "task_attempt", None) or 1)
+            observations = collect(task_id, attempt)
+            self._service_observations = observations
+        except Exception:
+            log.warning("Service observations unavailable; retaining their previous timestamp", exc_info=True)
+        try:
+            if self._event_queue is None:
+                return
             self._event_queue.put({
                 "type": "task_heartbeat", "task_id": task_id,
                 "phase": phase, "ts": utc_now_iso(),
+                "task_attempt": attempt, "service_observations": observations,
                 **self._subagent_progress_meta(phase),
             })
         except Exception:
@@ -1504,15 +1515,12 @@ class OuroborosAgent:
         # queue, so the watchdog can spot a wedged in-process chat turn even when this
         # agent has no event queue (the direct chat lane).
         self._last_activity_ts = time.monotonic()
-        emit = self._event_queue is not None
-        if emit:
-            self._emit_task_heartbeat(task_id, "start")
+        self._emit_task_heartbeat(task_id, "start")
 
         def _loop() -> None:
             while not stop.wait(interval):
                 self._last_activity_ts = time.monotonic()
-                if emit:
-                    self._emit_task_heartbeat(task_id, "running")
+                self._emit_task_heartbeat(task_id, "running")
 
         threading.Thread(target=_loop, daemon=True).start()
         return stop

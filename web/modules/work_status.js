@@ -106,6 +106,10 @@ const COUNTED_REASONS = {
         : fmt('{count} external runs may still be running', { count: n, n })),
 };
 
+// Literal service names interpolate after translating a stable template, never into its source key.
+const SERVICE_REASONS = { service_running: '{name}: running', service_exited: '{name}: exited',
+    service_unknown: '{name}: status unconfirmed' };
+
 // Helpers and external runs still working side by side are said in one sentence, so the line never says it twice.
 function tailWords(tails) {
     const counted = (code) => tails.find((tail) => tail?.code === code && Number.isInteger(tail.count));
@@ -130,6 +134,9 @@ export function reasonText(reason) {
     const code = String(reason.code || '');
     const text = typeof reason.text === 'string' ? reason.text : code;
     if (!code || !text) return text;
+    if (reason.kind === 'service' && typeof reason.name === 'string' && reason.name && Object.hasOwn(SERVICE_REASONS, code)) {
+        return fmt(SERVICE_REASONS[code], { name: reason.name });
+    }
     if (Number.isInteger(reason.count)) return COUNTED_REASONS[code] ? COUNTED_REASONS[code](reason.count) : text;
     if (code === 'paused_by_mind' && reason.by?.text) return `${tr(`work.because.${code}`, text)}: ${String(reason.by.text)}`;
     return tr(`work.because.${code}`, text);

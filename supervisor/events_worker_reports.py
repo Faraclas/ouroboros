@@ -36,6 +36,12 @@ def _handle_task_heartbeat(evt: Dict[str, Any], ctx: Any) -> None:
         meta = ctx.RUNNING.get(task_id)
         if not isinstance(meta, dict):
             return
+        observations = evt.get("service_observations")
+        if isinstance(observations, dict) and observations.get("task_id") == task_id \
+                and observations.get("task_attempt") == int(meta.get("attempt") or (meta.get("task") or {}).get("_attempt") or 1):
+            previous = meta.get("service_observations") or {}
+            if observations.get("observed_at", 0) >= previous.get("observed_at", 0):
+                meta["service_observations"] = observations
         meta["last_heartbeat_at"] = time.time()
         phase = str(evt.get("phase") or "")
         if phase:

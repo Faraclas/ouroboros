@@ -140,6 +140,44 @@ def pid_is_zombie(pid: int) -> bool:
         return False
 
 
+def process_group_state(pgid: int, *, allow_subprocess: bool = True) -> str:
+    """Fresh live/ended/unknown group observation; passive readers need no ps command."""
+    if not _pl.process_group_is_alive(pgid):
+        return "ended"
+    if not allow_subprocess and os.path.isdir("/proc"):
+        visible, unreadable = False, False
+        try:
+            for name in os.listdir("/proc"):
+                if not name.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{name}/stat", "rb") as handle:
+                        fields = handle.read().rpartition(b")")[2].split()
+                    if len(fields) > 2 and fields[2] == str(pgid).encode():
+                        visible = True
+                        if fields[0] != b"Z":
+                            return "live"
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    unreadable = True
+        except OSError:
+            return "unknown"
+        return "ended" if visible and not unreadable else "unknown"
+    if not allow_subprocess:
+        return "unknown"
+    try:
+        rows = subprocess.run(["ps", "-A", "-o", "pgid=,state="],
+                              capture_output=True, text=True, timeout=5)
+        states = [fields[1] for line in rows.stdout.splitlines()
+                  if len(fields := line.split()) == 2 and fields[0] == str(pgid)]
+        if rows.returncode == 0 and states:
+            return "live" if any(not state.startswith("Z") for state in states) else "ended"
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return "unknown"
+
+
 def process_group_has_live_members(pgid: int) -> bool:
     """Whether a recorded service group can still execute; unknown stays alive.
 
@@ -147,22 +185,7 @@ def process_group_has_live_members(pgid: int) -> bool:
     because an exited leader can still have a live child. This is a fresh read,
     not a saved process-table snapshot or new authority to signal a group.
     """
-    if not _pl.process_group_is_alive(pgid):
-        return False
-    try:
-        rows = subprocess.run(["ps", "-A", "-o", "pgid=,state="],
-                              capture_output=True, text=True, timeout=5)
-        if rows.returncode != 0:
-            return True
-        states = [fields[1] if len(fields) == 2 else "unknown"
-                  for line in rows.stdout.splitlines()
-                  if (fields := line.split()) and fields[0] == str(pgid)]
-        if states:
-            return any(not state.startswith("Z") for state in states)
-    except (OSError, subprocess.TimeoutExpired):
-        return True
-    # No visible member is not proof that a still-existing group is empty.
-    return _pl.process_group_is_alive(pgid)
+    return process_group_state(pgid) != "ended"
 
 
 def _unattributed_candidate(pid: int, since_ticks: int) -> bool:

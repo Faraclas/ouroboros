@@ -457,6 +457,7 @@ ouroboros/ — agent core and shared runtime (§6)
     cost_breakdown.py — Ledger-derived dashboard buckets and root-task detail over the same physical-attempt authority
     projects.py — GET/POST /api/projects, /from-task, /update, /delete
     _helpers.py — Shared request-root/coercion/JSON error envelope and `run_sync_to_completion`, the settled worker wait for request-owned blocking work
+  service_observations.py — Owner heartbeat/custody facts for service work tails
   tools/ — Auto-discovered tool plugins
     registry.py — Tool registry SSOT: loads tool modules, exposes schemas, executes safely; owns the shell-guard/process-tool membership sets
     core.py — File/data, human delivery, search, questions and task mail; concrete owners below
@@ -523,7 +524,7 @@ ouroboros/ — agent core and shared runtime (§6)
     scope_window.py — Scope window sizing and evidence provenance; fallbacks stay disclosed, never review authority
     scope_review_contract.py — Pure parser of the `coupling` answer (`normalize_scope_items`), also consumed by scripts/validate_scope_receipt.py
     scope_required_sources.py — Change-relative protected/prompt/contract sources, derived families and twins; the final manifest hash and policy version bind review replay
-    services.py — Service mini-manager with process-group cleanup
+    services.py — Service lifecycle and process-group cleanup
     skill_exec.py — Skill list/review/toggle/owner/exec; fixed interpreters, enablement+fresh review+hash gates
     skill_publish.py, skill_source_tools.py — PR-receipt-gated publish; source/search/install/update tools
     skill_preflight.py — Read-only syntax/schema preflight; widget entries keep classic grammar unless explicitly ESM (§3)

@@ -80,6 +80,7 @@ class _ExecutorService:
     secret_values: tuple[str, ...] = field(default=(), repr=False)
     drive_root: pathlib.Path | None = None
     output_context: Any = None
+    execution_observation: dict[str, Any] = field(default_factory=dict)
 
 
 _SERVICES: dict[str, _ExecutorService] = {}
@@ -546,6 +547,8 @@ def _register_service_process(drive_root: pathlib.Path | None, record: _Executor
         {
             "record_type": "service",
             "service_id": record.service_id,
+            "started_at": record.started_at,
+            "service_custody": getattr(record.local_proc, "_ouroboros_custody", None),
             "task_id": record.task_id,
             "name": record.name,
             "executor_type": record.executor.kind,
@@ -979,8 +982,9 @@ def service_execution_facts(service_id: str) -> dict[str, Any] | None:
         state = "running" if rc is None else "exited"
     else:
         rc, state = None, _safe_service_state(record)
-    return {"service_id": service_id, "started_at": record.started_at, "backend_pid": record.backend_pid,
-            "state": state, "returncode": rc}
+    record.execution_observation = {"service_id": service_id, "started_at": record.started_at,
+                                    "state": state, "returncode": rc, "observed_at": time.time()}
+    return {**record.execution_observation, "backend_pid": record.backend_pid}
 
 
 def service_logs(ctx: Any, name: str, tail: int) -> dict[str, Any] | None:
@@ -1035,6 +1039,10 @@ def _stop_service_record(record: _ExecutorService, *, wait: bool = True) -> dict
     except Exception as exc:
         return failed(f"{type(exc).__name__}: {exc}")
     payload = _service_payload(record, state="stopped")
+    from ouroboros.service_observations import retain_final_observation
+
+    retain_final_observation(record, {"started_at": record.started_at, "state": "exited",
+                                     "returncode": record.local_proc.poll() if record.executor.kind == "local" and record.local_proc is not None else None})
     if record.executor.kind == "docker_exec":
         payload["cleanup_dispatched"] = True
     elif record.drive_root is not None:
@@ -1274,6 +1282,10 @@ def _service_payload(record: _ExecutorService, *, state: str | None = None, note
         record.ready = False
     if actual_state != "running":
         record.ready = False
+    record.execution_observation = {"started_at": record.started_at,
+        "state": "exited" if actual_state == "stopped" else actual_state,
+        "returncode": record.local_proc.poll() if record.executor.kind == "local" and record.local_proc is not None else None,
+        "observed_at": time.time()}
     payload = {
         "service_id": record.service_id,
         "name": record.name,

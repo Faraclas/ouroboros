@@ -128,6 +128,26 @@ def selectors(ctx: Any, *, senders: Any = None, tasks: Any = None, runs: Any = N
 _SERVICE_IDENTITY = ("service_id", "started_at", "pid", "pgid", "backend_pid")
 
 
+def public_wake_sources(sleep: Any) -> Dict[str, Any]:
+    """Recorded OR wake selectors, without process identities or review custody.
+
+    These describe the sleep, not prerequisites, an ETA, or all possible wakes:
+    owner/control mail, descendant escalations and own-run questions remain independent.
+    """
+    if not isinstance(sleep, dict) or sleep.get("mode") not in {"warm", "cold"}:
+        return {}
+    from ouroboros.peer_roster import _iso_text, iso_from_epoch
+
+    return {"mode": sleep["mode"], "any_mail": sleep.get("any_mail") is True,
+            **{key: [item for item in sleep.get(key) or [] if isinstance(item, str) and item]
+               for key in ("senders", "tasks", "runs")},
+            "services": [{"service_id": str(pin.get("service_id") or ""),
+                          "name": str(pin.get("name") or ""),
+                          "started_at": iso_from_epoch(pin.get("started_at")) or _iso_text(pin.get("started_at")) or None}
+                         for pin in sleep.get("services") or [] if isinstance(pin, dict)],
+            "at": _iso_text(sleep.get("wake_at")) or None}
+
+
 def _service_pins(ctx: Any, names: List[str]) -> List[Dict[str, Any]]:
     from ouroboros.tools import services as registry
 

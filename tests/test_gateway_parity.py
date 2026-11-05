@@ -451,7 +451,8 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     # stamp the typed fields only for registry-tracked turns (optional).
     # (__required_keys__ ignores NotRequired on some 3.10 setups, so inspect
     # the declared annotations instead.)
-    assert _notrequired_fields(ActiveDirectTurn) == {"model_waits", "task_attempt", "model_activity", "turn_phase"}, (
+    assert _notrequired_fields(ActiveDirectTurn) == {"model_waits", "task_attempt", "model_activity", "turn_phase",
+                                                   "sleep_wait", "service_observations"}, (
         "ActiveDirectTurn keeps its required base; waits, attempt and start phase are optional live-owner facts"
     )
     assert _notrequired_fields(ActiveChatActivity) == {
@@ -460,6 +461,7 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
         "timeout_retry_from", "original_task_id",
         "finishing_reviews", "late_work", "can_resume", "cancelable",
         "last_line", "last_line_at", "tool_calls", "detached", "project_name",
+        "sleep_wait", "service_observations",
     }, "ActiveChatActivity adds optional outcome/retry/review evidence without changing required activity facts"
     activity_fields = get_type_hints(ActiveChatActivity, include_extras=True)
     question_keys = {"required_question", "required_question_unavailable", "project_admission_hold", "pause_cause", "owner_wait"}
@@ -500,7 +502,7 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     turn_decl = re.search(r"@typedef \{Object\} ActiveDirectTurn\b([\s\S]*?)\*/", text)
     assert turn_decl and set(re.findall(
         r"@property \{[^}]*=\} (\w+)", turn_decl.group(1)
-    )) == {"model_waits", "task_attempt", "model_activity", "turn_phase"}, (
+    )) == {"model_waits", "task_attempt", "model_activity", "turn_phase", "sleep_wait", "service_observations"}, (
         "ActiveDirectTurn browser mirror keeps wait/attempt/start-phase facts optional"
     )
     typing_decl = re.search(r"@typedef \{Object\} TypingOutbound\b([\s\S]*?)\*/", text)

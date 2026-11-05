@@ -113,6 +113,19 @@ def _current_waits(row: Mapping[str, Any]) -> List[tuple]:
             if isinstance(wait, dict) and wait.get("state") == "waiting" and wait.get("task_attempt") == attempt]
 
 
+def _sleep_reason(wait: Mapping[str, Any]) -> Dict[str, Any]:
+    from ouroboros.model_sleep import public_wake_sources
+    from ouroboros.peer_roster import _iso_text, iso_from_epoch
+
+    entry = reason("sleeping", since=_iso_text(wait.get("parked_at"))
+                   or _iso_text(wait.get("paused_at")) or _iso_text(wait.get("requested_at"))
+                   or iso_from_epoch(wait.get("sleep_started_at")))
+    wake = public_wake_sources(wait.get("sleep"))
+    if wake:
+        entry["wake"] = wake
+    return entry
+
+
 def _call(row: Mapping[str, Any]) -> str:
     """The exact-call word a working member is in (the cards' modelActivityPresentation); a direct turn
     whose own call start precedes its census phase's move says the word that move gives, never more."""
@@ -152,6 +165,13 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
         view = activity_stop_view(dict(row), dict(raw))
         state["stop"], state["refusal"] = view["stop"], view["refusal"]
         state["reasons"].append(view["reason"])
+        if view["waiting"] and view["reason"].get("code") == "sleeping":
+            pause = raw.get("_budget_pause") or row.get("budget_pause") or {}
+            recorded_attempt = pause.get("task_attempt") or (pause.get("checkpoint") or {}).get("task_attempt")
+            if recorded_attempt == int(row.get("task_attempt") or 1):
+                sleep_reason = _sleep_reason(pause)
+                view["reason"].update({key: value for key, value in sleep_reason.items()
+                                       if key in {"since", "wake"}})
         state["resumable"] = view["resumable"]
         state["activity"] = "waiting" if view["waiting"] else "paused"
         state["release"] = ("owner" if view["release"] == "owner" else "mind" if view["resumable"]
@@ -177,12 +197,12 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
         return state
     # A warm sleeper keeps its worker and frozen census phase, but executes nothing.
     # A current Pause above wins; an ended or older attempt's wait proves no sleep.
-    waiting = raw.get("owner_wait")
+    waiting = raw.get("owner_wait") or row.get("sleep_wait")
     if isinstance(waiting, dict) and waiting.get("state") == "waiting" and waiting.get("reason") == "sleep" \
             and waiting.get("task_attempt") == int(row.get("task_attempt") or 1) \
             and isinstance(waiting.get("sleep"), dict) and waiting["sleep"].get("mode") == "warm":
         state["activity"] = "waiting"
-        state["reasons"].append(reason("sleeping"))
+        state["reasons"].append(_sleep_reason(waiting))
         return state
     waits = _current_waits(row)
     if waits:
@@ -363,7 +383,8 @@ def model_tails(blockers: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
 
 def roll_up_work(work_id: str, members: List[Dict[str, Any]], *, episode: Mapping[str, Any],
                  name: str = "", room: Any = None, focus: Any = None, runs: Iterable[Mapping[str, Any]] = (),
-                 outcome: str = "", gaps: Iterable[Dict[str, Any]] = ()) -> Dict[str, Any]:
+                 outcome: str = "", gaps: Iterable[Dict[str, Any]] = (),
+                 services: Iterable[Mapping[str, Any]] = ()) -> Dict[str, Any]:
     """One work from its classified members and its open delegated runs.
 
     ``episode`` is the current episode: ``{task_id, live, state?}`` — ``state`` is its own classified
@@ -371,6 +392,8 @@ def roll_up_work(work_id: str, members: List[Dict[str, Any]], *, episode: Mappin
     episode are the other members. ``runs`` are the work's unsettled delegated runs as
     ``{run_id, kind: run|review, state: live|unknown}`` (``work_projection`` types them)."""
     gaps = list(gaps)
+    services = list(services) + [tail for member in members for tail in member.get("services") or ()]
+    live_services = any(tail.get("state") == "live" for tail in services)
     current = episode.get("state") if isinstance(episode.get("state"), dict) else None
     # Review work is a tail beside an episode that is not executing; a running episode's own review is its own work.
     executing = bool(current is not None and current.get("live") and current["transition"] != "pausing")
@@ -397,7 +420,7 @@ def roll_up_work(work_id: str, members: List[Dict[str, Any]], *, episode: Mappin
         # The live episode speaks: its word, its reason; what runs beside it is a tail, never its word.
         reasons = list(current["reasons"])
         activity, transition, call, release = current["activity"], current["transition"], current["call"], current["release"]
-    elif working_helpers or live_runs or reviewing:
+    elif working_helpers or live_runs or reviewing or live_services:
         # The episode ended: what still runs is all there is.
         reasons, activity, release = [], "working", "self"
         transitions = {member["transition"] for member in working_helpers}
@@ -414,8 +437,9 @@ def roll_up_work(work_id: str, members: List[Dict[str, Any]], *, episode: Mappin
         reasons, activity, transition, call, release = [], "unknown", "none", "", "none"
     tails = work_tails(helper_ids, runs, reviewing=reviewing, named=named)
     tails += model_tails(b for member in members for b in member.get("model_handoffs") or ())
+    tails += services
     episode_live = bool(current is not None and current.get("live"))
-    live = episode_live or bool(working_helpers or live_runs or reviewing)
+    live = episode_live or bool(working_helpers or live_runs or reviewing) or live_services
     if turn:
         release = "owner"
     work: Dict[str, Any] = {
@@ -427,7 +451,7 @@ def roll_up_work(work_id: str, members: List[Dict[str, Any]], *, episode: Mappin
         "members": {"ids": [member["task_id"] for member in members], "states": {
             member["task_id"]: {**{key: member[key] for key in (
                 "activity", "transition", "call", "live", "release", "confirmed", "turn")},
-                "because": member["reasons"], "tails": model_tails(member.get("model_handoffs") or ())}
+                "because": member["reasons"], "tails": model_tails(member.get("model_handoffs") or ()) + list(member.get("services") or ())}
             for member in members}},
         "confirmed": all(member["confirmed"] for member in members) and not gaps,
     }

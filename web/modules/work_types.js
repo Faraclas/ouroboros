@@ -10,6 +10,24 @@
  * @property {Array<string>=} ids
  * @property {*=} since
  * @property {PauseAuthor=} by  // the declared author of a decided Pause
+ * @property {WakeSources=} wake
+ */
+/**
+ * @typedef {Object} WakeService
+ * @property {string} service_id
+ * @property {string} name
+ * @property {?string} started_at  // UTC ISO of the selected start
+ */
+/**
+ * @typedef {Object} WakeSources
+ * @property {string} mode  // warm | cold
+ * @property {boolean} any_mail
+ * @property {Array<string>} senders
+ * @property {Array<string>} tasks
+ * @property {Array<string>} runs
+ * @property {Array<WakeService>} services
+ * @property {?string} at  // absolute UTC ISO, not an ETA
+ * OR triggers only; owner/control mail, descendant escalations and own-run questions wake independently.
  */
 /**
  * @typedef {Object} PauseAuthor
@@ -19,12 +37,27 @@
  */
 /**
  * @typedef {Object} WorkTail
- * @property {string} kind  // helper | run | review | model
- * @property {string} state  // live | unknown
+ * @property {string} kind  // helper | run | review | model | service
+ * @property {string} state  // live | unknown | ended (service only)
  * @property {string} code
  * @property {string} text  // its English sentence, said beside the work's word, never as it
  * @property {number=} count
  * @property {Array<string>=} ids
+ */
+/**
+ * @typedef {Object} ServiceWorkTail
+ * @property {string} kind  // service
+ * @property {string} state  // live | ended | unknown
+ * @property {string} code  // service_running | service_exited | service_unknown
+ * @property {string} text
+ * @property {string} task_id  // original starting task, not a revived actor
+ * @property {string} service_id
+ * @property {string} name  // literal, untranslated
+ * @property {?string} started_at  // UTC ISO
+ * @property {?string} observed_at  // UTC ISO, per-service probe
+ * @property {?number} returncode
+ * @property {?number} output_bytes
+ * @property {?string} output_updated_at  // UTC ISO, not progress/ETA
  */
 /**
  * @typedef {Object} WorkTurn
@@ -67,7 +100,7 @@
  * @property {string} transition  // none | finalizing | pausing
  * @property {string} call  // preparing | sending | thinking | working, when every working member agrees
  * @property {Array<WorkReason>} because  // the current episode's own reason (or, once it ended, nothing)
- * @property {Array<WorkTail>} tails  // what still runs beside or after it
+ * @property {Array<WorkTail|ServiceWorkTail>} tails  // what still runs beside or after it
  * @property {boolean} live  // something of the work actually executes now
  * @property {Array<WorkTurn>} turn
  * @property {string} release  // self | owner | mind | none

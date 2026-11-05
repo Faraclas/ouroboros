@@ -108,6 +108,36 @@ def test_root_focus_persists_and_terminal_race_refuses(tmp_path, monkeypatch):
     assert "FOCUS_TASK_NOT_LIVE" in refused
 
 
+@pytest.mark.parametrize("kind,origin,status,allowed", [
+    ("pooled", True, STATUS_RUNNING, True),
+    ("pooled", True, STATUS_COMPLETED, False),
+    ("direct", True, STATUS_RUNNING, False),
+    ("", True, STATUS_RUNNING, False),
+])
+def test_focus_uses_current_carrier_after_restart(tmp_path, monkeypatch, kind, origin, status, allowed):
+    from ouroboros.tools.project_journal import _update_focus
+    from ouroboros.utils import append_jsonl
+    from unittest.mock import Mock
+
+    monkeypatch.setattr("ouroboros.config.DATA_DIR", tmp_path)
+    append_jsonl(tmp_path / "projects" / "alpha" / "journal.jsonl", {"kind": "note", "text": "exact source"})
+    write_task_result(tmp_path, "restored", status, root_task_id="restored")
+    lookup = Mock(return_value=None)
+    stamp = Mock()
+    monkeypatch.setattr("supervisor.workers.direct_chat_turn", lookup)
+    monkeypatch.setattr("supervisor.workers.stamp_direct_chat_turn", stamp)
+    ctx = types.SimpleNamespace(task_id="restored", drive_root=tmp_path, project_id="alpha",
+                                is_direct_chat=origin, task_metadata={"root_task_id": "restored",
+                                    "_execution_owner": {"kind": kind}})
+    reply = _update_focus(ctx, "Current work", {"reader": "journal_read", "project_id": "alpha"})
+    assert reply.startswith("OK:") is allowed
+    if kind == "pooled":
+        lookup.assert_not_called()
+        stamp.assert_not_called()
+    else:
+        assert "FOCUS_TASK_NOT_LIVE" in reply
+
+
 def test_focus_source_and_restricted_authority_are_fail_closed(tmp_path, monkeypatch):
     from ouroboros.tools.project_journal import _journal_read, _journal_write, _update_focus
     from ouroboros.utils import append_jsonl

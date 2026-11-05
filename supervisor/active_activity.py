@@ -278,6 +278,16 @@ class DirectActivityEntry:
         # publish the same optional fields as managed/post-task activities.
         wait_availability: Dict[str, Any] = {}
         row.update(self._live_model_wait_projection(availability=wait_availability))
+        if isinstance(self.parked_wait, dict) and self.parked_wait.get("reason") == "sleep":
+            from ouroboros.model_sleep import public_wake_sources
+
+            wake = public_wake_sources(self.parked_wait.get("sleep"))
+            row["sleep_wait"] = {key: self.parked_wait.get(key) for key in (
+                "state", "reason", "task_attempt", "parked_at", "sleep_started_at")}
+            row["sleep_wait"]["sleep"] = {**wake, "wake_at": wake.get("at")}
+        observed = getattr(self.actor, "_service_observations", None)
+        if isinstance(observed, dict) and observed.get("task_id") == self.activity_id:
+            row["service_observations"] = observed
         active = self.active_llm_call
         if active and active.get("task_attempt") == row.get("task_attempt") and active.get("model_activity"):
             row["model_activity"] = dict(active["model_activity"])

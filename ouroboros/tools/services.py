@@ -88,6 +88,7 @@ class ServiceRecord:
     keep_alive: bool = False
     env: Dict[str, str] = field(default_factory=dict, repr=False)
     secret_values: tuple[str, ...] = field(default=(), repr=False)
+    drive_root: pathlib.Path | None = None  # canonical task-document root; log/export roots stay separate
 
 
 _LOCK = threading.Lock()
@@ -580,6 +581,8 @@ def _start_service(
     scope_target = None if keep_alive else task_launch_target(
         invocation_binding(), drive_root=scope_root, task_id=scope_task)
 
+    started_at = time.time()
+
     def publish_process(proc):
         if scope_target is not None:
             record_task_group(*scope_target, proc.pid)
@@ -602,6 +605,8 @@ def _start_service(
             keep_alive=keep_alive,
             env=env,
             secret_values=secret_values,
+            started_at=started_at,
+            drive_root=canonical_data_root(ctx),
         )
         _SERVICES[key] = record
         if _panic_requested:
@@ -631,6 +636,8 @@ def _start_service(
             scope="session" if keep_alive else "task",
             owner_task_id=task_id,
             on_spawn=publish_process,
+            service_info={"service_id": key, "name": service_name, "started_at": started_at,
+                          "log_path": str(log_path), "task_id": task_id},
             cwd=str(workdir),
             stdout=log_fh,
             stderr=subprocess.STDOUT,
@@ -802,9 +809,15 @@ def _stop_service(ctx: ToolContext, name: str = "service") -> str:
         return name_error
     key = _service_key(ctx, service_name)
     with _LOCK:
-        record = _SERVICES.pop(key, None)
+        record = _SERVICES.get(key)
     if record:
         _stop_record(record)
+        from ouroboros.service_observations import retain_final_observation
+
+        retain_final_observation(record, service_execution_facts(key))
+        with _LOCK:
+            if _SERVICES.get(key) is record:
+                _SERVICES.pop(key, None)
         payload = _status_payload(record)
         payload["log_finalization"] = _finalize_service_log_for_drive(pathlib.Path(ctx.drive_root), record)
         artifact_note = ""

@@ -267,7 +267,8 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
                                        activities_complete=activity_availability["complete"],
                                        bindings_complete=bindings_complete)
     from ouroboros.gateway.work_projection import works_snapshot
-    works = works_snapshot(drive_root, decision_owners, work_facts, complete=activity_availability["complete"])
+    works = works_snapshot(drive_root, decision_owners, work_facts, complete=activity_availability["complete"],
+                           bindings=task_bindings)
     # Registered-project facts (never raise): the compact sidebar list, and the
     # COMPLETE (uncapped, all-status) project chat_ids for the live WS fan-out
     # isolation SSOT — distinct from the capped/filtered sidebar list, so
@@ -541,7 +542,8 @@ def _raw_work_facts(row: dict) -> dict:
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
     continuation = metadata.get("continuation") if isinstance(metadata.get("continuation"), dict) else {}
     facts = {key: row[key] for key in ("_budget_pause_hold", "_budget_pause", "title", "suggested_name", "focus",
-                                        "root_task_id", "parent_task_id", "original_task_id", "budget_drive_root", "owner_wait")
+                                        "root_task_id", "parent_task_id", "original_task_id", "budget_drive_root", "owner_wait",
+                                        "service_observations")
              if row.get(key)}
     edges = {key: continuation[key] for key in ("predecessor_task_id", "work_id", "work_name") if continuation.get(key)}
     return {**facts, **({"continuation": edges} if edges else {})}
@@ -619,6 +621,7 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                     or (meta.get("task") or {}).get("_attempt") or 1),
                     "model_activity": (meta.get("active_llm_call") or {}).get("model_activity"),
                     "owner_wait": dict(meta.get("owner_wait") or {}),
+                    "service_observations": dict(meta.get("service_observations") or {}),
                     "_owner_pause_warm": warm_paused_member(meta)} if isinstance(meta, dict) else {},
                  _epoch_or_zero(meta.get("started_at")) if isinstance(meta, dict) else 0.0)
                 for task_id, meta in queue_mod.RUNNING.items()]

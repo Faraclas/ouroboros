@@ -657,3 +657,30 @@ test('the line\'s clock: the time today, the date as well on another day; second
     assert.equal(workLine(work('paused_by_owner')), `You paused it · ${clock(work('paused_by_owner').because[0].since)}`);
     assert.equal(workLine(work('spending_limit')), 'Spending limit reached');
 });
+
+
+test('structured services translate stable templates with literal names, not a shared code with changing English', () => {
+    const prior = currentPayload();
+    const service = (name, code = 'service_running') => ({ kind: 'service', name, code, text: `${name}: running` });
+    try {
+        applyPayload({ language: 'en', english: true, entries: {} });
+        assert.equal(reasonText(service('build {count}')), 'build {count}: running');
+        assert.equal(reasonText(service('other', 'service_exited')), 'other: exited');
+        assert.equal(reasonText(service('other', 'service_unknown')), 'other: status unconfirmed');
+        assert.equal(reasonText({ ...service('other'), kind: 'new-kind', text: 'Legacy English' }), 'Legacy English');
+        assert.equal(reasonText({ ...service(''), text: 'Unnamed legacy service' }), 'Unnamed legacy service');
+        assert.equal(reasonText(service('other', 'future_service_code')), 'other: running');
+        applyPayload({ language: 'fr', english: false, entries: {
+            '{name}: running': { text: '{name}: actif' },
+            '{name}: exited': { text: '{name}: termine' },
+            '{name}: status unconfirmed': { text: '{name}: inconnu' },
+            [CODE_PREFIX + 'work.because.service_running']: { text: 'wrong old name' },
+        } });
+        assert.equal(reasonText(service('first')), 'first: actif');
+        assert.equal(reasonText(service('second')), 'second: actif');
+        assert.equal(reasonText(service('<raw> {count}')), '<raw> {count}: actif');
+        assert.equal(reasonText(service('second', 'service_exited')), 'second: termine');
+        assert.equal(reasonText(service('second', 'service_unknown')), 'second: inconnu');
+        assert.equal(Object.keys(currentPayload().entries).filter((key) => key === '{name}: running').length, 1);
+    } finally { applyPayload(prior); }
+});

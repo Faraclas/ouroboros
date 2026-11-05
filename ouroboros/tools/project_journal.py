@@ -648,7 +648,9 @@ def _update_focus(ctx: ToolContext, text: str, source_ref: Any) -> str:
     import pathlib
 
     canonical = pathlib.Path(str(metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or getattr(ctx, "drive_root", "")))
-    direct = bool(getattr(ctx, "is_direct_chat", False))
+    from ouroboros.task_carrier import execution_kind
+
+    direct = execution_kind(ctx) == "direct"  # current carrier, not the pre-Restart origin
     if direct:
         try:
             from supervisor.workers import direct_chat_turn
