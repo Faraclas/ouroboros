@@ -1458,6 +1458,7 @@ class OnboardingPresetFailureResponse(TypedDict):
 # Human/test-visible contract index; routers own executable Route objects.
 from ouroboros.gateway.endpoint_index import HTTP_ENDPOINTS
 from ouroboros.gateway.client_contracts import FileBrowserListResponse, ServedUiState, ProjectEntry, ProjectResource  # noqa: E402,F401
+from ouroboros.gateway.client_contracts import ProjectContent, ProjectContentConflictResponse  # noqa: E402,F401
 
 WS_MESSAGE_TYPES: tuple[str, ...] = (
     "chat",
@@ -1506,6 +1507,7 @@ __all__ = [
     "UpdateStatusReadyOutbound",
     "UpdateProgressChangedOutbound",
     "ProjectCreateRequest", "ProjectEntry", "ProjectDeleteResponse", "ProjectCognition",
+    "ProjectContent", "ProjectContentConflictResponse",
     "FsDirsEntry", "FsDirsResponse",
     "TaskNamedOutbound",
     "ErrorResponse", "StatusResponse", "HealthResponse", "StateResponse",

@@ -664,7 +664,9 @@
  * @property {ProjectResourceObservation=} observation
  */
 
-/** @typedef {Object} ProjectCatalogResponse
+/**
+ * Catalog rows include searchable description and omit notes.
+ * @typedef {Object} ProjectCatalogResponse
  * @property {Array<import('./api_types.js').ProjectEntry>} projects
  * @property {number} total
  * @property {number} offset
@@ -685,15 +687,33 @@
  */
 
 /**
- * `POST /api/projects/{project_id}/update`: name and/or pin; at least one.
+ * Exact authored words; legacy absence is empty. Open-ABI extra keys are not compared or saved.
+ * @typedef {Object} ProjectContent
+ * @property {string} description
+ * @property {string} notes
+ */
+
+/**
+ * Name/pin, or content-only with both exact saved strings in expected_content.
+ * Content supplies description and/or notes; empty clears, omission preserves; no name/pin mixing.
+ * Description is one line, <=500 Unicode code points; notes <=20000; UTF-8 text is not normalized.
  * @typedef {Object} ProjectUpdateRequest
  * @property {string=} name
  * @property {boolean=} pinned
+ * @property {string=} description
+ * @property {string=} notes
+ * @property {ProjectContent=} expected_content
  */
 
 /**
  * @typedef {Object} ProjectUpdateResponse
  * @property {?import('./api_types.js').ProjectEntry} project
+ */
+
+/** @typedef {Object} ProjectContentConflictResponse
+ * @property {string} error
+ * @property {"project_content_conflict"} reason_code
+ * @property {ProjectContent} current_content
  */
 
 /**

@@ -747,9 +747,13 @@
 /**
  * A registry project row: list rows are the compact projection (with `has_thread_activity`);
  * a create/update answer is the full row (`created: false`: an idempotent repeat create).
+ * Detail/content-save/reopen/resource HTTP rows default absent authored content to empty;
+ * catalog omits notes, sidebar/list omit both. Neither field is agent-memory context.
  * @typedef {Object} ProjectEntry
  * @property {string} id
  * @property {string=} name
+ * @property {string=} description
+ * @property {string=} notes
  * @property {boolean=} pinned  // absent on legacy rows means unpinned
  * @property {number=} chat_id
  * @property {string=} working_dir

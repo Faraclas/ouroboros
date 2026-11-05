@@ -561,15 +561,46 @@ async def api_projects_create(request: Request) -> JSONResponse:
 
 
 async def api_project_update(request: Request) -> JSONResponse:
-    """POST /api/projects/{project_id}/update — partial name/pin metadata update."""
+    """Partial name/pin update, or a separate exact-baseline authored-content save."""
     try:
         from ouroboros.projects_registry import PROJECT_NAME_MAX, get_project, update_project
 
         project_id = str(request.path_params.get("project_id") or "").strip()
-        body = await request.json()
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse({"error": "body must be valid JSON text"}, status_code=400)
         if not isinstance(body, dict):
             return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         drive_root = request_drive_root(request)
+        if any(key in body for key in ("description", "notes", "expected_content")):
+            from ouroboros import project_management as management
+            from ouroboros.gateway._helpers import run_sync_to_completion
+            from ouroboros.gateway.client_contracts import ProjectUpdateRequest
+            from ouroboros.gateway.schema import validate_ingress
+
+            if "name" in body or "pinned" in body:
+                return JSONResponse(
+                    {"error": "Save description/notes separately from name or pinned",
+                     "reason_code": "invalid_project_content"}, status_code=400)
+            errors = validate_ingress(body, ProjectUpdateRequest)
+            if errors:
+                return JSONResponse(
+                    {"error": errors[0], "reason_code": "invalid_project_content"}, status_code=400)
+            updates = {key: body[key] for key in ("description", "notes") if key in body}
+            try:
+                entry = await run_sync_to_completion(
+                    management.update_project_content, drive_root, project_id,
+                    expected_content=body.get("expected_content"), **updates)
+            except management.ProjectContentConflict as exc:
+                return JSONResponse(
+                    {"error": str(exc), "reason_code": exc.reason,
+                     "current_content": exc.current_content}, status_code=exc.status_code)
+            except management.ProjectManagementError as exc:
+                return JSONResponse(
+                    {"error": str(exc), "reason_code": exc.reason}, status_code=exc.status_code)
+            _broadcast_projects_changed(entry["id"], entry["chat_id"])
+            return JSONResponse({"project": entry})
         if get_project(drive_root, project_id, strict=True) is None:
             return JSONResponse({"error": f"unknown project: {project_id}"}, status_code=404)
         updates = {}

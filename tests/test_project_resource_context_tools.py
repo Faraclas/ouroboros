@@ -103,6 +103,48 @@ def test_unknown_and_corrupt_registry_are_not_empty_success(world, monkeypatch):
     assert unavailable.status == "unavailable" and "bad registry" in unavailable.text
 
 
+def test_resource_tool_keeps_legacy_shape_without_authored_words_but_http_retains_them(world):
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+    from ouroboros.gateway.router import collect_routes
+
+    data, repos, ctx, tools = world
+    baseline = json.loads(call(tools, "add", path=str(repos[0])).text)
+    app = Starlette(routes=collect_routes(data_dir=data))
+    app.state.drive_root, app.state.repo_dir = data, ctx.repo_dir
+    words = {"description": "Private_description_研究😀", "notes": "Private_notes\r\nBare\rCR\x00 "}
+    with TestClient(app) as client:
+        response = client.post("/api/projects/room/update", json={
+            **words, "expected_content": {"description": "", "notes": ""}})
+        assert response.status_code == 200
+        added = call(tools, "add", path=str(repos[1]), label="Second source")
+        assert added.status == "ok", added.text
+        added_row = json.loads(added.text)
+        duplicate = call(tools, "add", path=str(repos[1]), label="Ignored duplicate")
+        assert duplicate.status == "ok" and json.loads(duplicate.text) == added_row
+        listed = call(tools, "list")
+        assert listed.status == "ok"
+        assert set(json.loads(listed.text)) == {"project_id", "resources"}
+        rid = added_row["resources"][-1]["id"]
+        detached = call(tools, "detach", resource_id=rid)
+        assert detached.status == "ok"
+        for result in (added, duplicate, detached):
+            row = json.loads(result.text)
+            assert set(row) == set(baseline)  # all legacy mutation fields survive
+            assert {key: value for key, value in row.items() if key != "resources"} == {
+                key: value for key, value in baseline.items() if key != "resources"}
+        for result in (added, duplicate, listed, detached):
+            assert all(key not in json.loads(result.text) for key in words)
+            assert "Private_description" not in result.text and "Private_notes" not in result.text
+        # Management HTTP deliberately returns full detail, unlike the unrelated tool.
+        added_http = client.post("/api/projects/room/resources", json={"path": str(repos[1])})
+        assert added_http.status_code == 200
+        assert {key: added_http.json()["project"][key] for key in words} == words
+        assert {key: client.get("/api/projects/room/detail").json()["project"][key]
+                for key in words} == words
+    assert {key: get_reserved_project(data, "room")[key] for key in words} == words
+
+
 @pytest.mark.parametrize("workspace", [False, True])
 @pytest.mark.parametrize("declared", [False, True])
 def test_actual_runtime_context_retains_paths_for_project_tasks_and_helpers(world, tmp_path, workspace, declared):
@@ -112,12 +154,16 @@ def test_actual_runtime_context_retains_paths_for_project_tasks_and_helpers(worl
 
     data, repos, _ctx, _tools = world
     add_project_resource(data, "room", str(repos[1]), "Other")
+    from ouroboros.project_management import update_project_content
+    update_project_content(data, "room", expected_content={"description": "", "notes": ""},
+                           description="private-description-sentinel", notes="private-notes-sentinel")
     env, _memory = _make_env_and_memory(tmp_path / "runtime")
     task = {"id": "child" if declared else "root", "project_id": "room", "type": "task",
             "workspace_root": str(repos[0]) if workspace else "",
             "task_contract": {"input_sources": "declared"} if declared else {}}
     text = build_runtime_section(env, task)
     assert str(repos[0]) in text and str(repos[1]) in text
+    assert "private-description-sentinel" not in text and "private-notes-sentinel" not in text
     assert "not ownership, access grants or locks" in text
     if declared:
         runtime = json.loads(text.split("## Runtime context\n\n", 1)[1])
@@ -131,6 +177,8 @@ def test_main_manifest_uses_same_resources_without_reopening_every_project(world
 
     data, repos, _ctx, _tools = world
     owner.add_project_resource(data, "room", str(repos[1]))
+    owner.update_project_content(data, "room", expected_content={"description": "", "notes": ""},
+                                 description="private-description-sentinel", notes="private-notes-sentinel")
     monkeypatch.setattr(owner, "list_project_resources", lambda *_: pytest.fail("manifest reopens registry"))
     host = SimpleNamespace(DRIVE_ROOT=data, RUNNING={}, PENDING=[])
     manifest = _main_routing_manifest(host, RootSnapshot())
@@ -138,6 +186,8 @@ def test_main_manifest_uses_same_resources_without_reopening_every_project(world
     assert {item["path"] for item in room["resources"]} == {str(path) for path in repos}
     assert "resource_rule" not in room
     assert "not ownership, access grants or locks" in manifest["project_resource_rule"]
+    assert "private-description-sentinel" not in json.dumps(manifest)
+    assert "private-notes-sentinel" not in json.dumps(manifest)
 
 
 def test_session_references_pin_paths_without_changing_canonical_work_order(world, monkeypatch):
@@ -151,7 +201,11 @@ def test_session_references_pin_paths_without_changing_canonical_work_order(worl
     task = {"id": "child", "objective": "Read sources", "project_id": "room", "task_contract": {}}
     original = work.work_order_fingerprint(task)
     rows = add_project_resource(data, "room", str(repos[1]))["resources"]
+    from ouroboros.project_management import update_project_content
+    update_project_content(data, "room", expected_content={"description": "", "notes": ""},
+                           description="private-description-sentinel", notes="private-notes-sentinel")
     refs = work.session_host_references(ctx, target_root=str(repos[0]), source_root=str(repos[0]))
+    assert "private-description-sentinel" not in refs and "private-notes-sentinel" not in refs
     assert str(repos[0]) in refs and str(repos[1]) in refs
     assert "not additional authority" in refs
     detach_project_resource(data, "room", rows[-1]["id"])

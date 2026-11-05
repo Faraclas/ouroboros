@@ -512,10 +512,14 @@ class ProjectEntry(TypedDict, total=False):
     are historical facts; operational git data is read live from ``.git``. List rows are a
     compact projection with ``has_thread_activity``; a create/update answer is the full row
     (``created: false``: an idempotent repeat create). Public facade: ``contracts.ProjectEntry``.
+    Detail/content-save/reopen/resource HTTP rows project absent authored content as empty.
+    Catalog omits notes; compact sidebar/list rows omit both. Neither is agent-memory context.
     """
 
     id: str
     name: str
+    description: str
+    notes: str
     chat_id: int
     working_dir: str
     resources: List[ProjectResource]
@@ -581,7 +585,7 @@ class ProjectResource(TypedDict):
 
 
 class ProjectCatalogResponse(TypedDict):
-    """Uncapped management population, paginated; no filesystem probes."""
+    """Paginated without filesystem probes; description is searchable, notes omitted."""
     projects: List[ProjectEntry]
     total: int
     offset: int
@@ -605,15 +609,36 @@ class ProjectCreateResponse(TypedDict):
     init_git_skipped: NotRequired[List[str]]
 
 
+class ProjectContent(TypedDict):
+    """Exact authored words; legacy absence is empty. Open-ABI extra keys are not compared or saved."""
+
+    description: str
+    notes: str
+
+
 class ProjectUpdateRequest(TypedDict, total=False):
-    """``POST /api/projects/{project_id}/update``: name and/or pin; at least one."""
+    """Name/pin, or content-only with both exact saved strings in expected_content.
+
+    A content request supplies description and/or notes; empty strings clear, omission preserves.
+    Content cannot be mixed with name/pinned. Description is one line, <=500 Unicode code
+    points; notes <=20000. UTF-8 text is preserved without trimming or normalization.
+    """
 
     name: str  # 1 to 80 characters
     pinned: bool
+    description: str
+    notes: str
+    expected_content: ProjectContent
 
 
 class ProjectUpdateResponse(TypedDict):
     project: Optional[ProjectEntry]
+
+
+class ProjectContentConflictResponse(TypedDict):
+    error: str
+    reason_code: Literal["project_content_conflict"]
+    current_content: ProjectContent
 
 
 class ProjectFromTaskRequest(TypedDict):
@@ -835,6 +860,7 @@ __all__ = [
     "PlaceOwnerAccountRequest", "PlaceUpdateRequest",
     "SettingsSecretRequest", "SettingsSecretResponse", "ChatUploadDeleteRequest", "ChatUploadDeleteResponse",
     "ProjectListResponse", "ProjectCreateResponse", "ProjectUpdateRequest", "ProjectUpdateResponse",
+    "ProjectContent", "ProjectContentConflictResponse",
     "ProjectResourceRequest", "ProjectResourceGit", "ProjectResourceObservation", "ProjectResource",
     "ProjectCatalogResponse", "ProjectDetailResponse",
     "ProjectFromTaskRequest", "ProjectTaskBinding", "ProjectFromTaskResponse",

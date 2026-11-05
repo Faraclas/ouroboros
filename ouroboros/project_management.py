@@ -1,4 +1,4 @@
-"""Project catalog, reopen and contextual resource associations.
+"""Project catalog, authored content, reopen and contextual resource associations.
 
 The registry is the sole durable source. Resources describe useful paths; they
 never grant access, claim ownership, change cwd or participate in admission.
@@ -23,6 +23,13 @@ class ProjectManagementError(ValueError):
     def __init__(self, reason: str, detail: str, status_code: int = 400):
         super().__init__(detail)
         self.reason, self.status_code = reason, status_code
+
+
+class ProjectContentConflict(ProjectManagementError):
+    def __init__(self, current_content: dict[str, str]):
+        super().__init__("project_content_conflict",
+                         "Project description or notes changed; review the saved content before retrying", 409)
+        self.current_content = dict(current_content)
 
 
 def _project(drive_root: Any, project_id: str) -> dict:
@@ -54,10 +61,27 @@ def list_project_resources(drive_root: Any, project_id: str) -> list[dict]:
     return resources_for_project(_project(drive_root, project_id))
 
 
-def _view(row: dict) -> dict:
-    return {**row, "lifecycle_label": {"active": "active", "deleting": "closing",
-                                      "tombstoned": "closed"}[row["lifecycle"]],
+def _content(row: dict) -> dict[str, str]:
+    """Only absence is legacy empty content; malformed saved words stay unknown."""
+    content = {key: row.get(key, "") for key in ("description", "notes")}
+    for key, value in content.items():
+        if not isinstance(value, str):
+            raise ValueError(f"Project {row['id']!r} has malformed saved {key}")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ValueError(f"Project {row['id']!r} has malformed saved {key}") from exc
+    return content
+
+
+def _view(row: dict, *, include_notes: bool = True) -> dict:
+    view = {**row, **_content(row),
+            "lifecycle_label": {"active": "active", "deleting": "closing",
+                                "tombstoned": "closed"}[row["lifecycle"]],
             "resources": resources_for_project(row)}
+    if not include_notes:
+        view.pop("notes")
+    return view
 
 
 def project_catalog(drive_root: Any, *, lifecycle: str = "all", q: str = "",
@@ -71,11 +95,61 @@ def project_catalog(drive_root: Any, *, lifecycle: str = "all", q: str = "",
     rows = registry.list_reserved_projects(drive_root, strict=True)
     rows = [row for row in rows if (lifecycle == "all" or
             (row["lifecycle"] == registry.PROJECT_ACTIVE) == (lifecycle == "active"))
-            and (not needle or needle in " ".join(str(row.get(key) or "") for key in
-                                                 ("id", "name", "working_dir")).casefold())]
+            and (not needle or needle in (
+                " ".join(str(row.get(key) or "") for key in ("id", "name", "working_dir"))
+                + " " + _content(row)["description"]).casefold())]
     total = len(rows)
-    return {"projects": [_view(row) for row in rows[offset:offset + limit]],
+    return {"projects": [_view(row, include_notes=False) for row in rows[offset:offset + limit]],
             "total": total, "offset": offset, "limit": limit, "has_more": offset + limit < total}
+
+
+def update_project_content(drive_root: Any, project_id: str, *,
+                           expected_content: Any, **updates: Any) -> dict:
+    """CAS exact authored words under the registry lock; routing/activity stay untouched.
+
+    Omitted fields survive, explicit empty strings clear. Active and settled-closed
+    rooms accept content; a closing room never does. Legacy name/pin writes retain
+    their separate active-only contract and cannot bypass this content comparison.
+    """
+    fields = {"description", "notes"}
+    if not updates or updates.keys() - fields:
+        raise ProjectManagementError("invalid_project_content", "description or notes is required")
+    if not isinstance(expected_content, dict) or not fields <= expected_content.keys():
+        raise ProjectManagementError(
+            "invalid_project_content", "expected_content must contain description and notes")
+    values = list(updates.values()) + [expected_content[key] for key in fields]
+    if any(not isinstance(value, str) for value in values):
+        raise ProjectManagementError(
+            "invalid_project_content", "description, notes and their expected values must be strings")
+    try:
+        for value in values:
+            value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ProjectManagementError(
+            "invalid_project_content", "Project content must be valid UTF-8 text") from exc
+    for key, value in updates.items():
+        limit = 500 if key == "description" else 20000
+        if len(value) > limit:
+            raise ProjectManagementError(
+                "invalid_project_content", f"{key} must be <= {limit} Unicode code points")
+        if key == "description" and value and value.splitlines() != [value]:
+            raise ProjectManagementError(
+                "invalid_project_content", "description must be a single line")
+    pid = registry.sanitize_project_id(project_id)
+    with registry._file_write_lock(registry._registry_path(drive_root)):
+        data = registry._load(drive_root, strict=True, project_id=pid)
+        row = next((item for item in data["projects"] if item["id"] == pid), None)
+        if row is None:
+            raise ProjectManagementError("project_not_found", f"Unknown project: {project_id}", 404)
+        if row["lifecycle"] == registry.PROJECT_DELETING:
+            raise ProjectManagementError("project_closing", "The Project is still closing", 409)
+        current = _content(row)
+        if current != {key: expected_content[key] for key in fields}:
+            raise ProjectContentConflict(current)
+        row.update(updates)
+        view = _view(row)
+        registry._save(drive_root, data)
+        return view
 
 
 def reopen_project(drive_root: Any, project_id: str) -> dict:
@@ -93,7 +167,7 @@ def reopen_project(drive_root: Any, project_id: str) -> dict:
             raise ProjectManagementError("project_closing", "The Project is still closing; wait for quiescence", 409)
         if row["lifecycle"] == registry.PROJECT_ACTIVE:
             return _view(row)
-        resources_for_project(row)  # malformed context must not produce a half-reported transition
+        _view(row)  # malformed content/context must not produce a half-reported transition
         # Pause before activation, including legacy tombstones; Close needs no schedule reads.
         paused = pause_project_schedules(pathlib.Path(drive_root), pid, row["chat_id"])
         if not paused["ok"]:
@@ -142,8 +216,9 @@ def _edit_resource(drive_root: Any, project_id: str, *, path: str = "", label: s
                 return _view(row)  # same path in another room is independently valid
             resources.append({"id": uuid.uuid4().hex, "path": path, "label": label, "added_at": utc_now_iso()})
         row["resources"] = resources
+        view = _view(row)
         registry._save(drive_root, data)
-        return _view(row)
+        return view
 
 
 def add_project_resource(drive_root: Any, project_id: str, path: str, label: str = "") -> dict:

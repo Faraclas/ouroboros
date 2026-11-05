@@ -42,6 +42,8 @@ def _project_resources(ctx: ToolContext, action: str, project_id: str,
             if not resource_id:
                 raise ProjectManagementError("invalid_resource", "resource_id is required")
             result = detach_project_resource(root, pid, resource_id)
+        # Resource replies retain their legacy shape, not unrelated authored words.
+        result = {key: value for key, value in result.items() if key not in {"description", "notes"}}
     except (OSError, ValueError) as exc:
         reason = exc.reason if isinstance(exc, ProjectManagementError) else "registry_unavailable"
         return _publish_tool_result(ctx, ToolResult(
