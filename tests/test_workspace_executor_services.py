@@ -751,6 +751,7 @@ def test_executor_terminal_payload_clears_readiness(tmp_path):
             network="host",
         ),
         backend_pid="4321",
+        local_proc=None,
         backend_cwd="/workspace",
         host_cwd=tmp_path,
         cwd_root="active_workspace",
@@ -770,6 +771,8 @@ def test_executor_terminal_payload_clears_readiness(tmp_path):
     assert payload["state"] == "exited"
     assert payload["ready"] is False
     assert record.ready is False
+    assert record.execution_observation["state"] == "exited"
+    assert record.execution_observation["returncode"] is None
 
 
 @pytest.mark.parametrize("unknown_from", ["service", "custody"])
