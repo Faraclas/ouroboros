@@ -195,6 +195,8 @@ def _copilot_chat_to_responses_payload(payload: Dict[str, Any]) -> Dict[str, Any
                     "strict": bool(js.get("strict", False)),
                 }
             }
+            if isinstance(js.get("description"), str):
+                out["text"]["format"]["description"] = js["description"]
     return out
 
 
