@@ -62,6 +62,9 @@ TERMINAL_WRITERS = {
     # Names the mind's surviving notes after an applied fold; its locked projector
     # preserves CURRENT lifecycle, including terminal state, and writes only the pointer.
     ('ouroboros/main_context_authority.py::publish_working_notes', '"running"'): 'dynamic',
+    # Final service facts enrich CURRENT without changing its lifecycle. The
+    # locked projector preserves status and refuses absence (no task authored).
+    ('ouroboros/service_observations.py::retain_final_observation', '"running"'): 'dynamic',
     # Create-only pooled control admission seeds running/scheduled authority;
     # an existing row is returned unchanged, including any terminal status.
     ('supervisor/queue.py::ensure_control_task_result', 'status'): 'dynamic',

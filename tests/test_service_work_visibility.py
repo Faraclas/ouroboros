@@ -221,6 +221,47 @@ def test_terminal_observation_saved_before_same_name_replacement(tmp_path, monke
     assert result["status"] == "running"
 
 
+@pytest.mark.parametrize("status", [
+    "requested", "scheduled", "running", "cancel_requested", "interrupted",
+    "completed", "failed", "cancelled", "rejected_duplicate",
+])
+def test_final_observation_preserves_current_lifecycle_without_terminal_work(tmp_path, monkeypatch, status):
+    from ouroboros.task_results import write_task_result, load_task_result
+    root = tmp_path / "data"
+    write_task_result(root, "t", status, task_attempt=3, result="preserved answer")
+    before = load_task_result(root, "t", strict=True)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("a service observation originated terminal work")
+
+    for target in (
+        "ouroboros.task_custody.capture_owner_mail", "ouroboros.task_custody.capture_unread_mail",
+        "ouroboros.safety.clear_safety_work", "ouroboros.process_scope.note_task_terminal_transition",
+    ):
+        monkeypatch.setattr(target, unexpected)
+    record = SimpleNamespace(task_id="t", service_id="t:s", name="s", started_at=10,
+                             log_path=None, drive_root=root)
+    so.retain_final_observation(record, {"started_at": 10, "state": "exited", "returncode": 7})
+    after = load_task_result(root, "t", strict=True)
+    for key in ("status", "task_attempt", "result", "terminal_time", "outcome_axes",
+                "canonical_terminal_projection_origin", "owner_mailbox", "unread_mailbox"):
+        assert after.get(key) == before.get(key), key
+    assert after["service_observations"]["services"][0]["returncode"] == 7
+
+
+def test_final_service_observation_never_authors_a_missing_task(tmp_path):
+    from ouroboros.task_results import write_task_result, load_task_result
+    root = tmp_path / "data"
+    write_task_result(root, "other", "running")
+    before = load_task_result(root, "other", strict=True)
+    assert not load_task_result(root, "missing")
+    record = SimpleNamespace(task_id="missing", service_id="missing:s", name="s", started_at=10,
+                             log_path=None, drive_root=root)
+    so.retain_final_observation(record, {"started_at": 10, "state": "exited", "returncode": 0})
+    assert not load_task_result(root, "missing")
+    assert load_task_result(root, "other", strict=True) == before
+
+
 def test_direct_public_pin_and_epoch_observation_are_one_exact_start(stored, tmp_path):
     from supervisor.active_activity import DirectActivityEntry
     entry = DirectActivityEntry("t", 42, parked_wait=wait(services=[{
