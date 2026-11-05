@@ -727,3 +727,10 @@ class TestChatAttachmentUploads:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_empty_inline_manifest_is_a_read_without_a_task_store(tmp_path):
+    from ouroboros.artifacts import resolve_attachment_manifest
+    absent = tmp_path / 'not-created'
+    assert resolve_attachment_manifest(absent, '', {}) == []
+    assert not absent.exists()

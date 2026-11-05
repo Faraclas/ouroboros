@@ -339,7 +339,8 @@ def attachment_manifest_projection(drive_root: Any, task_id: str, manifest: Any)
 def resolve_attachment_manifest(drive_root: Any, task_id: str, authority: Any) -> List[Dict[str, Any]]:
     """Resolve complete captured inputs under the actual owner, never preview fallback.
 
-    Only old inline manifests retain their historical absolute-path contract.
+    Existing inline paths keep their historical contract; missing paths may use
+    the same task's promoted artifact location, never another owner's files.
     Referenced rows resolve from this task's artifact root; serialized host paths
     cannot redirect the reader. File bytes are verified by the materializer.
     """
@@ -347,21 +348,35 @@ def resolve_attachment_manifest(drive_root: Any, task_id: str, authority: Any) -
 
     authority = authority if isinstance(authority, dict) else {}
     ref = authority.get("attachment_manifest_ref")
-    if "attachment_manifest_ref" not in authority:
-        return normalize_attachment_manifest(authority.get("attachment_manifest"))
-    document = json.loads(read_actor_source_bytes(drive_root, task_id, ref))
-    if not isinstance(document, dict) or document.get("schema_version") != 1 or document.get("task_id") != task_id:
-        raise ValueError("attachment manifest owner does not match the task")
-    raw = document.get("attachments")
-    rows = normalize_attachment_manifest(raw)
-    if not isinstance(raw, list) or len(rows) != len(raw) or len(rows) != ref.get("count"):
-        raise ValueError("attachment manifest count is invalid")
-    root = task_artifact_dir_path(drive_root, task_id).resolve(strict=False)
+    legacy = "attachment_manifest_ref" not in authority
+    if legacy:
+        rows = normalize_attachment_manifest(authority.get("attachment_manifest"))
+    else:
+        document = json.loads(read_actor_source_bytes(drive_root, task_id, ref))
+        if not isinstance(document, dict) or document.get("schema_version") != 1 or document.get("task_id") != task_id:
+            raise ValueError("attachment manifest owner does not match the task")
+        raw = document.get("attachments")
+        rows = normalize_attachment_manifest(raw)
+        if not isinstance(raw, list) or len(rows) != len(raw) or len(rows) != ref.get("count"):
+            raise ValueError("attachment manifest count is invalid")
+    if not rows:
+        return []
+    root = task_artifact_dir_path(drive_root, task_id, create=False).resolve(strict=False)
     for row in rows:
         if row["status"] == "rejected":
             row.pop("abs_path", None)
             continue
         rel = pathlib.PurePosixPath(str(row.get("relpath") or ""))
+        if legacy:
+            if row.get("abs_path"):
+                try:
+                    pathlib.Path(row["abs_path"]).stat()
+                except (FileNotFoundError, NotADirectoryError):
+                    pass
+                else:
+                    continue
+            if row.get("root") != "artifact_store" or rel.is_absolute() or len(rel.parts) != 2 or rel.parts[0] != _ATTACHMENTS_SUBDIR or ".." in rel.parts:
+                continue  # preserve an old inline failure, not a guessed source
         if rel.is_absolute() or len(rel.parts) != 2 or rel.parts[0] != _ATTACHMENTS_SUBDIR or ".." in rel.parts:
             raise ValueError("attachment manifest contains an invalid file reference")
         path = root.joinpath(*rel.parts)
@@ -370,6 +385,8 @@ def resolve_attachment_manifest(drive_root: Any, task_id: str, authority: Any) -
         if row.get("root") != "artifact_store" or type(row.get("size")) is not int or not re.fullmatch(r"[0-9a-f]{64}", str(row.get("sha256") or "")):
             raise ValueError("attachment manifest file has no captured identity")
         row["abs_path"] = str(path)
+        if legacy:
+            path.stat()  # a missing placement can be retried at this owner's other known store
     return rows
 
 

@@ -208,14 +208,30 @@ def inject_relay(ctx, entry: dict, messages: list) -> None:
     for row in entry.get("owner_rows") or []:
         retain_owner_message(ctx, row)
         address = format_address(row_address(row))
-        loop._record_owner_directive(ctx, source="owner_mailbox", content=owner_text(row), msg_id=address)
         body = f"[Owner words quoted verbatim; handle {address}]\n{owner_text(row)}"
         if row.get("type") == "quiz_answer":
             from ouroboros.owner_quiz import recorded_answer_frame
             body += "\n[Host question frame]\n" + recorded_answer_frame(row["quiz"])
         if row.get("attachments"):
             body += "\n[Host-retained attachments]\n" + json.dumps(row["attachments"], ensure_ascii=False)
-        content = quote_content(ctx, entry, row, body)
+        manifest = []
+        content = quote_content(ctx, entry, row, body, manifest_out=manifest)
+        from ouroboros.review_evidence_sections import materialize_owner_corpus_content, project_owner_corpus_row
+        media = []
+        for ref, staged in zip(row.get("attachments") or [], manifest):
+            if ref.get("kind") != "image" and not staged.get("is_image"):
+                continue
+            original = {"path": staged.get("abs_path") or "", "sha256": staged.get("sha256") or "",
+                        "caption": str(staged.get("label") or ref.get("name") or "")}
+            try:
+                if staged.get("status") != "staged":
+                    raise ValueError("quoted image not staged")
+                native = materialize_owner_corpus_content({"content": "", "media": [original]}, drive_root=ctx.drive_root)
+                media.extend(project_owner_corpus_row({"content": native}, ctx=ctx)["media"])
+            except (OSError, ValueError):
+                media.append({**original, "unavailable": "quoted owner image unavailable or undecodable"})
+        loop._record_owner_directive(ctx, source="owner_mailbox", msg_id=address,
+            content=owner_text(row), owner_text=owner_text(row), media=media)
         loop._append_or_merge_user_message(messages, content, slot=ctx, kind=OWNER_WORDS_KIND)
     note = str(entry.get("text") or "")
     relay = entry["relay"]
@@ -229,7 +245,7 @@ def inject_relay(ctx, entry: dict, messages: list) -> None:
         persist_held_state(ctx)
 
 
-def quote_content(ctx, entry, row, body):
+def quote_content(ctx, entry, row, body, *, manifest_out=None):
     """Stage the quoted bytes on the recipient's drive using their saved hashes."""
     if not row.get("attachments") or ctx is None:
         return body
@@ -242,6 +258,8 @@ def quote_content(ctx, entry, row, body):
     manifest = stage_task_attachments(ctx.drive_root, ctx.task_id, [
         {**ref, "path": str(uploads_dir(root) / upload_id(ref.get("upload"))) if upload_id(ref.get("upload")) else "",
          "label": str(ref.get("name") or "attachment")} for ref in row["attachments"]])
+    if manifest_out is not None:
+        manifest_out.extend(manifest)
     body += "\n[Host attachment delivery]\n" + _render_attachment_lines(
         attachment_manifest_projection(ctx.drive_root, ctx.task_id, manifest))
     return build_incoming_user_content({"text": body, "attachment_manifest": manifest}, ctx.drive_root, ctx.task_id)

@@ -235,3 +235,53 @@ def test_note_carries_the_tellers_summary_and_the_card_names_its_rooms(tmp_path,
     sent.clear()
     publish_relay(tmp_path, "nameless", nameless, SimpleNamespace(send_message=lambda chat_id, text, **kw: sent.append(kw)))
     assert sent[0]["progress_meta"]["relay"]["target"] == {"task_id": "nameless"}
+
+
+@pytest.mark.parametrize('changed', [False, True, 'undecodable'])
+def test_quoted_owner_image_is_kept_in_the_checked_corpus(tmp_path, changed):
+    import base64
+    import io
+    from PIL import Image
+    from ouroboros.chat_uploads import store_upload, claim_refs, uploads_dir
+    from ouroboros.owner_relay import retain_owner_message
+    from ouroboros.safety import _build_check_prompt
+    originals, refs = [], []
+    for i in range(6):
+        raw = io.BytesIO()
+        Image.new('RGB', (8, 8), (12, 34, i)).save(raw, format='PNG')
+        data = raw.getvalue()[:32] if changed == 'undecodable' and i == 5 else raw.getvalue()
+        _path, ref = store_upload(data, f'plan-{i}.png', data_dir=tmp_path)
+        originals.append(data)
+        refs.append(ref)
+    claim_refs(refs, tmp_path)
+    row, _ = source(tmp_path)
+    row['attachments'] = refs
+    sender = context(tmp_path)
+    retain_owner_message(sender, row)
+    quotes, error = quote_rows(sender, [format_address(row_address(row))])
+    assert not error
+    child = tmp_path / 'child'
+    child.mkdir()
+    write_relay(child, 'receiver', relay_id='image', note='NOT OWNER', quotes=quotes,
+                chat_id=1, teller_task_id='teller', canonical_root=tmp_path)
+    if changed is True:
+        (uploads_dir(tmp_path) / ref['upload']).write_bytes(b'changed')
+    receiver = context(child)
+    receiver.task_id = 'receiver'
+    _drain_incoming_messages([], queue.Queue(), child, 'receiver', None, set(), owner_ctx=receiver)
+    assert len(receiver._owner_directives) == 1
+    images = []
+    if changed:
+        with pytest.raises(ValueError):
+            _build_check_prompt('schedule_followup', {'objective': 'continue'}, ctx=receiver, image_parts=images)
+    else:
+        prompt = _build_check_prompt('schedule_followup', {'objective': 'continue'}, ctx=receiver, image_parts=images)
+        assert len(images) == 6
+        assert [base64.b64decode(image['image_url']['url'].split(',', 1)[1]) for image in images] == originals
+        from ouroboros.review_evidence_sections import materialize_owner_corpus_content
+        from ouroboros.post_task_synthesis import capture_task_inputs
+        captured = capture_task_inputs(receiver, {'id': 'receiver'}, child, [])['owner_requirements_and_decisions']
+        assert len(captured[0]['media']) == 6
+        replay = materialize_owner_corpus_content(captured[0], drive_root=child)
+        assert [base64.b64decode(image['image_url']['url'].split(',', 1)[1]) for image in replay[1:]] == originals
+        assert 'NOT OWNER' not in prompt

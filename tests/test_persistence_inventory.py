@@ -874,7 +874,7 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 425 -> 426: ``state/openrouter_models.json``, the OpenRouter catalogue every process adopts.
 # 427 -> 429: ``observability/calls/*/*``, scanned on the target before this pin moved, and
 # ``state/claudexor_route_health.json``, the engine's newest per-route failure shares (its section-2 row).
-EXPECTED_SCAN_PATHS = 429
+EXPECTED_SCAN_PATHS = 430  # owner-image-*.bin: native owner pixels retained in the existing actor CAS
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

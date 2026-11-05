@@ -328,6 +328,89 @@ def ensure_followup_owner_evidence(ctx: Any) -> None:
         _recover_followup_owner_evidence(ctx)
 
 
+def _legacy_mail_media(ctx: Any, root: pathlib.Path, task_id: str, rows: list, *, current: bool = False,
+                       retained: Any = None) -> list:
+    """Restore old capture's pixels from host mailbox identities, never rendered refs."""
+    from ouroboros.owner_mailbox import drain_owner_entries, KIND_OWNER_TEXT
+    from ouroboros.task_custody import own_child_drives
+    from ouroboros.artifacts import resolve_attachment_manifest
+
+    wanted = {row.get("msg_id") for row in rows if row.get("source") == "owner_mailbox" and not row.get("media")}
+    if not wanted and not current:
+        return rows
+    by_id = {}
+    raw_entries = []
+    places = [root, *own_child_drives(root, task_id)]
+    for drive in places:
+        status = {}
+        entries = drain_owner_entries(drive, task_id, include_acknowledged=True, _read_status=status)
+        if not status.get("complete"):
+            raise ValueError("legacy owner mailbox incomplete")
+        raw_entries.extend(entries)
+    if isinstance(retained, dict) and retained.get("rows"):
+        if retained.get("read_complete") is not True:
+            raise ValueError("retained owner mailbox incomplete")
+        import json
+        raw_entries.extend(json.loads(line) for line in retained["rows"])
+    for raw in raw_entries:
+        entries = [raw]
+        if raw.get("kind") == "relay_entry":
+            from ouroboros.owner_relay import _owner_row, owner_text, quote_content
+            from ouroboros.chat_chain import format_address, row_address
+            for quoted in raw.get("owner_rows") or []:
+                if not _owner_row(quoted):
+                    raise ValueError("legacy relay has no owner provenance")
+                mid = format_address(row_address(quoted))
+                if mid not in wanted and not current:
+                    continue
+                manifest = []
+                quote_content(ctx, raw, quoted, owner_text(quoted), manifest_out=manifest)
+                manifest = [{**item, "is_image": bool(item.get("is_image") or ref.get("kind") == "image")}
+                            for ref, item in zip(quoted.get("attachments") or [], manifest)]
+                entries.append({"kind": KIND_OWNER_TEXT, "msg_id": mid,
+                                "text": owner_text(quoted), "attachment_manifest": manifest})
+        for entry in entries:
+            mid = entry.get("msg_id")
+            kind = entry.get("kind") or KIND_OWNER_TEXT
+            if mid not in wanted and not (current and kind in {KIND_OWNER_TEXT, "quiz_answer"}):
+                continue
+            if kind not in {KIND_OWNER_TEXT, "quiz_answer"} or not isinstance(entry.get("text"), str):
+                raise ValueError("legacy owner mailbox identity is not owner text")
+            previous = by_id.get(mid)
+            if previous is not None and (previous.get("text"), previous.get("attachment_manifest")) != (
+                    entry.get("text"), entry.get("attachment_manifest")):
+                raise ValueError("legacy owner mailbox identity conflict")
+            by_id[mid] = entry
+    if current:
+        present = {row.get("msg_id") for row in rows}
+        rows.extend({"source": "owner_quiz_answer" if entry.get("kind") == "quiz_answer" else "owner_mailbox",
+                     "content": entry["text"], "msg_id": mid}
+                    for mid, entry in by_id.items() if mid not in present)
+    for row in rows:
+        entry = by_id.get(row.get("msg_id"))
+        if not entry or row.get("media"):
+            continue
+        for place in places:
+            try:
+                manifest = resolve_attachment_manifest(place, task_id, entry)
+                media = [{"path": item.get("abs_path") or "", "sha256": item.get("sha256") or "",
+                          "caption": str(item.get("label") or item.get("name") or ""),
+                          **({"unavailable": "legacy owner image not staged"} if item.get("status") != "staged" else {})}
+                         for item in manifest if item.get("is_image")]
+                if not media:
+                    break
+                from ouroboros.review_evidence_sections import materialize_owner_corpus_content, project_owner_corpus_row
+                row["media"] = media
+                native = materialize_owner_corpus_content(row, drive_root=place)
+            except (OSError, ValueError):
+                if place == places[-1] and not row.get("media"):
+                    raise
+                continue  # try this same owner's other store; never overwrite conflicting bytes
+            row["media"] = project_owner_corpus_row({**row, "content": native, "media": []}, ctx=ctx)["media"]
+            break
+    return rows
+
+
 def _recover_followup_owner_evidence(ctx: Any) -> None:
     """Repair the legacy missing-corpus carrier once per actor, not once per check.
 
@@ -361,11 +444,12 @@ def _recover_followup_owner_evidence(ctx: Any) -> None:
             inputs = _mapping(_mapping(result.get("review_evidence")).get("task_inputs"))
             carried = parent_meta.get("owner_corpus")
             complete = isinstance(carried, list) and not parent_meta.get("owner_corpus_gaps")
-            if inputs.get("owner_corpus_gaps") == [] and isinstance(inputs.get("owner_requirements_and_decisions"), list):
+            if isinstance(inputs.get("owner_requirements_and_decisions"), list):
                 carried = inputs["owner_requirements_and_decisions"]
-                complete = "owner_requirements_and_decisions" not in (inputs.get("unavailable_sections") or [])
-            if not complete and "owner_requirements_and_decisions" in (inputs.get("unavailable_sections") or []) \
-                    and not parent_meta.get("followup_origin"):
+                complete = inputs.get("owner_corpus_gaps") == [] and (
+                    "owner_requirements_and_decisions" not in (inputs.get("unavailable_sections") or []))
+            captured = isinstance(inputs.get("owner_requirements_and_decisions"), list)
+            if not complete and not captured and not isinstance(carried, list):
                 raise ValueError("owner corpus capture unavailable")
             rows = carried if isinstance(carried, list) else inputs.get("owner_requirements_and_decisions") or []
             if not isinstance(rows, list) or any(not isinstance(row, dict) or row.get("source") not in (
@@ -373,6 +457,9 @@ def _recover_followup_owner_evidence(ctx: Any) -> None:
                     for row in rows):
                 raise ValueError("owner corpus source malformed")
             rows = [dict(row) for row in rows if isinstance(row, dict) and row.get("source") in OWNER_SOURCES]
+            if not complete or not captured:
+                rows = _legacy_mail_media(ctx, root, task_id, rows, current=not captured,
+                                          retained=result.get("owner_mailbox"))
             groups.append((task_id, rows))
             if complete:
                 break  # a complete producer-carried boundary, including intentional absence
@@ -382,7 +469,8 @@ def _recover_followup_owner_evidence(ctx: Any) -> None:
                     raise ValueError("followup admission unproven")
                 task_id = str(origin.get("task_id") or "")
             else:
-                if parent_meta.get("owner_corpus_gaps"):
+                if parent_meta.get("owner_corpus_gaps") or inputs.get("owner_corpus_gaps") or (
+                        "owner_requirements_and_decisions" in (inputs.get("unavailable_sections") or [])):
                     raise ValueError("original owner evidence incomplete")
                 if not rows and not isinstance(inputs.get("owner_requirements_and_decisions"), list):
                     raise ValueError("original owner evidence unavailable")
