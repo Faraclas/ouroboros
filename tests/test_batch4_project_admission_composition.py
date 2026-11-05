@@ -92,6 +92,7 @@ def test_unreadable_registry_refuses_the_fresh_continue_without_spending_its_cla
     refused = admit_continuation("pred-1", action_nonce=NONCE)
     assert refused["ok"] is False and refused["error"] == "project_routing_fence_lookup_failed", refused
     assert not host.pending and not queue.ADMISSION_RESERVATIONS
+    assert "continued_by" not in load_task_result(host.root, "pred-1"), "an unreadable room cannot spend the claim"
     path.write_bytes(original)
     retried = admit_continuation("pred-1", action_nonce=NONCE)  # the same nonce retries its own claim
     assert retried["ok"] is True and retried["successor_task_id"] == refused["successor_task_id"]

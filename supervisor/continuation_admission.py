@@ -670,7 +670,8 @@ def admit_continuation(predecessor_task_id: str, *, action_nonce: str) -> Dict[s
         try:
             binding["project_admission"] = _project_room_basis(q, predecessor, binding)
         except (OSError, ValueError, RuntimeError) as exc:
-            return {"ok": False, "error": getattr(exc, "reason", "project_routing_fence_lookup_failed")}
+            return {"ok": False, "error": getattr(exc, "reason", "project_routing_fence_lookup_failed"),
+                    "successor_task_id": successor}
     binding["admission_token"] = f"continue:{binding_sha({k: v for k, v in binding.items() if k != 'admission_token'})[:40]}"
     if not claim:
         try:
