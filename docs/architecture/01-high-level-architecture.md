@@ -217,7 +217,7 @@ ouroboros/ — agent core and shared runtime (§6)
   project_handoff.py — the Main transfer receipt owed through the terminal outbox after a durable bind (§3 Project handoff receipts)
   project_dialogue.py — read-only chat lens; append-only `logs/chat_annotations.jsonl` (`ROUTING_RECEIPT_FIELDS`) routes only `needs_manual_target` cards; `routing_refusal_cause` (§3 Chat and Projects)
   room_membership.py — canonical stored-row membership for history and inventory; a place row belongs only to its place room (§3 Chat and Projects)
-  owner_words.py — the owner's words that caused a work tree, rendered verbatim for children, sessions and reviewers
+  owner_words.py — owner corpus and source-bound follow-up recovery (§6)
   project_lease.py — one-writer-per-project lease in `assign_tasks`; same-project swarms exempt (§6 Project registry and lease)
   context.py — Main context assembly and the Available-subagents catalog (§6)
   context_input_selection.py — declared-source composition and first/latest usable author-input exhibits, distinct from current criteria (§6 Selected first-input sources)

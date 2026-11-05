@@ -207,3 +207,46 @@ def test_mixed_hold_reclassification_invalidates_old_restore_identity(world):
     outcome = restore(root, registered['id'], 'combined-old-id')
     assert outcome['status'] == 'stale_hold'
     assert row(root, registered['id'])['followup_hold'] == stop_hold
+
+
+def test_followup_opening_owner_pixels_survive_real_continue(tmp_path, monkeypatch):
+    import base64
+    import io
+    from PIL import Image
+    from ouroboros.tools.tool_context import ToolContext
+    from ouroboros.loop_messages import _initialize_owner_directives
+    from ouroboros.safety import _build_check_prompt
+    from tests.test_schedule_followup import _followup
+    from tests.test_owner_continue import _interrupted, _install_queue
+    from supervisor.continuation_admission import admit_continuation
+    queue, _state, workers = _install_queue(tmp_path, monkeypatch)
+    repo = tmp_path / 'repo'
+    repo.mkdir(exist_ok=True)
+    actor = ToolContext(repo_dir=repo, drive_root=tmp_path, task_id='ancestor',
+                        task_metadata={'root_task_id': 'ancestor'})
+    pixels = io.BytesIO()
+    Image.new('RGB', (8, 8), (12, 34, 56)).save(pixels, format='PNG')
+    raw = pixels.getvalue()
+    actor._owner_directives = [{'source': 'initial_user', 'msg_id': 'ancestral-opening', 'content': [
+        {'type': 'text', 'text': 'Follow this visual plan; do not publish'},
+        {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + base64.b64encode(raw).decode()}}]}]
+    assert _followup(actor, objective='Task-authored follow-up').startswith('FOLLOWUP_SCHEDULED')
+    [record] = queue.list_scheduled_tasks(tmp_path)['tasks']
+    task = queue._task_from_schedule(record)
+    # Freeze the actual producer's task under the existing accepted-occurrence fixture.
+    scheduled = receipt()['schedule_admission']
+    scheduled['task'].update(task, id='pred-1')
+    scheduled['task']['metadata'].update(schedule_occurrence={'schedule_id': 's1', 'token': 'token'})
+    _interrupted(tmp_path, reason_code='interrupted_retry_lost', schedule_admission=scheduled,
+                 metadata=task['metadata'], origin_message_text='', origin_message_ref={})
+    admitted = admit_continuation('pred-1', action_nonce='image-followup-continue')
+    assert admitted['ok'], admitted
+    successor = workers.PENDING[-1]
+    receiver = ToolContext(repo_dir=repo, drive_root=tmp_path, task_id=successor['id'],
+                          task_metadata=successor['metadata'])
+    _initialize_owner_directives(receiver, [{'role': 'user', 'content': successor['text']}])
+    images = []
+    prompt = _build_check_prompt('tell_task', {'note': 'status'}, ctx=receiver, image_parts=images)
+    assert 'do not publish' in prompt
+    assert len(images) == 1 and base64.b64decode(images[0]['image_url']['url'].split(',', 1)[1]) == raw
+    assert all(row['content'] != 'Task-authored follow-up' for row in successor['metadata']['owner_corpus'])

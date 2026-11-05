@@ -672,6 +672,9 @@ def _register_followup(ctx: ToolContext, task_id: str, drive_root: Any,
             **({"chat_id": source_chat_id} if source_chat_id not in (None, "") else {}),
         },
     }
+    from ouroboros.tools.control_routing import _attach_drafted_objective
+
+    _attach_drafted_objective(ctx, record["task"]["metadata"])
     # The host writer persists this origin separately; the template is not its
     # authority. Only independent work uses the root-start exception and cause.
     record["task"]["metadata"].update(consciousness_origin_metadata(
@@ -704,7 +707,9 @@ def _register_followup(ctx: ToolContext, task_id: str, drive_root: Any,
             writer_kind=work_kind(getattr(ctx, "task_metadata", None)),
             writer_metadata={**(getattr(ctx, "task_metadata", None) or {}), "task_id": str(getattr(ctx, "task_id", "") or "")},
             reason=f"follow-up registered by task {task_id}",
-            host_followup={"followup_origin": origin, "followup_relation": relation},
+            host_followup={"followup_origin": origin, "followup_relation": relation,
+                           "owner_corpus": record["task"]["metadata"].pop("owner_corpus", []),
+                           "owner_corpus_gaps": record["task"]["metadata"].pop("owner_corpus_gaps", [])},
             # Host-authored provenance of a NAMED continuation (never payload/prose):
             # it keeps a consciousness follow-up out of the spontaneous-start cap.
             continuation_of={"task_id": task_id, "root_task_id": str(root_task_id or "") or task_id})

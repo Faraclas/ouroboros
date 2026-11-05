@@ -79,11 +79,12 @@ def _attach_drafted_objective(ctx: ToolContext, evt: Dict[str, Any]) -> None:
     one, and a suppressed stamp is owner input that the door did not log.
 
     The corpus is persisted with the start (its receipt, the queue snapshot, the running
-    record), so each row is the retained owner corpus's text (``_owner_content_projection``):
-    the owner's words verbatim and an image as its reference beside the path of its
-    retained original, never its base64.
+    record). Persist text and verified media references, never inline pixels;
+    native checkers materialize the retained originals at their receiving boundary.
     """
-    from ouroboros.review_evidence_sections import _owner_content_projection
+    from ouroboros.review_evidence_sections import project_owner_corpus_row
+    from ouroboros.owner_words import ensure_followup_owner_evidence
+    ensure_followup_owner_evidence(ctx)
 
     evt["objective_author"] = {"kind": "task", "task_id": str(getattr(ctx, "task_id", "") or "")}
     if not (evt.get("source_ref") or evt.get("origin_suppressed")):
@@ -92,7 +93,11 @@ def _attach_drafted_objective(ctx: ToolContext, evt: Dict[str, Any]) -> None:
                   if isinstance(row, dict) and row.get("source") in {
                       "owner_mailbox", "owner_quiz_answer", "origin_message", "owner_corpus", "direct_incoming"}]
     if evt.get("source_text") and not any(row.get("source") == "origin_message" for row in owner_rows):
-        owner_rows.insert(0, {"source": "origin_message", "content": evt["source_text"]})
+        opening = {"source": "origin_message", "content": evt["source_text"]}
+        for row in getattr(ctx, "_owner_directives", None) or []:
+            if isinstance(row, dict) and row.get("source") == "initial_user":
+                opening.setdefault("media", []).extend(project_owner_corpus_row(row, ctx=ctx).get("media") or [])
+        owner_rows.insert(0, opening)
     elif not evt.get("source_text"):
         # A suppressed (never-logged) origin carries no text; the owner's words
         # then live only in this run's first row, and ONLY under the host's
@@ -100,8 +105,10 @@ def _attach_drafted_objective(ctx: ToolContext, evt: Dict[str, Any]) -> None:
         # (``initial_text``) is never laundered into owner authority.
         owner_rows[:0] = [dict(row) for row in (getattr(ctx, "_owner_directives", None) or [])
                           if isinstance(row, dict) and row.get("source") == "initial_user"]
-    rows = [{**row, "content": _owner_content_projection(row.get("content"))} for row in owner_rows]
+    rows = [project_owner_corpus_row(row, ctx=ctx) for row in owner_rows]
     evt["owner_corpus"] = [row for row in rows if row["content"].strip()]
+    if getattr(ctx, "_owner_evidence_gaps", None):
+        evt["owner_corpus_gaps"] = list(ctx._owner_evidence_gaps)
 
 
 def _inherited_project_scope(ctx: ToolContext) -> str:

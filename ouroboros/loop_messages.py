@@ -213,6 +213,8 @@ def _record_owner_directive(
     content: Any,
     msg_id: str = "",
     origin: Optional[Dict[str, str]] = None,
+    media: Optional[List[Dict[str, Any]]] = None,
+    owner_text: str = "",
 ) -> None:
     """Retain the task-local owner corpus across transcript compaction.
 
@@ -247,6 +249,10 @@ def _record_owner_directive(
     except (TypeError, ValueError):
         frozen_content = str(content)
     row = {"source": str(source or "owner"), "content": frozen_content}
+    if owner_text and content != owner_text:
+        row["owner_text"] = owner_text  # exact mailbox words, distinct from host image framing
+    if media:
+        row["media"] = json.loads(json.dumps(media))
     if stable_id:
         row["msg_id"] = stable_id
     row.update({key: str(value) for key, value in (origin or {}).items() if value})
@@ -265,11 +271,16 @@ def _initialize_owner_directives(ctx: Any, messages: List[Dict[str, Any]]) -> No
     label is read by the models that judge the corpus (acceptance, safety, the
     post-task synthesis), never branched on by the host.
     """
+    metadata = getattr(ctx, "task_metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    if metadata.get("owner_corpus_gaps"):
+        ctx._owner_evidence_gaps = list(dict.fromkeys([
+            *(getattr(ctx, "_owner_evidence_gaps", None) or []), *metadata["owner_corpus_gaps"]]))
+    from ouroboros.owner_words import ensure_followup_owner_evidence
+    ensure_followup_owner_evidence(ctx)  # recover legacy inputs before the first solve's source identity
     existing = getattr(ctx, "_owner_directives", None)
     if isinstance(existing, list) and existing:
         return
-    metadata = getattr(ctx, "task_metadata", None)
-    metadata = metadata if isinstance(metadata, dict) else {}
     from ouroboros.owner_quiz import late_answer_ref, late_answer_owner_text
     late = late_answer_ref(metadata.get("late_answer"))
     answered = ((late or {}).get("answer_snapshot") or {}).get("quiz") or {}
@@ -289,7 +300,8 @@ def _initialize_owner_directives(ctx: Any, messages: List[Dict[str, Any]]) -> No
                     "owner_mailbox", "owner_quiz_answer", "origin_message", "owner_corpus", "direct_incoming",
                     "initial_user"}:  # the routing turn's own stamped owner row (a suppressed origin)
                 _loop()._record_owner_directive(
-                    ctx, source=str(row["source"]), content=row.get("content"),
+                    ctx, source=str(row["source"]), content=row.get("content"), media=row.get("media"),
+                    owner_text=row.get("owner_text", ""),
                     msg_id=str(row.get("msg_id") or ""),
                     origin={key: row[key] for key in ("source_task_id", "relayed_from_task_id", "quiz_id") if row.get(key)},
                 )

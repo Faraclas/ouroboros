@@ -215,11 +215,15 @@ def test_a_wake_started_root_continues_with_the_cards_it_started_from(tmp_path, 
     assert restored["metadata"]["origin_message_absent"] is True
 
 
-def test_the_producer_records_its_start_sources_where_every_writer_persists_them(tmp_path, monkeypatch):
+@pytest.mark.parametrize("incomplete", [False, True])
+def test_the_producer_records_its_start_sources_where_every_writer_persists_them(tmp_path, monkeypatch, incomplete):
     """The scheduled receipt, the snapshot-restored row and the running record keep the
     producer's fact, the drafter and the exact corpus with each card's identity."""
     from ouroboros.task_results import load_task_result
 
+    if incomplete:
+        monkeypatch.setattr("ouroboros.owner_words.ensure_followup_owner_evidence",
+                            lambda ctx: setattr(ctx, "_owner_evidence_gaps", ["source temporarily unavailable"]))
     queue, workers, bridge, root, wake = _wake_started_root(tmp_path, monkeypatch)
     rid = root["id"]
     expected = [{"source": "owner_quiz_answer", "content": "1. Yes, start it", "msg_id": f"quiz_answer:{WAKE}:q-start",
@@ -238,6 +242,11 @@ def test_the_producer_records_its_start_sources_where_every_writer_persists_them
     assert restored["metadata"]["owner_corpus"] == expected and restored["metadata"]["origin_message_absent"] is True
     stored = load_task_result(tmp_path, rid)
     assert stored["metadata"]["owner_corpus"] == expected and stored["metadata"]["origin_message_absent"] is True
+    for carrier in (root["metadata"], receipt["metadata"], restored["metadata"], stored["metadata"]):
+        assert bool(carrier.get("owner_corpus_gaps")) is incomplete
+    if incomplete:
+        from ouroboros.owner_continue import owner_sources
+        assert "source temporarily unavailable" in owner_sources(tmp_path, stored, rid)["gaps"]
 
 
 def test_the_second_hop_keeps_the_start_basis_and_the_drafted_objective(tmp_path, monkeypatch):
@@ -520,7 +529,10 @@ def test_an_owner_screenshot_sent_while_main_runs_survives_the_start_the_restart
     turn = types.SimpleNamespace(task_id="owner-turn", task_attempt=1, drive_root=tmp_path,
                                  budget_drive_root=str(tmp_path), task_metadata=dict(metadata),
                                  _owner_directives=[], last_owner_delivery=None)
-    messages = [{"role": "user", "content": words}]
+    from ouroboros.context import build_user_content
+    opening_content = build_user_content({"id": "owner-turn", "drive_root": tmp_path, "text": words,
+        "image_base64": base64.b64encode(shot).decode("ascii"), "image_mime": "image/png"})
+    messages = [{"role": "user", "content": opening_content}]
     _initialize_owner_directives(turn, messages)
     agent = object.__new__(OuroborosAgent)
     agent._incoming_messages = stdlib_queue.Queue()
@@ -542,7 +554,12 @@ def test_an_owner_screenshot_sent_while_main_runs_survives_the_start_the_restart
             events.append(copy.deepcopy(evt)), _handle_promote_chat_to_task(evt, sup))))
     assert _start_task(tool, "Research the market", title="Market research", workspace="none").startswith("OK")
     [root] = workers.PENDING
-    expected = [{"source": "origin_message", "content": words}, {"source": "direct_incoming", "content": projection}]
+    from ouroboros.review_evidence_sections import project_owner_corpus_row
+    opening_media = project_owner_corpus_row(turn._owner_directives[0], ctx=turn)["media"]
+    expected = [{"source": "origin_message", "content": words, "media": opening_media},
+                project_owner_corpus_row(recorded, ctx=turn)]
+    assert expected[1]["media"][0]["path"] == str(original)
+    assert expected[1]["media"][0]["sha256"] == __import__("hashlib").sha256(shot).hexdigest()
     receipt = load_task_result(tmp_path, root["id"])
     assert receipt["status"] == "scheduled"
     assert queue.persist_queue_snapshot(reason="test_owner_screenshot") is True
@@ -569,6 +586,13 @@ def test_an_owner_screenshot_sent_while_main_runs_survives_the_start_the_restart
     assert [(row["source"], row["content"]) for row in successor["metadata"]["owner_corpus"]] == [
         ("origin_message", words), ("direct_incoming", projection)]
     _no_inline_pixels(successor)
+    from ouroboros.safety import _build_check_prompt
+    receiver = types.SimpleNamespace(task_metadata=successor["metadata"], drive_root=tmp_path, budget_drive_root=tmp_path)
+    _initialize_owner_directives(receiver, [{"role": "user", "content": successor["text"]}])
+    native = []
+    _build_check_prompt("tell_task", {"note": "report"}, ctx=receiver, image_parts=native)
+    assert len(native) == 2, "opening and later owner screenshots both reach Safety after real Continue"
+    assert all(base64.b64decode(b["image_url"]["url"].split(",", 1)[1]) == shot for b in native)
 
 
 def test_a_drafted_start_keeps_an_owner_mailbox_image_by_reference_through_restart_and_continue(
@@ -589,7 +613,9 @@ def test_a_drafted_start_keeps_an_owner_mailbox_image_by_reference_through_resta
     assert original.read_bytes() == shot
     projection = _owner_content_projection(recorded["content"])
     assert SHOT_WORDS in projection and str(original) in projection
-    row = {"source": "owner_mailbox", "content": projection, "msg_id": "owner-shot-1803"}
+    from ouroboros.review_evidence_sections import project_owner_corpus_row
+    row = project_owner_corpus_row(recorded, ctx=wake)
+    assert row["media"][0]["sha256"] == __import__("hashlib").sha256(shot).hexdigest()
     assert root["metadata"]["origin_message_absent"] is True and row in root["metadata"]["owner_corpus"]
     _run_interrupted_by_restart(tmp_path, monkeypatch, queue, workers, bridge, root, own_card=False)
     stored = load_task_result(tmp_path, root["id"])
@@ -620,12 +646,15 @@ def test_the_producer_records_owner_images_by_reference_in_each_opening_state():
     assert projection.startswith(SHOT_WORDS) and "[image ref sha256:" in projection and "caption=chart" in projection
     answer = {"source": "owner_quiz_answer", "content": "1. Yes, start it", "msg_id": "quiz_answer:w:q",
               "source_task_id": "w", "quiz_id": "q"}
-    later = [{"source": "owner_mailbox", "content": projection, "msg_id": "m-2"}, answer]
+    from ouroboros.review_evidence_sections import project_owner_corpus_row
+    media = project_owner_corpus_row({"content": pixels})["media"]
+    assert media[0]["unavailable"]  # this deliberately synthetic image has no retained original
+    later = [{"source": "owner_mailbox", "content": projection, "msg_id": "m-2", "media": media}, answer]
     for metadata, first, opening in (
             ({}, "initial_text", []),
-            ({"origin_suppressed": True}, "initial_user", [{"source": "initial_user", "content": projection}]),
+            ({"origin_suppressed": True}, "initial_user", [{"source": "initial_user", "content": projection, "media": media}]),
             ({"origin_message_ref": {"chat_id": 1, "client_message_id": "m"}, "origin_message_text": "words"},
-             "initial_user", [{"source": "origin_message", "content": "words"}])):
+             "initial_user", [{"source": "origin_message", "content": "words", "media": media}])):
         # The run's first row is labelled as ``_initialize_owner_directives`` labels it for this opening.
         directives = [{"source": first, "content": copy.deepcopy(pixels)},
                       {"source": "owner_mailbox", "content": copy.deepcopy(pixels), "msg_id": "m-2"}, dict(answer),
@@ -649,3 +678,53 @@ def test_a_raw_image_row_in_a_start_corpus_stays_a_named_gap(tmp_path, monkeypat
     _edit_result(tmp_path, root["id"], lambda row: row["metadata"]["owner_corpus"].append(
         {"source": "direct_incoming", "content": raw}))
     _refused(tmp_path, workers, root["id"], "start_owner_corpus_row_malformed")
+
+
+@pytest.mark.parametrize('fault', ['', 'rival_text', 'peer', 'malformed_text', 'rival_media'])
+def test_running_root_mailbox_screenshot_keeps_exact_identity_and_pixels_on_continue(tmp_path, monkeypatch, fault):
+    from ouroboros.artifacts import stage_task_attachments
+    from ouroboros.owner_mailbox import write_owner_message
+    from ouroboros.post_task_synthesis import capture_task_inputs
+    from ouroboros.task_results import write_task_result
+    from ouroboros.loop_messages import _initialize_owner_directives
+    from ouroboros.safety import _build_check_prompt
+    from supervisor.continuation_admission import admit_continuation
+    queue, workers, bridge, root, _wake = _wake_started_root(tmp_path, monkeypatch)
+    rid, shot = root['id'], _png()
+    path = tmp_path / 'root-shot.png'
+    path.write_bytes(shot)
+    manifest = stage_task_attachments(tmp_path, rid, [{'path': str(path)}])
+    assert write_owner_message(tmp_path, SHOT_WORDS, rid, msg_id='root-shot', attachment_manifest=manifest)
+    actor = _drain(tmp_path, rid, root['metadata'], root['text'])
+    capture = capture_task_inputs(actor, root, tmp_path, [])
+    rows = [r for r in capture['owner_requirements_and_decisions'] if r.get('msg_id') == 'root-shot']
+    assert len(rows) == 1 and rows[0]['owner_text'] == SHOT_WORDS
+    if fault == 'rival_text':
+        rows[0]['owner_text'] = 'Different actual owner words'
+    elif fault == 'peer':
+        rows[0]['source'] = 'principal_task_message'
+    elif fault == 'malformed_text':
+        rows[0]['owner_text'] = ['not the producer string']
+    write_task_result(tmp_path, rid, 'scheduled', review_evidence={'task_inputs': capture})
+    _run_interrupted_by_restart(tmp_path, monkeypatch, queue, workers, bridge, root, own_card=False)
+    if fault == 'rival_media':
+        prior = copy.deepcopy(rows[0])
+        prior['media'][0]['sha256'] = '0' * 64
+        _edit_result(tmp_path, rid, lambda row: row['metadata'].update(owner_corpus=[prior]))
+    result = admit_continuation(rid, action_nonce='root-mailbox-image-continue')
+    if fault:
+        assert not result['ok'], result
+        assert ('owner_corpus_row_malformed' if fault == 'malformed_text' else 'owner_message_identity_conflict') in str(result)
+        assert not workers.PENDING
+        return
+    assert result['ok'], result
+    successor = workers.PENDING[-1]
+    corpus = [r for r in successor['metadata']['owner_corpus'] if r.get('msg_id') == 'root-shot']
+    assert len(corpus) == 1 and corpus[0]['content'] == SHOT_WORDS and corpus[0]['media']
+    _no_inline_pixels(successor)
+    receiver = types.SimpleNamespace(task_id=successor['id'], drive_root=tmp_path,
+                                     budget_drive_root=tmp_path, task_metadata=successor['metadata'])
+    _initialize_owner_directives(receiver, [{'role': 'user', 'content': successor['text']}])
+    images = []
+    _build_check_prompt('tell_task', {'note': 'status'}, ctx=receiver, image_parts=images)
+    assert len(images) == 1 and base64.b64decode(images[0]['image_url']['url'].split(',', 1)[1]) == shot

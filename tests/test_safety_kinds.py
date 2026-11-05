@@ -39,7 +39,7 @@ def test_confirmed_addressed_request_mints_only_an_independent_owner_root(addres
 def test_caller_kind_selects_level_for_steering_and_root_minting(supervisor):
     h = supervisor
     h.modes.update(owner="off", consciousness="full")
-    checked = ["forward_to_worker", "tell_task", "resume_task", "continue_task", "pause_task", "start_task",
+    checked = ["resume_task", "continue_task", "pause_task", "start_task",
                "schedule_followup", "toggle_consciousness", "configure_presence"]
     for name in checked:
         h.module.check_safety(name, {}, ctx=h.ctx)
@@ -48,7 +48,7 @@ def test_caller_kind_selects_level_for_steering_and_root_minting(supervisor):
     for name in checked:
         h.module.check_safety(name, {}, ctx=h.ctx)
     assert len(h.calls) == len(checked)
-    for name in ["schedule_subagent", "delegate_start", "delegate_message"]:
+    for name in ["schedule_subagent", "delegate_start", "delegate_message", "tell_task", "forward_to_worker"]:
         h.module.check_safety(name, {}, ctx=h.ctx)
     h.module.check_safety("manage_schedules", {"action": "list"}, ctx=h.ctx)
     assert len(h.calls) == len(checked)

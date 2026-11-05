@@ -273,6 +273,13 @@ def valid_start(start: Any) -> bool:
                             for key in ("content", "msg_id", "source_task_id", "quiz_id")) for row in answers))
 
 
+def _owner_carrier_fields_valid(row: Dict[str, Any]) -> bool:
+    """Optional fields the owner-corpus producer writes: raw words and media mappings."""
+    return (("owner_text" not in row or isinstance(row["owner_text"], str) and bool(row["owner_text"]))
+            and ("media" not in row or isinstance(row["media"], list)
+                 and all(isinstance(ref, dict) for ref in row["media"])))
+
+
 def owner_sources(drive_root: Any, result: Dict[str, Any], task_id: str) -> Dict[str, Any]:
     """The predecessor's owner sources, authored note pointer and peer context, apart.
 
@@ -295,6 +302,8 @@ def owner_sources(drive_root: Any, result: Dict[str, Any], task_id: str) -> Dict
         return value
 
     metadata = container(result, "metadata", dict, "owner_source_metadata_malformed")
+    from ouroboros.owner_words import owner_evidence_gaps
+    gaps.extend(owner_evidence_gaps(result))
     continuation = container(metadata, "continuation", dict, "chained_owner_source_malformed")
     chained = container(continuation, "owner_sources", dict, "chained_owner_source_malformed")
     from ouroboros.schedule_continuation import admission_basis, valid_basis
@@ -343,19 +352,21 @@ def owner_sources(drive_root: Any, result: Dict[str, Any], task_id: str) -> Dict
         for row in container(continuation if key == "peer_context" else chained, key, list,
                              "chained_owner_source_malformed"):
             if not (isinstance(row, dict) and isinstance(row.get(text_key), str)
-                    and all(isinstance(row.get(field, ""), str) for field in (source_key, *ROW_IDS))):
+                    and all(isinstance(row.get(field, ""), str) for field in (source_key, *ROW_IDS))
+                    and _owner_carrier_fields_valid(row)):
                 gaps.append("chained_owner_source_malformed")
                 continue
             if sources is not None and row.get(source_key, "") not in sources:
                 gaps.append("owner_source_provenance_unknown")
                 continue
             msg_id, text = row.get("msg_id", ""), row[text_key]
+            identity = (row.get("owner_text") or text) if target is later else text
             if msg_id and msg_id in seen:
-                if seen[msg_id] != (text, target is later):
+                if seen[msg_id] != (identity, target is later):
                     gaps.append("owner_message_identity_conflict")
                 continue
             if msg_id:
-                seen[msg_id] = (text, target is later)
+                seen[msg_id] = (identity, target is later)
             target.append(dict(row))
     late_framed: set = set()  # ids whose exact row carries typed late-answer provenance
     quizzes = result.get("owner_quiz") if isinstance(result.get("owner_quiz"), dict) else {}
@@ -373,20 +384,39 @@ def owner_sources(drive_root: Any, result: Dict[str, Any], task_id: str) -> Dict
                 gaps.append(malformed)
                 continue
             msg_id, source, text = str(row.get("msg_id") or ""), str(row.get("source") or ""), row["content"]
+            if not _owner_carrier_fields_valid(row):
+                gaps.append(malformed)
+                continue
             if source not in CORPUS_INITIAL_SOURCES | CORPUS_OWNER_SOURCES | CORPUS_TASK_SOURCES:
                 gaps.append("owner_source_provenance_unknown")
                 continue
             if source in CORPUS_INITIAL_SOURCES:
-                continue  # the run's first text is the original's own projection
+                if original is None and (schedule or start) and source in {"initial_user", "origin_message"}:
+                    # A scheduled/task-authored opening carries ancestral OWNER rows;
+                    # its own drafted first text is never initial_user/origin_message.
+                    source = "owner_corpus"
+                else:
+                    if original is not None and row.get("media"):
+                        original["media"] = copy.deepcopy(row["media"])
+                    continue  # this run's own first-text projection, not a later message
+            identity = row.get("owner_text", text) if source in CORPUS_OWNER_SOURCES else text
             if msg_id and msg_id in seen:
                 if (seen[msg_id][1] != (source in CORPUS_OWNER_SOURCES) or
-                        (seen[msg_id][0] != text and msg_id not in late_framed)):
+                        (seen[msg_id][0] != identity and msg_id not in late_framed)):
                     gaps.append("owner_message_identity_conflict")
+                elif row.get("media") and source in CORPUS_OWNER_SOURCES:
+                    existing = next((r for r in later if r.get("msg_id") == msg_id), None)
+                    if existing is not None:
+                        prior = existing.get("media")
+                        if prior and [r.get("sha256") for r in prior] != [r.get("sha256") for r in row["media"]]:
+                            gaps.append("owner_message_identity_conflict")
+                        else:
+                            existing["media"] = copy.deepcopy(row["media"])
                 continue
             if not msg_id and text in texts[source in CORPUS_OWNER_SOURCES]:
                 continue
             if msg_id:
-                seen[msg_id] = (text, source in CORPUS_OWNER_SOURCES)
+                seen[msg_id] = (identity, source in CORPUS_OWNER_SOURCES)
             texts[source in CORPUS_OWNER_SOURCES].add(text)
             if source in CORPUS_OWNER_SOURCES:
                 ids = {key: row[key] for key in ROW_IDS[1:] if row.get(key)}
@@ -394,6 +424,8 @@ def owner_sources(drive_root: Any, result: Dict[str, Any], task_id: str) -> Dict
                 card = (answered_card(quizzes.get(ids.get("quiz_id", "")), text)
                         if source == "owner_quiz_answer" and ids.get("source_task_id") == task_id else None)
                 later.append({"source": source, "content": text, "msg_id": msg_id, **ids,
+                              **({"owner_text": row["owner_text"]} if row.get("owner_text") else {}),
+                              **({"media": row["media"]} if row.get("media") else {}),
                               **({"card": card} if card else {})})
             elif source in CORPUS_TASK_SOURCES:
                 peers.append({"msg_id": msg_id, "ts": "", "source_task_id": str(row.get("source_task_id") or ""),
@@ -541,11 +573,14 @@ def owner_corpus_rows(sources: Dict[str, Any]) -> List[Dict[str, Any]]:
     with their typed ids, the start's answers first; a card's question never enters it."""
     rows: List[Dict[str, Any]] = []
     if isinstance(sources.get("original"), dict) and str(sources["original"].get("content") or "").strip():
-        rows.append({"source": "origin_message", "content": sources["original"]["content"]})
+        rows.append({"source": "origin_message", "content": sources["original"]["content"],
+                     **({"media": sources["original"]["media"]} if sources["original"].get("media") else {})})
     start = sources.get("start") if isinstance(sources.get("start"), dict) else {}
     for row in [*(start.get("answers") or []), *(sources.get("later") or [])]:
         if isinstance(row, dict) and row.get("content"):
             rows.append({"source": row.get("source") or "owner_mailbox", "content": row["content"],
+                         **({"owner_text": row["owner_text"]} if row.get("owner_text") else {}),
+                         **({"media": row["media"]} if row.get("media") else {}),
                          **{key: row[key] for key in ROW_IDS if row.get(key)}})
     return rows
 

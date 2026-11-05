@@ -554,7 +554,7 @@ def ensure_control_task_result(task_id: str) -> Dict[str, Any]:
             "budget_drive_root", "queued_at", "admitted_dispatch", "_admission_owner_token",
             "origin_message_text", "origin_message_ref", "objective", "title", "suggested_name",
             "original_task_id", "timeout_retry_from", "deadline_at", "execution_timeout_sec", "root_cost_ceiling_usd",
-            "billing_group", "task_constraint", "objective_author", "owner_corpus", "task_group_id", "task_group",
+            "billing_group", "task_constraint", "objective_author", "owner_corpus", "owner_corpus_gaps", "task_group_id", "task_group",
             "reasoning_effort",
         ) if key in task}
         fields["root_task_id"] = resolve_task_lineage(task_id, **{

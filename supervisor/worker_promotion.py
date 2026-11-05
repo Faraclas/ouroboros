@@ -378,6 +378,7 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
         **({"reasoning_effort": evt["reasoning_effort"]} if evt.get("reasoning_effort") else {}),  # explicit start only
         "objective_author": dict(evt.get("objective_author") or {}),
         "owner_corpus": list(evt.get("owner_corpus") or []),
+        **({"owner_corpus_gaps": list(evt["owner_corpus_gaps"])} if evt.get("owner_corpus_gaps") else {}),
         "_require_unique_task_id": True,
         "_require_worker_pool": True,
         "_admission_token": admission_token,
@@ -444,6 +445,8 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
         # the running record and a control seed already persist.
         task.setdefault("metadata", {}).update(objective_author=dict(task["objective_author"]),
                                                owner_corpus=[dict(row) for row in task["owner_corpus"]])
+        if task.get("owner_corpus_gaps"):
+            task["metadata"]["owner_corpus_gaps"] = list(task["owner_corpus_gaps"])
     if isinstance(evt.get("predecessor_authority_source"), dict):
         task["predecessor_authority_source"] = dict(evt["predecessor_authority_source"])
     # Owner Surface Fact: the promoting turn's sending-surface fact lands in

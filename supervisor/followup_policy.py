@@ -28,7 +28,7 @@ from contextlib import ExitStack, contextmanager
 STOP_SOURCES = frozenset({"http_single", "http_cascade", "http_graceful",
                           "owner", "owner_stop", "agent_tool", "owner_restart"})
 HOST_FIELDS = ("followup_origin", "followup_relation", "followup_hold",
-               "followup_released", "followup_wait")
+               "followup_released", "followup_wait", "owner_corpus", "owner_corpus_gaps")
 _CONTROL_DEPTH = threading.local()
 
 
@@ -422,6 +422,10 @@ def bind_task(root, task, record):
     if origin:
         meta.update(origin_task_id=origin["task_id"], origin_root_task_id=origin["root_task_id"])
         meta["objective_author"] = {"kind": "task", "task_id": origin["task_id"]}
+    if isinstance(record.get("owner_corpus"), list):
+        meta["owner_corpus"] = copy.deepcopy(record["owner_corpus"])
+    if record.get("owner_corpus_gaps"):
+        meta["owner_corpus_gaps"] = copy.deepcopy(record["owner_corpus_gaps"])
     meta["followup_origin"] = origin
     meta["followup_relation"] = copy.deepcopy(record.get("followup_relation") or {"kind": relation_kind(record)})
     if relation_kind(record) != "related":

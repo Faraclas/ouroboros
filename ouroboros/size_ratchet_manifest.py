@@ -133,6 +133,7 @@ BAND_PATHS = {
     "ouroboros/llm_claudexor.py": "One model-operation owner keeps request, dispatch, result custody and content-free activity observations together; no second polling or state owner.",
     "ouroboros/loop_delivery.py": "Shrank from 1600 to 1347 lines when the result-review fold deleted acceptance delivery; the final-delivery step (candidate, control, admission seal, result review hook) stays one owner.",
     "ouroboros/loop_forced_finalization.py": "Forced-finalization rail of the v7 L-B loop split: one cohesive owner for the forced/orphan/absorption path, moved byte-preserving from loop.py (D01 lane).",
+    "ouroboros/loop_messages.py": "The existing task-loop message owner retains owner-source identity, media and gap carriers alongside transcript initialization; no second transport or state owner.",
     "ouroboros/loop_model_call.py": "Fallback waits retain the exact quota-refusing route across failures without inventing a second router.",
     "ouroboros/loop_round_limits.py": "The existing loop-control owner publishes authored views and actual-refusal recovery through one transcript publication seam.",
     "ouroboros/loop_transport.py": "Entered the band from 993 lines with #1369 provider-message presentation: typed provider sentences, explicit shortening and engine/provider attribution share the existing transport outcome owner. No new retry or terminal authority. Shrink-only from here.",

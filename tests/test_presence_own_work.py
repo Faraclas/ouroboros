@@ -338,8 +338,10 @@ def test_presence_cancel_requests_own_pending_work_from_another_thread(tmp_path)
     assert load_task_result(tmp_path, "queued-thread")["status"] == "scheduled"
 
 
-def test_selected_cancel_and_forward_refuse_foreign_work_before_any_effect(tmp_path, monkeypatch):
-    monkeypatch.setenv("OUROBOROS_CONSCIOUSNESS_SAFETY_MODE", "off")
+@pytest.mark.parametrize('safety_mode', ['off', 'full'])
+def test_selected_cancel_and_forward_refuse_foreign_work_before_any_effect(tmp_path, monkeypatch, safety_mode):
+    monkeypatch.setenv("OUROBOROS_CONSCIOUSNESS_SAFETY_MODE", safety_mode)
+    monkeypatch.setattr('ouroboros.safety._run_llm_check', lambda *a, **k: pytest.fail('internal mail uses host checks'))
     from ouroboros.tools.join_ledger import _cancel_task
     from ouroboros.owner_mailbox import drain_owner_entries
 

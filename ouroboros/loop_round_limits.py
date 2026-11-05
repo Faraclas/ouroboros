@@ -281,6 +281,7 @@ def _drain_incoming_messages(
                 owner_ctx,
                 source="owner_mailbox",
                 content=_owner_content(entry, drive_root, task_id),
+                owner_text=dmsg,
                 msg_id=str(entry.get("msg_id") or ""),
             )
             _stamp_owner_delivery(

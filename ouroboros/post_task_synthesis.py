@@ -101,7 +101,13 @@ def capture_task_inputs(ctx: Any, task: dict, drive_root: Any, receipts: list) -
         result["unavailable_sections"].append("run_origin")
         log.warning("Task run origin unavailable for synthesis: %s", task_id, exc_info=True)
     try:
+        from ouroboros.owner_words import ensure_followup_owner_evidence
+        ensure_followup_owner_evidence(ctx)
         result["owner_requirements_and_decisions"] = _accept_owner_directives(ctx, drive_root, task_id)
+        result["owner_corpus_gaps"] = list(getattr(ctx, "_owner_evidence_gaps", None) or [])
+        if getattr(ctx, "_owner_evidence_gaps", None):
+            # Keep known words, but never certify the partial capture as complete.
+            result["unavailable_sections"].append("owner_requirements_and_decisions")
     except Exception:
         result["unavailable_sections"].append("owner_requirements_and_decisions")
         log.warning("Task owner input unavailable for synthesis: %s", task_id, exc_info=True)

@@ -102,6 +102,14 @@ def _ctx_metadata(ctx: Any) -> Mapping[str, Any]:
     return _mapping(getattr(ctx, "task_metadata", None))
 
 
+def owner_evidence_gaps(record: Mapping[str, Any]) -> list:
+    """The final host capture supersedes admission's dated incompleteness, never vice versa."""
+    inputs = _mapping(_mapping(record.get("review_evidence")).get("task_inputs"))
+    if "owner_corpus_gaps" in inputs:
+        return list(inputs["owner_corpus_gaps"])
+    return list(_mapping(record.get("metadata")).get("owner_corpus_gaps") or [])
+
+
 def objective_author_line(origin: Mapping[str, Any] | None) -> str:
     """Who wrote a run's objective, from the typed facts ``dialogue_provenance.run_origin`` returns,
     never from the objective's text: one phrase for every reader (the mind's first turn, a plan
@@ -185,7 +193,8 @@ def governing_words_for_schedule(ctx: Any) -> Dict[str, Any]:
     else:
         rows, absent = directive_owner_rows(ctx), ""
     if rows:
-        return {FIELD: rows}
+        gaps = getattr(ctx, "_owner_evidence_gaps", None) or metadata.get("owner_corpus_gaps")
+        return {FIELD: rows, **({ABSENT_FIELD: "incomplete: " + "; ".join(gaps)} if gaps else {})}
     return {ABSENT_FIELD: absent or _absent_marker({"type": getattr(ctx, "current_task_type", None),
                                                     "metadata": dict(metadata)})}
 
@@ -280,13 +289,15 @@ def task_owner_words(drive_root: Any, task_id: str, *,
                      task: Mapping[str, Any] | None = None) -> Tuple[List[Dict[str, str]], str]:
     """The words for a task: its carried field, else the first carrier of its root that yields a row."""
     record = dict(task) if isinstance(task, Mapping) else _task_record(drive_root, task_id)
+    gaps = owner_evidence_gaps(record)
+    incomplete = "incomplete: " + "; ".join(gaps) if gaps else ""
     from ouroboros.owner_relay import owner_text, _owner_row as held_owner_row
     held = [_row(owner_text(row), source="owner_mailbox", carrier="held", task_id=task_id,
                  ts=row.get("ts"), ref=address) for address, row in (record.get("held_owner_messages") or {}).items()
             if held_owner_row(row)]
     rows, absent = task_governing_words(record)
     if rows or absent:
-        return _deduped(rows + held), "" if rows or held else absent
+        return _deduped(rows + held), incomplete or ("" if rows or held else absent)
     task_id = str(task_id or "")
     root_id = str(record.get("root_task_id") or _mapping(record.get("metadata")).get("root_task_id") or task_id)
     if root_id != task_id:
@@ -294,8 +305,112 @@ def task_owner_words(drive_root: Any, task_id: str, *,
     for carrier in (_origin_carrier, _binding_carrier, _annotation_carrier, _mailbox_carrier):
         rows = _deduped(carrier(drive_root, task_id, record))
         if rows:
-            return _deduped(rows + held), ""
-    return _deduped(held), "" if held else _absent_marker(record)
+            return _deduped(rows + held), incomplete
+    return _deduped(held), incomplete or ("" if held else _absent_marker(record))
+
+
+def ensure_followup_owner_evidence(ctx: Any) -> None:
+    """Serialize the legacy actor's first source recovery across parallel tool checks."""
+    if ctx is None:
+        return
+    metadata = _ctx_metadata(ctx)
+    if getattr(ctx, "_followup_owner_evidence_loaded", False):
+        return
+    inherited = metadata.get("owner_corpus_gaps") or []
+    ctx._owner_evidence_gaps = list(dict.fromkeys([
+        *(getattr(ctx, "_owner_evidence_gaps", None) or []), *inherited]))
+    if not metadata.get("followup_origin"):
+        return
+    import threading
+
+    lock = vars(ctx).setdefault("_followup_owner_evidence_lock", threading.RLock())
+    with lock:
+        _recover_followup_owner_evidence(ctx)
+
+
+def _recover_followup_owner_evidence(ctx: Any) -> None:
+    """Repair the legacy missing-corpus carrier once per actor, not once per check.
+
+    Follow only frozen schedule-admission origins, never money lineage or task prose.
+    This supplies evidence for judgment; it grants no action or replay authority.
+    """
+    metadata = _ctx_metadata(ctx)
+    if (getattr(ctx, "_followup_owner_evidence_loaded", False)
+            or ("owner_corpus" in metadata and not metadata.get("owner_corpus_gaps"))
+            or not metadata.get("followup_origin") or _mapping(metadata.get("objective_author")).get("kind") != "task"):
+        return
+    previous_gaps = _mapping(getattr(ctx, "_owner_evidence_recovery", None)).get("gaps") or []
+    from ouroboros.task_results import load_task_result
+    from ouroboros.tool_access import canonical_data_root
+    from ouroboros.loop_messages import _record_owner_directive
+
+    task_id = str(_mapping(metadata.get("followup_origin")).get("task_id") or "")
+    seen, groups, gaps = set(), [], []
+    root = canonical_data_root(ctx)
+    while task_id:
+        if task_id in seen:
+            gaps.append(f"followup owner-source cycle at {task_id}")
+            break
+        seen.add(task_id)
+        try:
+            result = load_task_result(root, task_id, strict=True)
+            if not isinstance(result, dict):
+                raise ValueError("task source missing")
+            frozen = _mapping(result.get("schedule_admission"))
+            parent_meta = _mapping(_mapping(frozen.get("task")).get("metadata"))
+            inputs = _mapping(_mapping(result.get("review_evidence")).get("task_inputs"))
+            carried = parent_meta.get("owner_corpus")
+            complete = isinstance(carried, list) and not parent_meta.get("owner_corpus_gaps")
+            if inputs.get("owner_corpus_gaps") == [] and isinstance(inputs.get("owner_requirements_and_decisions"), list):
+                carried = inputs["owner_requirements_and_decisions"]
+                complete = "owner_requirements_and_decisions" not in (inputs.get("unavailable_sections") or [])
+            if not complete and "owner_requirements_and_decisions" in (inputs.get("unavailable_sections") or []) \
+                    and not parent_meta.get("followup_origin"):
+                raise ValueError("owner corpus capture unavailable")
+            rows = carried if isinstance(carried, list) else inputs.get("owner_requirements_and_decisions") or []
+            if not isinstance(rows, list) or any(not isinstance(row, dict) or row.get("source") not in (
+                    OWNER_SOURCES | {"initial_text", "initial_text_transcript", "principal_task_message", "relayed_peer_message"})
+                    for row in rows):
+                raise ValueError("owner corpus source malformed")
+            rows = [dict(row) for row in rows if isinstance(row, dict) and row.get("source") in OWNER_SOURCES]
+            groups.append((task_id, rows))
+            if complete:
+                break  # a complete producer-carried boundary, including intentional absence
+            origin = _mapping(parent_meta.get("followup_origin"))
+            if origin:
+                if frozen.get("status") != "accepted":
+                    raise ValueError("followup admission unproven")
+                task_id = str(origin.get("task_id") or "")
+            else:
+                if parent_meta.get("owner_corpus_gaps"):
+                    raise ValueError("original owner evidence incomplete")
+                if not rows and not isinstance(inputs.get("owner_requirements_and_decisions"), list):
+                    raise ValueError("original owner evidence unavailable")
+                task_id = ""
+        except Exception as exc:
+            gaps.append(f"followup owner source {task_id}: {type(exc).__name__}")
+            break
+    # Keep current owner answers beside ancestral words, never replace either.
+    current_count = len(getattr(ctx, "_owner_directives", None) or [])
+    for source_task, rows in reversed(groups if not gaps else []):
+        for index, row in enumerate(rows):
+            _record_owner_directive(ctx, source=row["source"], content=row.get("content"), media=row.get("media"),
+                owner_text=row.get("owner_text", ""),
+                msg_id=str(row.get("msg_id") or f"retained:{source_task}:{index}"),
+                origin={key: row[key] for key in ("source_task_id", "relayed_from_task_id", "quiz_id") if row.get(key)})
+    owned_gaps = list(dict.fromkeys([*previous_gaps, *gaps])) if gaps else []
+    ctx._owner_evidence_recovery = {"source_tasks": sorted(seen), "gaps": owned_gaps}
+    ctx._followup_owner_evidence_loaded = not gaps
+    if not gaps:
+        repaired = [*previous_gaps, *(metadata.get("owner_corpus_gaps") or [])]
+        ctx._owner_evidence_gaps = [gap for gap in getattr(ctx, "_owner_evidence_gaps", []) if gap not in repaired]
+        if isinstance(getattr(ctx, "task_metadata", None), dict):
+            ctx.task_metadata.pop("owner_corpus_gaps", None)
+    if current_count:
+        corpus = ctx._owner_directives
+        ctx._owner_directives = corpus[current_count:] + corpus[:current_count]
+    if gaps:
+        ctx._owner_evidence_gaps = list(dict.fromkeys([*(getattr(ctx, "_owner_evidence_gaps", []) or []), *gaps]))
 
 
 def render_owner_words(rows: Any, absent: str = "", *, audience: str, root_task_id: str = "", indent: str = "") -> str:
@@ -318,7 +433,8 @@ def render_owner_words(rows: Any, absent: str = "", *, audience: str, root_task_
                  str(row.get("ref") or "")]
         words = "\n".join(indent + line if line else line for line in str(row["text"]).split("\n"))
         blocks.append("[" + " · ".join(part for part in stamp if part) + "]\n" + words)
-    return f"{_HEADINGS[audience]}\n{_FRAMES[audience].format(origin=origin)}\n" + "\n\n".join(blocks)
+    status = f"Host source status: {absent}.\n" if absent else ""
+    return status + f"{_HEADINGS[audience]}\n{_FRAMES[audience].format(origin=origin)}\n" + "\n\n".join(blocks)
 
 
 def owner_words_text(ctx: Any, *, audience: str = "reviewer") -> str:

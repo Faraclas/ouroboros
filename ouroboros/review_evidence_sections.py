@@ -271,8 +271,12 @@ def _accept_effective_claims(
     return claims, source, exhibit
 
 
-def _owner_content_projection(content: Any) -> str:
-    """Render owner text verbatim while replacing binary image payloads by refs."""
+def _owner_content_projection(content: Any, *, image_parts: list | None = None) -> str:
+    """Render exact text and media references; an optional receiver carries native images.
+
+    The canonical corpus is unchanged. References alone are not visual review:
+    Safety supplies the collector and sends its pixels on the same checker route.
+    """
     if isinstance(content, str):
         return content
     if not isinstance(content, list):
@@ -291,7 +295,97 @@ def _owner_content_projection(content: Any) -> str:
             digest = hashlib.sha256(str(raw).encode("utf-8")).hexdigest()[:16]
             caption = str(block.get("_caption") or block.get("caption") or "").strip()
             parts.append(f"[image ref sha256:{digest}{'; caption=' + caption if caption else ''}]")
+            if image_parts is not None:
+                native = dict(block)
+                if block_type == "image":
+                    media = block.get("source") or {}
+                    if media.get("type") != "base64" or not media.get("media_type") or not media.get("data"):
+                        raise ValueError("Owner image has no supported native pixels")
+                    native = {**native, "type": "image_url", "image_url": {
+                        "url": f"data:{media['media_type']};base64,{media['data']}"}}
+                    native.pop("source", None)
+                image_parts.append(native)
+            continue
+        # An unfamiliar content block is evidence, not permission to drop it.
+        parts.append(json.dumps(block, ensure_ascii=False, default=str))
     return "\n".join(parts)
+
+
+def project_owner_corpus_row(row: dict, *, ctx: Any = None) -> dict:
+    """Persist text plus hash-bound originals, not image encodings in queue/state JSON."""
+    images = []
+    media = list(row.get("media") or [])
+    try:
+        text = _owner_content_projection(row.get("content"), image_parts=images)
+    except ValueError as exc:
+        text = _owner_content_projection(row.get("content"))
+        media.append({"unavailable": str(exc)})
+    projected = {**row, "content": text}
+    for image in images:
+        path = str(image.get("_source_path") or "")
+        ref = {"path": path, "caption": str(image.get("_caption") or ""),
+               "detail": (image.get("image_url") or {}).get("detail")}
+        try:
+            try:
+                raw = pathlib.Path(path).read_bytes()
+            except OSError:
+                # A failed original-file retention must not lose pixels still in hand.
+                # Retain this exact native projection; do not fetch remote image URLs.
+                import base64
+
+                url = (image.get("image_url") or {}).get("url") or ""
+                header, separator, encoded = url.partition(",")
+                if not separator or not header.startswith("data:image/") or not header.endswith(";base64"):
+                    raise ValueError("retained owner image has no available pixels")
+                raw = base64.b64decode(encoded, validate=True)
+                if (ctx is None or not getattr(ctx, "task_id", "") or not (
+                        getattr(ctx, "drive_root", None) or getattr(ctx, "budget_drive_root", None)
+                        or (getattr(ctx, "task_metadata", None) or {}).get("budget_drive_root"))):
+                    raise ValueError("inline owner pixels have no retention owner")
+                ref["path"] = ""  # the verified retained source, not a missing file, owns these bytes
+            ref["sha256"] = hashlib.sha256(raw).hexdigest()
+            if ctx is not None and getattr(ctx, "task_id", ""):
+                from ouroboros.artifacts import store_actor_source_bytes
+                from ouroboros.tool_access import canonical_data_root
+
+                ref["retained_source"] = {**store_actor_source_bytes(canonical_data_root(ctx), ctx.task_id,
+                    category="context_checkpoints", source_id="owner-image", data=raw, extension="bin"),
+                    "task_id": str(ctx.task_id)}
+        except (OSError, ValueError):
+            ref["unavailable"] = "retained image original unavailable"
+        media.append(ref)
+    if media:
+        projected["media"] = media
+    return projected
+
+
+def materialize_owner_corpus_content(row: dict, *, drive_root: Any = None) -> Any:
+    """Verify native pixels for a corpus receiver; missing originals are not a text-only check."""
+    if not row.get("media"):
+        return row.get("content")
+    import base64
+    from ouroboros.image_preparation import prepare_image_bytes
+
+    parts = [{"type": "text", "text": str(row.get("content") or "")}]
+    for ref in row["media"]:
+        if ref.get("unavailable") or not (ref.get("path") or ref.get("retained_source")) or not ref.get("sha256"):
+            raise ValueError("retained owner image evidence unavailable")
+        path = str(ref.get("path") or "")
+        if ref.get("retained_source"):
+            from ouroboros.artifacts import read_actor_source_bytes
+
+            source = ref["retained_source"]
+            raw = read_actor_source_bytes(drive_root, source["task_id"], source)
+        else:
+            raw = pathlib.Path(path).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != ref["sha256"]:
+            raise ValueError("retained owner image identity changed")
+        image = prepare_image_bytes(raw, max_bytes=8 * 1024 * 1024)
+        parts.append({"type": "image_url", "image_url": {
+            "url": f"data:{image.mime};base64,{base64.b64encode(image.data).decode('ascii')}",
+            **({"detail": ref["detail"]} if ref.get("detail") else {})},
+            "_source_path": str(path), "_caption": ref.get("caption", "")})
+    return parts
 
 
 def _accept_owner_directives(ctx: Any, drive_root: Any, task_id: str) -> List[Dict[str, str]]:
@@ -299,15 +393,18 @@ def _accept_owner_directives(ctx: Any, drive_root: Any, task_id: str) -> List[Di
     rows: List[Dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
-    def add(source: str, content: Any, msg_id: str = "", origin: Any = None) -> None:
-        text = _owner_content_projection(content)
+    def add(source: str, content: Any, msg_id: str = "", origin: Any = None, media: Any = None) -> None:
+        projected = project_owner_corpus_row({"content": content, "media": media or []}, ctx=ctx)
+        text = projected["content"]
         if not text.strip():
             return
-        key = (str(msg_id or ""), text)
+        key = (str(msg_id or ""), str((origin or {}).get("owner_text") or text))
         if key in seen or (not key[0] and any(existing[1] == text for existing in seen)):
             return
         seen.add(key)
         row = {"source": source, "content": text}
+        if projected.get("media"):
+            row["media"] = projected["media"]
         if msg_id:
             row["msg_id"] = str(msg_id)
         # The typed origin the recorder already resolved (a task message's source task,
@@ -324,7 +421,8 @@ def _accept_owner_directives(ctx: Any, drive_root: Any, task_id: str) -> List[Di
                     str(item.get("source") or "task_local"),
                     item.get("content"),
                     str(item.get("msg_id") or ""),
-                    {key: item.get(key) for key in ("source_task_id", "relayed_from_task_id", "quiz_id")},
+                    {key: item.get(key) for key in ("source_task_id", "relayed_from_task_id", "quiz_id", "owner_text")},
+                    media=item.get("media"),
                 )
 
     messages = getattr(ctx, "messages", None)

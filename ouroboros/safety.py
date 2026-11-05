@@ -113,7 +113,8 @@ TOOL_POLICY: Dict[str, str] = {
     "tree_read": POLICY_SKIP,
     "start_task": POLICY_CHECK,
     "move_to_project": POLICY_SKIP,
-    "tell_task": POLICY_CHECK,
+    # Internal context mail keeps host scope/quote/control checks, not a second model authorization.
+    "tell_task": POLICY_SKIP,
     "update_scratchpad": POLICY_SKIP,
     "update_identity": POLICY_SKIP,
     "update_world": POLICY_SKIP,
@@ -150,7 +151,7 @@ TOOL_POLICY: Dict[str, str] = {
     "presence_cancel_work": POLICY_SKIP,
     "configure_presence": POLICY_CHECK,
     "escalate": POLICY_SKIP,
-    "forward_to_worker": POLICY_CHECK,
+    "forward_to_worker": POLICY_SKIP,
     "compact_context": POLICY_SKIP,
     "enable_tools": POLICY_SKIP,
     "preflight_review": POLICY_SKIP,
@@ -513,7 +514,8 @@ def _hold(ctx, tool_name, reason, *, status="UNAVAILABLE"):
     return _Assessment(False, f"⚠️ {marker}: {reason}. This call was not checked. {next_step}", status=status)
 
 
-def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, ctx=None, resolved_binding=None):
+def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, ctx=None, resolved_binding=None,
+                        image_parts=None):
     """Fixed host evidence, with authorship separate from semantic authorization."""
     from dataclasses import asdict, is_dataclass
     from ouroboros.place_guard import call_place_facts
@@ -544,7 +546,9 @@ def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, 
         place.update(effect="message", targets={"destination": arguments.get("destination")})
     occasion = "unknown"
     if metadata.get("schedule_writer_kind"):
-        occasion = metadata["schedule_writer_kind"] + "-written schedule"
+        author = metadata.get("objective_author") or {}
+        occasion = ("task-authored schedule" if author.get("kind") == "task"
+                    else metadata["schedule_writer_kind"] + "-written schedule")
     elif focus:
         occasion = "confirmed owner account" if (focus.get("actor") or {}).get("owner_confirmed") else "person in a place"
     elif metadata.get("wake_cause") == "own_clock":
@@ -554,6 +558,13 @@ def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, 
     directives = getattr(ctx, "_owner_directives", None)
     # User messages are quoted input when the caller has no retained host source; never certify them as owner words.
     sources = directives if isinstance(directives, list) else [m for m in (messages or []) if m.get("role") == "user"]
+    if image_parts is not None:
+        from ouroboros.review_evidence_sections import _owner_content_projection, materialize_owner_corpus_content
+
+        sources = [{**row, "content": _owner_content_projection(materialize_owner_corpus_content(
+                    row, drive_root=canonical_data_root(ctx) if row.get("media") and ctx is not None else None),
+                    image_parts=image_parts)}
+                   if isinstance(row, dict) and "content" in row else row for row in sources]
     target = asdict(resolved_binding) if is_dataclass(resolved_binding) else resolved_binding
     with _PRIOR_LOCK:
         root = _root_id(ctx)
@@ -568,7 +579,8 @@ def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, 
                  "consciousness_autonomy": metadata.get("consciousness_autonomy")},
         "occasion": {"cause": occasion, "consciousness_cause": metadata.get("consciousness_cause"),
                      "origin_wake_task_id": metadata.get("origin_wake_task_id"), "focus": focus,
-                     "sources": sources, "retained_host_sources": isinstance(directives, list)},
+                     "sources": sources, "retained_host_sources": isinstance(directives, list),
+                     "source_recovery": getattr(ctx, "_owner_evidence_recovery", None)},
         "subject": {"tool": tool_name, "physical_target": target, "place": place},
         "standing_delegation": {"owner_rules": runtime_setting("OUROBOROS_SAFETY_OWNER_RULES", ""), "place_notes": notes},
         "earlier_verdicts": earlier,
@@ -932,6 +944,7 @@ def _safety_model_call(
     use_local: bool, call_type: str, user_prompt: str, on_usage: Any,
     model_role: str = "safety", effort: str = "low", account: Optional[str] = None,
     processing: Optional[str] = None, attempts_limit: int = 2, system_prompt: Optional[str] = None,
+    image_parts: tuple = (),
 ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
     'ONE safety model call, with ONE bounded retry when the provider rate-limits it.'
     from ouroboros import model_concurrency
@@ -950,6 +963,25 @@ def _safety_model_call(
             latched=True,
         )
     reason = ""
+    from contextlib import nullcontext
+    from ouroboros.model_wait import current_model_wait
+
+    def prepare(values):
+        from ouroboros.vision_routing import VisionRoutingContext, prepare_messages_for_send, _is_image
+
+        canonical = [{"role": "user", "content": [{"type": "text", "text": user_prompt}, *image_parts]}]
+        prepared = prepare_messages_for_send(canonical, routing=VisionRoutingContext(
+            values["model"], client, {}, drive_root=getattr(ctx, "drive_root", None),
+            task_id=str(getattr(ctx, "task_id", "") or ""), deadline_ts=_safety_deadline_epoch(ctx),
+            use_local=values.get("use_local", False), model_role=values.get("model_role", model_role),
+            model_account_override=values.get("model_account_override")), purpose="vlm")
+        content = prepared[0]["content"]
+        if sum(_is_image(part) for part in content) != len(image_parts):
+            raise ValueError("SAFETY_IMAGE_EVIDENCE_UNAVAILABLE: not every owner image can reach this checker")
+        return {**values, "messages": [values["messages"][0], prepared[0]]}
+
+    content = user_prompt
+    waiter = current_model_wait()
     for attempt in range(attempts_limit):
         if attempt:
             deadline = _safety_deadline_epoch(ctx)
@@ -965,17 +997,13 @@ def _safety_model_call(
             # The physical sender takes the provider slot; this only carries the deadline.
             with model_concurrency.model_call_scope(
                 light_model, use_local, _safety_deadline_epoch(ctx)
-            ):
-                msg, usage = chat_observed(
-                    client,
-                    drive_root=_safety_drive_root(ctx),
-                    task_id=str(getattr(ctx, "task_id", "") or "safety"),
-                    call_type=call_type,
+            ), (waiter.register_reprepare(model_role, prepare) if waiter and image_parts else nullcontext()):
+                values = dict(
                     # Stable, tool-free SAFETY.md prefix; subject remains uncached.
                     messages=[
                         {"role": "system", "content": cached_prompt_blocks(
                             (system_prompt if system_prompt is not None else _get_safety_prompt()), ttl=_SAFETY_CACHE_TTL)},
-                        {"role": "user", "content": user_prompt},
+                        {"role": "user", "content": content},
                     ],
                     model=light_model, use_local=use_local,
                     max_tokens=get_safety_max_tokens(), reasoning_effort=effort,
@@ -986,6 +1014,10 @@ def _safety_model_call(
                                      if LLMClient.supports_response_format(light_model, use_local=use_local)
                                      else None),
                 )
+                if image_parts:
+                    values = prepare(values)
+                msg, usage = chat_observed(client, drive_root=_safety_drive_root(ctx),
+                    task_id=str(getattr(ctx, "task_id", "") or "safety"), call_type=call_type, **values)
         except Exception as e:
             from ouroboros.llm_claudexor import propagate_model_error
             propagate_model_error(e)
@@ -1014,10 +1046,18 @@ def _run_llm_check(
 ) -> Tuple[bool, str]:
     """Run a single light-model safety check and classify the verdict."""
     args_json = _render_subject_json(arguments)
+    from ouroboros.owner_words import ensure_followup_owner_evidence
+    ensure_followup_owner_evidence(ctx)
+    if getattr(ctx, "_owner_evidence_gaps", None):
+        return _hold(ctx, tool_name, "Owner evidence incomplete: " + "; ".join(ctx._owner_evidence_gaps))
     if len(args_json) > _SAFETY_SUBJECT_CHAR_BUDGET:
         return _Assessment(*_subject_too_large_blocked(ctx, tool_name, len(args_json)), status="TOO_LARGE")
-    prompt = _build_check_prompt(tool_name, arguments, messages, args_json=args_json,
-                                 ctx=ctx, resolved_binding=resolved_binding)
+    image_parts = []
+    try:
+        prompt = _build_check_prompt(tool_name, arguments, messages, args_json=args_json,
+                                     ctx=ctx, resolved_binding=resolved_binding, image_parts=image_parts)
+    except (OSError, ValueError, TypeError) as exc:
+        return _hold(ctx, tool_name, f"Owner evidence unavailable: {sanitize_tool_result_for_log(str(exc))}")
     if len(prompt.encode("utf-8")) > _SAFETY_BUNDLE_BYTE_BUDGET:
         return _hold(ctx, tool_name, "The complete mandatory evidence bundle is too large", status="TOO_LARGE")
     _use_local_light, _is_local_fallback, _skip_reason = _resolve_safety_routing()
@@ -1054,7 +1094,7 @@ def _run_llm_check(
         msg, usage = _safety_model_call(
             client=client, ctx=ctx, tool_name=tool_name, light_model=light_model,
             use_local=_use_local_light, call_type="safety_supervisor",
-            user_prompt=prompt, on_usage=_emit_safety_usage, system_prompt=system_prompt,
+            user_prompt=prompt, on_usage=_emit_safety_usage, system_prompt=system_prompt, image_parts=image_parts,
         )
     except _SafetyRateLimited as e:
         return _Assessment(*_rate_limited_outcome(
@@ -1067,6 +1107,8 @@ def _run_llm_check(
         from ouroboros.llm_claudexor import propagate_model_error
         propagate_model_error(e)
         safe_error = sanitize_tool_result_for_log(f"{type(e).__name__}: {e}")
+        if image_parts:
+            return _hold(ctx, tool_name, f"Safety image evidence check unavailable: {safe_error}")
         # Fallback local outage warns instead of blocking all unknown tools.
         if _use_local_light and _is_local_fallback and not _needs_checker(ctx):
             log.warning(
@@ -1098,10 +1140,12 @@ def _run_llm_check(
                 "Original proposed tool call follows again.\n\n"
                 f"{prompt}"
             )
+            if len(repair_prompt.encode("utf-8")) > _SAFETY_BUNDLE_BYTE_BUDGET:
+                return _hold(ctx, tool_name, "The mandatory repair-check text bundle is too large", status="TOO_LARGE")
             repair_msg, repair_usage = _safety_model_call(
                 client=client, ctx=ctx, tool_name=tool_name, light_model=light_model,
                 use_local=_use_local_light, call_type="safety_supervisor_repair",
-                user_prompt=repair_prompt, on_usage=_emit_safety_usage, system_prompt=system_prompt,
+                user_prompt=repair_prompt, on_usage=_emit_safety_usage, system_prompt=system_prompt, image_parts=image_parts,
             )
             result = _parse_safety_response(repair_msg.get("content") or "")
             if result is None:
@@ -1147,7 +1191,8 @@ def _run_llm_check(
                 client=client, ctx=ctx, tool_name=tool_name, light_model=light_model, use_local=_use_local_light,
                 call_type="safety_second_check", user_prompt=second_prompt, on_usage=_emit_safety_usage, system_prompt=system_prompt,
                 model_role="subagent:" + row.subagent_id, effort=row.effort or "low",
-                account=row.route.credential_profile_id, processing=row.processing_preference or None, attempts_limit=1)
+                account=row.route.credential_profile_id, processing=row.processing_preference or None, attempts_limit=1,
+                image_parts=image_parts)
             second = _parse_safety_response(msg.get("content") or "")
         except Exception as exc:
             from ouroboros.llm_claudexor import propagate_model_error

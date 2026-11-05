@@ -26,7 +26,7 @@ RESERVED_TEMPLATE_FIELDS = frozenset({
     # routing for one accepted turn; a machine-fired template never carries it,
     # nor ``start_task``'s recorded absence of one.
     "origin_message_ref",
-    "origin_suppressed", "origin_message_absent",
+    "origin_suppressed", "origin_message_absent", "owner_corpus", "owner_corpus_gaps",
     "billing_group", "continuation", "followup_relation", "followup_origin",
     "followup_hold", "followup_released", "followup_wait",
     "continuation_of", "origin_task_id", "origin_root_task_id",
