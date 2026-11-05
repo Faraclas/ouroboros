@@ -540,8 +540,10 @@ export const apiClient = {
     /** @param {import('./api_types.js').ProjectCreateRequest} payload */
     projectCreate: (payload) => jsonPost('/api/projects', payload),
     /** @returns {Promise<import('./api_types.js').ProjectCatalogResponse>} */
-    projectCatalog: ({ lifecycle = 'all', q = '', offset = 0, limit = 50 } = {}) =>
-        fetchJson(`/api/projects/catalog?${new URLSearchParams({ lifecycle, q, offset, limit })}`, { cache: 'no-store' }),
+    projectCatalog: ({ lifecycle = 'all', q = '', offset = 0, limit = 50, parent_id } = {}) =>
+        fetchJson(`/api/projects/catalog?${new URLSearchParams({ lifecycle, q, offset, limit,
+            ...(parent_id === undefined ? {} : { parent_id }),
+        })}`, { cache: 'no-store' }),
     /** @returns {Promise<import('./api_types.js').ProjectDetailResponse>} */
     projectDetail: (projectId) => fetchJson(`/api/projects/${encodeURIComponent(projectId)}/detail`, { cache: 'no-store' }),
     projectReopen: (projectId) => jsonPost(`/api/projects/${encodeURIComponent(projectId)}/reopen`, {}),

@@ -631,9 +631,14 @@
  */
 
 /**
- * `GET /api/projects`: active and deleting projects, at most 200, most recently active first.
+ * `GET /api/projects`: at most 200 recent active/deleting projects plus their ancestors.
  * @typedef {Object} ProjectListResponse
  * @property {import('./api_types.js').ProjectEntry[]} projects
+ */
+
+/** @typedef {Object} ProjectAncestor
+ * @property {string} id
+ * @property {string} name
  */
 
 /** @typedef {Object} ProjectResourceRequest
@@ -694,12 +699,13 @@
  */
 
 /**
- * Name/pin, or content-only with both exact saved strings in expected_content.
+ * Name/pin, a parent-only edit, or content-only with both saved strings in expected_content.
  * Content supplies description and/or notes; empty clears, omission preserves; no name/pin mixing.
  * Description is one line, <=500 Unicode code points; notes <=20000; UTF-8 text is not normalized.
  * @typedef {Object} ProjectUpdateRequest
  * @property {string=} name
  * @property {boolean=} pinned
+ * @property {string=} parent_id
  * @property {string=} description
  * @property {string=} notes
  * @property {ProjectContent=} expected_content

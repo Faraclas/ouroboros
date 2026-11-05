@@ -167,14 +167,14 @@ Files routes: `gateway/files.py::file_browser_routes()` (envelopes/parity: §11)
 | POST | `/api/storage/free/cancel` | stop preview/run; freed stays freed |
 | GET | `/api/evolution-data` | |
 | GET | `/api/projects` | optional `chat_id`: that active room from the full registry, beyond sidebar limits (missing → empty `projects`; unreadable → error) |
-| GET | `/api/projects/catalog` | management page: lifecycle all/active/closed, q, offset, limit; no filesystem probes |
+| GET | `/api/projects/catalog` | lifecycle all/active/closed, q, offset, limit; optional parent_id: empty roots, id immediate children; paths, no probes |
 | GET | `/api/projects/{project_id}/detail` | all lifecycles; resources with fresh read-only path/Git observations |
 | POST | `/api/projects/{project_id}/reopen` | same closed room, fresh routing incarnation; no setup or task |
 | POST | `/api/projects/{project_id}/resources` | contextual association: path, optional label; no grant/cwd change |
 | POST | `/api/projects/{project_id}/resources/{resource_id}/detach` | association only; no file deletion |
 | POST | `/api/projects` | |
 | POST | `/api/projects/from-task` | |
-| POST | `/api/projects/{project_id}/update` | |
+| POST | `/api/projects/{project_id}/update` | name/pin, parent-only, or exact content CAS; CLIENT_CONTRACT §6 |
 | POST | `/api/projects/{project_id}/delete` | |
 | GET | `/api/fs/dirs` | |
 | GET | `/api/chat/history` | |

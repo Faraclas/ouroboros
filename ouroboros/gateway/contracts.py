@@ -585,6 +585,7 @@ class ProjectCreateRequest(TypedDict, total=False):
     init_git: bool
     git_url: str
     with_workspace: bool
+    parent_id: str  # optional logical parent; empty means root
 
 
 class ProjectDeleteResponse(TypedDict):

@@ -507,6 +507,12 @@ class ChatUploadDeleteResponse(TypedDict):
     filename: str
 
 
+class ProjectAncestor(TypedDict):
+    """Current logical breadcrumb; no execution or resource inheritance."""
+    id: str
+    name: str
+
+
 class ProjectEntry(TypedDict, total=False):
     """A registry project row. ``provenance`` (attached|cloned|genesis|none) and ``clone_url``
     are historical facts; operational git data is read live from ``.git``. List rows are a
@@ -521,6 +527,9 @@ class ProjectEntry(TypedDict, total=False):
     description: str
     notes: str
     chat_id: int
+    parent_id: str  # logical only; legacy absence and empty both mean root
+    parent_path: List[ProjectAncestor]  # management rows, root to immediate parent
+    parent_path_complete: bool  # false on missing/cyclic historical edges; never healed
     working_dir: str
     resources: List[ProjectResource]
     lifecycle_label: Literal["active", "closing", "closed"]
@@ -548,10 +557,9 @@ class ProjectEntry(TypedDict, total=False):
 
 
 class ProjectListResponse(TypedDict):
-    """``GET /api/projects``: active and deleting projects, at most 200, most recently active first.
-    Rows are the compact projection ``GET /api/state`` also carries: id, name, pinned, chat_id, working_dir,
-    provenance, last_active_at, lifecycle, routing_generation, visible_revision, delete_error and
-    has_thread_activity."""
+    """``GET /api/projects``: at most 200 recent active/deleting rooms, then their ancestors.
+    Compact rows match ``GET /api/state``, including parent_id and each room's own activity.
+    Ancestor closure can exceed the cap; an addressed chat_id returns only its active room."""
 
     projects: List[ProjectEntry]
 
@@ -617,7 +625,7 @@ class ProjectContent(TypedDict):
 
 
 class ProjectUpdateRequest(TypedDict, total=False):
-    """Name/pin, or content-only with both exact saved strings in expected_content.
+    """Name/pin, parent-only, or content with both saved strings in expected_content.
 
     A content request supplies description and/or notes; empty strings clear, omission preserves.
     Content cannot be mixed with name/pinned. Description is one line, <=500 Unicode code
@@ -626,6 +634,7 @@ class ProjectUpdateRequest(TypedDict, total=False):
 
     name: str  # 1 to 80 characters
     pinned: bool
+    parent_id: str  # parent-only edit; empty moves to root
     description: str
     notes: str
     expected_content: ProjectContent
@@ -862,7 +871,7 @@ __all__ = [
     "ProjectListResponse", "ProjectCreateResponse", "ProjectUpdateRequest", "ProjectUpdateResponse",
     "ProjectContent", "ProjectContentConflictResponse",
     "ProjectResourceRequest", "ProjectResourceGit", "ProjectResourceObservation", "ProjectResource",
-    "ProjectCatalogResponse", "ProjectDetailResponse",
+    "ProjectCatalogResponse", "ProjectDetailResponse", "ProjectAncestor",
     "ProjectFromTaskRequest", "ProjectTaskBinding", "ProjectFromTaskResponse",
     "FileBrowserEntry", "FileBrowserListResponse", "FileBrowserReadResponse", "FileMkdirRequest", "FileWriteRequest", "FilePathRequest",
     "FileTransferRequest", "FileChangeResponse",

@@ -313,7 +313,7 @@ async def api_projects_catalog(request: Request) -> JSONResponse:
         page = await run_sync_to_completion(
             project_catalog, request_drive_root(request),
             lifecycle=request.query_params.get("lifecycle", "all"), q=request.query_params.get("q", ""),
-            offset=offset, limit=limit)
+            offset=offset, limit=limit, parent_id=request.query_params.get("parent_id"))
         return JSONResponse(page)
     except ProjectManagementError as exc:
         return JSONResponse({"error": str(exc), "reason_code": exc.reason}, status_code=exc.status_code)
@@ -473,6 +473,11 @@ async def api_projects_create(request: Request) -> JSONResponse:
                 status_code=409,
             )
 
+        if not _existing:
+            from ouroboros.project_management import check_new_project_parent
+
+            await asyncio.to_thread(check_new_project_parent, drive_root,
+                                    sanitize_project_id(raw_id), body.get("parent_id", ""))
         working_dir, provenance, clone_url = "", "none", ""
         init_git_skipped: list = []
         init_git_warnings: list = []
@@ -516,6 +521,7 @@ async def api_projects_create(request: Request) -> JSONResponse:
             name=name,
             working_dir=working_dir,
             origin="owner_ui",
+            parent_id=body.get("parent_id", ""),
         )
         if with_workspace:
             workspace = ensure_project_workspace(drive_root, entry["id"], repo_dir)
@@ -557,11 +563,15 @@ async def api_projects_create(request: Request) -> JSONResponse:
         _broadcast_projects_changed(str(entry.get("id") or ""), entry.get("chat_id"))
         return JSONResponse(payload)
     except Exception as exc:
+        from ouroboros.project_management import ProjectManagementError
+
+        if isinstance(exc, ProjectManagementError):
+            return JSONResponse({"error": str(exc), "reason_code": exc.reason}, status_code=exc.status_code)
         return json_exception(exc)
 
 
 async def api_project_update(request: Request) -> JSONResponse:
-    """Partial name/pin update, or a separate exact-baseline authored-content save."""
+    """Name/pin, parent-only, or an exact-baseline authored-content save."""
     try:
         from ouroboros.projects_registry import PROJECT_NAME_MAX, get_project, update_project
 
@@ -573,6 +583,21 @@ async def api_project_update(request: Request) -> JSONResponse:
         if not isinstance(body, dict):
             return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         drive_root = request_drive_root(request)
+        if "parent_id" in body:
+            from ouroboros import project_management as management
+            from ouroboros.gateway._helpers import run_sync_to_completion
+
+            if any(key in body for key in ("name", "pinned", "description", "notes", "expected_content")):
+                return JSONResponse(
+                    {"error": "Save parent_id separately from other Project fields",
+                     "reason_code": "invalid_project_parent"}, status_code=400)
+            try:
+                entry = await run_sync_to_completion(management.reparent_project,
+                    drive_root, str(request.path_params.get("project_id") or ""), body["parent_id"])
+            except management.ProjectManagementError as exc:
+                return JSONResponse({"error": str(exc), "reason_code": exc.reason}, status_code=exc.status_code)
+            _broadcast_projects_changed(entry["id"], entry["chat_id"])
+            return JSONResponse({"project": entry})
         if any(key in body for key in ("description", "notes", "expected_content")):
             from ouroboros import project_management as management
             from ouroboros.gateway._helpers import run_sync_to_completion

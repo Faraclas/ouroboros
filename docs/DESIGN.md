@@ -2724,7 +2724,9 @@ neither opens nor reads it. Pinned Projects lead the one list, and one `--space-
 shown row is their only boundary: no caption, glyph, tint, rule or column, so
 nothing reads as one more Project; the row's tooltip and accessible name say
 Pinned. Within each group unread leads, then recency; the column's places follow §5.
-After Unpin, a room outside the recent sidebar slice disappears from that slice,
+Logical parents organize ordinary rooms, not work dependencies or inherited authority.
+Recent/pinned selections retain their ancestors; expansion and room opening are separate actions.
+After Unpin, a room outside the recent slice disappears unless needed as an ancestor,
 not from the registry. The Projects header collapses the whole list or opens it:
 collapsed, only the pinned Projects stay, in their order and with their air; every
 other row hides whatever it is doing, the open one included, and the header keeps

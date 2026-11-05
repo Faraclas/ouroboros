@@ -137,7 +137,7 @@ def test_pin_contract_is_optional_partial_and_mirrored_in_jsdoc(pin_client):
         assert entry["properties"]["pinned"] == {"type": "boolean"} and "pinned" not in entry.get("required", [])
     assert len(answered) == 1
     update = schemas["ProjectUpdateRequest"]
-    assert set(update["properties"]) == {"name", "pinned", "description", "notes", "expected_content"}
+    assert set(update["properties"]) == {"name", "pinned", "parent_id", "description", "notes", "expected_content"}
     assert update["properties"]["name"] == {"type": "string"}
     assert update["properties"]["pinned"] == {"type": "boolean"}
     assert update["properties"]["description"] == {"type": "string"}
@@ -158,11 +158,11 @@ def test_pin_contract_is_optional_partial_and_mirrored_in_jsdoc(pin_client):
         assert validate_ingress({"pinned": value}, ProjectUpdateRequest) == ["pinned must be a JSON boolean"], value
     rows = (WEB_MODULES / "api_types.js").read_text(encoding="utf-8")
     assert _js_typedef_fields(rows, "ProjectEntry") == set(typing.get_type_hints(ProjectEntry))
-    assert re.search(r"@typedef \{Object\} ProjectEntry\b[^/]*?@property \{boolean=\} pinned\b", rows, re.S)
+    assert re.search(r"@typedef \{Object\} ProjectEntry\b(?:(?!\n \*/).)*?@property \{boolean=\} pinned\b", rows, re.S)
     twin = (WEB_MODULES / "client_contract_types.js").read_text(encoding="utf-8")
     assert _js_typedef_properties(twin, "ProjectUpdateRequest") == {
         ("string=", "name"), ("boolean=", "pinned"), ("string=", "description"),
-        ("string=", "notes"), ("ProjectContent=", "expected_content"),
+        ("string=", "notes"), ("ProjectContent=", "expected_content"), ("string=", "parent_id"),
     }
-    assert set(typing.get_type_hints(ProjectUpdateRequest)) == {"name", "pinned", "description", "notes", "expected_content"}
+    assert set(typing.get_type_hints(ProjectUpdateRequest)) == {"name", "pinned", "parent_id", "description", "notes", "expected_content"}
     assert not ProjectUpdateRequest.__required_keys__

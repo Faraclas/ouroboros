@@ -1,4 +1,4 @@
-"""Project catalog, authored content, reopen and contextual resource associations.
+"""Project catalog, logical hierarchy, content, reopen and contextual resources.
 
 The registry is the sole durable source. Resources describe useful paths; they
 never grant access, claim ownership, change cwd or participate in admission.
@@ -61,6 +61,76 @@ def list_project_resources(drive_root: Any, project_id: str) -> list[dict]:
     return resources_for_project(_project(drive_root, project_id))
 
 
+def project_parent_id(row: dict) -> str:
+    """Legacy absence is root; hierarchy is metadata, never execution authority."""
+    parent = row.get("parent_id", "")
+    if not isinstance(parent, str) or parent != registry.sanitize_project_id(parent):
+        raise ProjectManagementError("invalid_project_parent", "parent_id must be a canonical project id or empty")
+    return parent
+
+
+def validate_project_parent(projects: list[dict], project_id: str, parent_id: Any) -> str:
+    """Validate one proposed edge against committed rows; iterative, no depth cap.
+
+    The caller holds the registry lock for writes. Only the proposed parent's
+    ancestry is read: an unrelated branch never decides this room's eligibility.
+    """
+    parent = project_parent_id({"parent_id": parent_id})
+    by_id = {row["id"]: row for row in projects}
+    seen = {project_id}
+    cursor = parent
+    while cursor:
+        if cursor in seen:
+            raise ProjectManagementError("project_cycle", "A Project cannot be its own ancestor", 409)
+        seen.add(cursor)
+        row = by_id.get(cursor)
+        if row is None:
+            raise ProjectManagementError("invalid_project_parent", f"Unknown parent Project: {cursor}")
+        if row.get("lifecycle", registry.PROJECT_ACTIVE) != registry.PROJECT_ACTIVE:
+            raise ProjectManagementError("project_parent_inactive", "The parent Project must be active", 409)
+        cursor = project_parent_id(row)
+    return parent
+
+
+def reparent_project(drive_root: Any, project_id: str, parent_id: str) -> dict:
+    """Change only the logical edge; closed rooms may move, closing rooms may not."""
+    pid = registry.sanitize_project_id(project_id)
+    if not isinstance(project_id, str) or not pid or project_id.casefold() != pid:
+        raise ProjectManagementError("invalid_project", "project_id must name an exact Project")
+    with registry._file_write_lock(registry._registry_path(drive_root)):
+        data = registry._load(drive_root, strict=True, project_id=pid)
+        row = next((item for item in data["projects"] if item["id"] == pid), None)
+        if row is None:
+            raise ProjectManagementError("project_not_found", f"Unknown project: {project_id}", 404)
+        if row["lifecycle"] == registry.PROJECT_DELETING:
+            raise ProjectManagementError("project_closing", "The Project is still closing", 409)
+        parent = validate_project_parent(data["projects"], pid, parent_id)
+        changed = row.get("parent_id", "") != parent
+        row["parent_id"] = parent
+        view = _view(row, projects=data["projects"])
+        if changed:
+            registry._save(drive_root, data)
+        return view
+
+
+def check_new_project_parent(drive_root: Any, project_id: str, parent_id: str) -> None:
+    """Reject invalid parent intent before source setup; create rechecks under lock."""
+    data = registry._load(drive_root, strict=True, project_id="")
+    validate_project_parent(data["projects"], project_id, parent_id)
+
+
+def promote_project_children(projects: list[dict], project: dict) -> None:
+    """First Close promotes immediate children atomically, never their subtrees.
+
+    Called under the registry lock before the active→deleting save. The closing
+    room retains its edge; retries/finalization/reopen do not reclaim children.
+    """
+    parent = project_parent_id(project)
+    for row in projects:
+        if row.get("parent_id", "") == project["id"]:
+            row["parent_id"] = parent
+
+
 def _content(row: dict) -> dict[str, str]:
     """Only absence is legacy empty content; malformed saved words stay unknown."""
     content = {key: row.get(key, "") for key in ("description", "notes")}
@@ -74,8 +144,25 @@ def _content(row: dict) -> dict[str, str]:
     return content
 
 
-def _view(row: dict, *, include_notes: bool = True) -> dict:
-    view = {**row, **_content(row),
+def project_parent_path(row: dict, projects: dict[str, dict]) -> dict:
+    """Current breadcrumb names from one snapshot; invalid legacy edges stay gaps."""
+    path, seen, cursor = [], {row["id"]}, row.get("parent_id", "")
+    while cursor:
+        if not isinstance(cursor, str) or cursor in seen or cursor not in projects:
+            return {"parent_path": list(reversed(path)), "parent_path_complete": False}
+        seen.add(cursor)
+        parent = projects[cursor]
+        path.append({"id": cursor, "name": str(parent.get("name") or cursor)})
+        if parent.get("lifecycle", registry.PROJECT_ACTIVE) != registry.PROJECT_ACTIVE:
+            return {"parent_path": list(reversed(path)), "parent_path_complete": False}
+        cursor = parent.get("parent_id", "")
+    return {"parent_path": list(reversed(path)), "parent_path_complete": cursor == ""}
+
+
+def _view(row: dict, *, include_notes: bool = True, projects: list[dict] | None = None,
+          by_id: dict[str, dict] | None = None) -> dict:
+    hierarchy = project_parent_path(row, by_id or {item["id"]: item for item in projects or [row]})
+    view = {**row, **_content(row), "parent_id": row.get("parent_id", ""), **hierarchy,
             "lifecycle_label": {"active": "active", "deleting": "closing",
                                 "tombstoned": "closed"}[row["lifecycle"]],
             "resources": resources_for_project(row)}
@@ -85,21 +172,25 @@ def _view(row: dict, *, include_notes: bool = True) -> dict:
 
 
 def project_catalog(drive_root: Any, *, lifecycle: str = "all", q: str = "",
-                    offset: int = 0, limit: int = 50) -> dict:
+                    offset: int = 0, limit: int = 50, parent_id: str | None = None) -> dict:
     """A paginated management view; ordinary sidebar/list semantics stay separate."""
     if lifecycle not in {"all", "active", "closed"}:
         raise ProjectManagementError("invalid_catalog", "lifecycle must be all, active or closed")
     if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 200:
         raise ProjectManagementError("invalid_catalog", "offset must be >=0; limit must be 1..200")
     needle = str(q).casefold().strip()
+    if parent_id is not None:
+        parent_id = project_parent_id({"parent_id": parent_id})
     rows = registry.list_reserved_projects(drive_root, strict=True)
+    by_id = {row["id"]: row for row in rows}
     rows = [row for row in rows if (lifecycle == "all" or
             (row["lifecycle"] == registry.PROJECT_ACTIVE) == (lifecycle == "active"))
             and (not needle or needle in (
                 " ".join(str(row.get(key) or "") for key in ("id", "name", "working_dir"))
-                + " " + _content(row)["description"]).casefold())]
+                + " " + _content(row)["description"]).casefold())
+            and (parent_id is None or row.get("parent_id", "") == parent_id)]
     total = len(rows)
-    return {"projects": [_view(row, include_notes=False) for row in rows[offset:offset + limit]],
+    return {"projects": [_view(row, include_notes=False, by_id=by_id) for row in rows[offset:offset + limit]],
             "total": total, "offset": offset, "limit": limit, "has_more": offset + limit < total}
 
 
@@ -147,7 +238,7 @@ def update_project_content(drive_root: Any, project_id: str, *,
         if current != {key: expected_content[key] for key in fields}:
             raise ProjectContentConflict(current)
         row.update(updates)
-        view = _view(row)
+        view = _view(row, projects=data["projects"])
         registry._save(drive_root, data)
         return view
 
@@ -166,7 +257,7 @@ def reopen_project(drive_root: Any, project_id: str) -> dict:
         if row["lifecycle"] == registry.PROJECT_DELETING:
             raise ProjectManagementError("project_closing", "The Project is still closing; wait for quiescence", 409)
         if row["lifecycle"] == registry.PROJECT_ACTIVE:
-            return _view(row)
+            return _view(row, projects=data["projects"])
         _view(row)  # malformed content/context must not produce a half-reported transition
         # Pause before activation, including legacy tombstones; Close needs no schedule reads.
         paused = pause_project_schedules(pathlib.Path(drive_root), pid, row["chat_id"])
@@ -175,7 +266,7 @@ def reopen_project(drive_root: Any, project_id: str) -> dict:
         row.update(lifecycle=registry.PROJECT_ACTIVE, routing_incarnation=uuid.uuid4().hex,
                    routing_generation=row["routing_generation"] + 1, reopened_at=utc_now_iso(), delete_error="")
         registry._save(drive_root, data)
-        return _view(row)
+        return _view(row, projects=data["projects"])
 
 
 def _resource_path(path: str) -> str:
@@ -213,10 +304,10 @@ def _edit_resource(drive_root: Any, project_id: str, *, path: str = "", label: s
             resources = [item for item in resources if item["id"] != resource_id]
         else:
             if any(_path_identity(item["path"]) == _path_identity(path) for item in resources):
-                return _view(row)  # same path in another room is independently valid
+                return _view(row, projects=data["projects"])  # same path in another room is independently valid
             resources.append({"id": uuid.uuid4().hex, "path": path, "label": label, "added_at": utc_now_iso()})
         row["resources"] = resources
-        view = _view(row)
+        view = _view(row, projects=data["projects"])
         registry._save(drive_root, data)
         return view
 
@@ -275,6 +366,13 @@ def observe_resource(path: str) -> dict:
 
 
 def project_detail(drive_root: Any, project_id: str) -> dict:
-    row = _view(_project(drive_root, project_id))
+    pid = registry.sanitize_project_id(project_id)
+    # Validate routing only on the addressed room. Breadcrumbs use raw
+    # neighbours from that SAME capture, not their execution authority.
+    projects = registry._load(drive_root, strict=True, project_id=pid)["projects"]
+    project = next((row for row in projects if row["id"] == pid), None)
+    if project is None:
+        raise ProjectManagementError("project_not_found", f"Unknown project: {project_id}", 404)
+    row = _view(project, projects=projects)
     row["resources"] = [{**item, "observation": observe_resource(item["path"])} for item in row["resources"]]
     return row

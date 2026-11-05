@@ -213,7 +213,7 @@ ouroboros/ — agent core and shared runtime (§6)
   knowledge.py, memory_publication.py — linked-Markdown notes with shelf indexes and revision-checked writes, so concurrent cognition cannot silently overwrite a newer note; per-file revision-checked identity/world-map/registry publication, atomic source replacement and origin-stamped history (§6)
   project_facts.py — project_id resolution and per-project knowledge under `projects/<id>/knowledge`, isolated from `memory/knowledge`
   task_tree_ledger.py — append-only `data/task_trees/<root>/blackboard.jsonl`: ephemeral swarm coordination (`tree_note`/`tree_read`), mirrored into the project journal at root completion
-  projects_registry.py, project_admission.py, project_management.py — Registry/admission, catalog, authored content, reopen/resources (§6 Project registry and lease)
+  projects_registry.py, project_admission.py, project_management.py — Registry/admission; hierarchy, catalog, content, reopen/resources (§6 Project registry and lease)
   project_handoff.py — the Main transfer receipt owed through the terminal outbox after a durable bind (§3 Project handoff receipts)
   project_dialogue.py — read-only chat lens; append-only `logs/chat_annotations.jsonl` (`ROUTING_RECEIPT_FIELDS`) routes only `needs_manual_target` cards; `routing_refusal_cause` (§3 Chat and Projects)
   room_membership.py — canonical stored-row membership for history and inventory; a place row belongs only to its place room (§3 Chat and Projects)

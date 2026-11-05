@@ -116,6 +116,7 @@ def _load(drive_root: Any, *, strict: bool = False,
             row["visible_revision"] = 0
         row["delete_error"] = str(row.get("delete_error") or "")
         row["pinned"] = row.get("pinned") is True
+        row.setdefault("parent_id", "")  # additive logical metadata; never routing authority
     return data
 
 
@@ -990,6 +991,7 @@ def create_project(
     working_dir: str = "",
     origin: str = "owner",
     admission_basis: Optional[dict] = None,
+    parent_id: str = "",
 ) -> Dict[str, Any]:
     """Register an active room with deterministic chat id and an optional folder.
     The unpersisted ``created`` flag distinguishes this registration from replay."""
@@ -1009,8 +1011,12 @@ def create_project(
                         f"{existing.get('lifecycle')} project"
                     )
                 return {**existing, "created": False}
+        from ouroboros.project_management import validate_project_parent
+
+        parent_id = validate_project_parent(data["projects"], pid, parent_id)
         entry = {
             "id": pid,
+            "parent_id": parent_id,
             "name": _validated_name(name, pid),
             "chat_id": project_chat_id(pid),
             "working_dir": str(working_dir or "").strip(),
@@ -1089,6 +1095,9 @@ def begin_project_deletion(drive_root: Any, project_id: str) -> Optional[Dict[st
                 continue
             if entry.get("lifecycle") in {PROJECT_DELETING, PROJECT_TOMBSTONED}:
                 return dict(entry)
+            from ouroboros.project_management import promote_project_children
+
+            promote_project_children(data["projects"], entry)
             entry["lifecycle"] = PROJECT_DELETING
             entry["routing_generation"] = int(entry.get("routing_generation") or 0) + 1
             entry["admission_closed_at"] = utc_now_iso()
@@ -1374,12 +1383,23 @@ def projects_summary(drive_root: Any, *, limit: int = 50, chat_id: Any = None,
         facts = {room["chat_id"]: room for room in ds.rooms(drive_root)} if projects else {}
     projects = [_with_dialogue_facts(project, facts.get(project["chat_id"])) for project in projects]
     projects.sort(key=lambda project: str(project.get("last_active_at") or ""), reverse=True)
+    by_id = {project["id"]: project for project in projects}
     if chat_id is None and include_pinned:
         # Pins remain reachable without starving the ordinary recent-room slice.
         projects = ([p for p in projects if p.get("pinned") is True]
                     + [p for p in projects if p.get("pinned") is not True][:max(1, int(limit))])
     elif chat_id is None:
         projects = projects[:max(1, int(limit))]
+    # Keep the ordinary recent/pinned selection, then add its ancestors from the
+    # SAME snapshot. A cap cannot strand a child or manufacture a root edge.
+    included = {project["id"] for project in projects}
+    for project in list(projects):
+        parent = project.get("parent_id", "")
+        while isinstance(parent, str) and parent in by_id and parent not in included:
+            ancestor = by_id[parent]
+            projects.append(ancestor)
+            included.add(parent)
+            parent = ancestor.get("parent_id", "")
     absence_covered = False
     for project in projects:
         room = facts.get(project["chat_id"]) or {}
@@ -1405,6 +1425,7 @@ def projects_summary(drive_root: Any, *, limit: int = 50, chat_id: Any = None,
                 absence_covered = None
         out.append({
             "id": project.get("id"),
+            "parent_id": project.get("parent_id", ""),
             "name": project.get("name"),
             "pinned": project.get("pinned") is True,
             "chat_id": project.get("chat_id"),

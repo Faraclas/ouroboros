@@ -258,11 +258,12 @@ def get_tools() -> List[ToolEntry]:
             "name": "list_projects",
             "description": (
                 "List the owner's projects (id, name, recency, running flag) — read-only. "
+                "The recent selection includes its logical ancestors, so it may exceed limit. "
                 "Use it in a main-chat turn to decide whether a message belongs to an existing "
                 "project, then place this work there with move_to_project."
             ),
             "parameters": {"type": "object", "properties": {
-                "limit": {"type": "integer", "default": 50, "description": "Max projects to list."},
+                "limit": {"type": "integer", "default": 50, "description": "Recent-project slice size (up to 200); ancestors are added."},
             }},
         }, _list_projects),
         ToolEntry("tell_task", {

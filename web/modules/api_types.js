@@ -742,6 +742,7 @@
  * @property {boolean=} init_git
  * @property {string=} git_url
  * @property {boolean=} with_workspace
+ * @property {string=} parent_id  // logical only; empty means root
  */
 
 /**
@@ -751,6 +752,9 @@
  * catalog omits notes, sidebar/list omit both. Neither field is agent-memory context.
  * @typedef {Object} ProjectEntry
  * @property {string} id
+ * @property {string=} parent_id  // logical only; legacy absence means root
+ * @property {ProjectAncestor[]=} parent_path  // management rows; root to immediate parent
+ * @property {boolean=} parent_path_complete
  * @property {string=} name
  * @property {string=} description
  * @property {string=} notes
@@ -782,6 +786,7 @@
  */
 
 /** @typedef {import('./client_contract_types.js').ProjectResourceRequest} ProjectResourceRequest */
+/** @typedef {import('./client_contract_types.js').ProjectAncestor} ProjectAncestor */
 /** @typedef {import('./client_contract_types.js').ProjectResourceGit} ProjectResourceGit */
 /** @typedef {import('./client_contract_types.js').ProjectResourceObservation} ProjectResourceObservation */
 /** @typedef {import('./client_contract_types.js').ProjectResource} ProjectResource */
