@@ -220,7 +220,7 @@ On a failed or unknown save, retain the form and read the attempt back as above;
 - **Main's unread:** `main_visible_revision`, Main's room revision (its standalone messages, the count a Project's `visible_revision` is; `null` while unreadable); the shared read cursor is `main_seen_revision` in `/api/ui/preferences` (`null` until a client first sets it; a write is clamped to the revision and never moves back).
 - **Current decisions:** `current_questions` (outstanding questions independent of the recent history page; Main's own as `native` identity rows without form fields) and `main_attention` (human-required task actions); `*_complete` flags and `*_gaps` tell a complete empty set from unavailable evidence. On incomplete reads keep earlier content without granting stale controls.
 - **Modes and budget:** the access and context modes, and money figures (`null` means unknown).
-- **Checkout:** `sha`, the first 8 characters of the commit on disk (the running core's start commit is `running_sha` in `GET /api/update/status`); `branch`, `null` for a detached HEAD or unknown branch.
+- **Checkout:** `sha` is the disk commit's first 8 characters (empty when unavailable); `branch` is null for detached/unknown. Both come from one checkout read, never saved state. Update status's `running_sha` is the separate startup baseline, not universal loaded-module proof.
 - **`served_ui`.**
 
 A quiz-bound activity may carry `owner_wait.quiz_id`, the exact question its wait

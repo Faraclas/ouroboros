@@ -1,11 +1,7 @@
-"""W2-F3 pins: ``/api/state`` serves the runtime repo identity honestly.
+"""Current checkout identity never borrows historical saved-state stamp fields.
 
-On a source-mode install nothing ever stamps ``current_branch``/``current_sha``
-into state.json, so the endpoint answered ``sha: ""`` / ``branch: null`` while
-the process demonstrably ran from a real git checkout. The fix reads the ACTUAL
-checkout (read-only, stdlib file reads — worktree pointers, loose and packed
-refs, detached HEAD) as the fallback; supervisor-stamped state values keep
-winning, and nothing is invented when both sides are silent.
+Synthetic layout cases preserve the existing reader contract. Real Git and
+cross-consumer cases live in test_checkout_identity_consumers.py.
 """
 
 from __future__ import annotations
@@ -83,12 +79,19 @@ def test_unreadable_layouts_degrade_to_unknown_not_invented(tmp_path):
     assert _git_checkout_identity(repo) == (None, "")
 
 
-def test_supervisor_stamped_state_values_win_over_the_checkout(tmp_path, monkeypatch):
+@pytest.mark.parametrize("st", [
+    {"current_branch": "managed-branch", "current_sha": OTHER},
+    {"current_branch": "managed-branch"},
+    {"current_sha": OTHER},
+    {"current_branch": "managed-branch", "current_sha": SHA},
+])
+def test_saved_stamp_never_overrides_or_mixes_with_checkout(tmp_path, monkeypatch, st):
     import ouroboros.config as config
 
     monkeypatch.setattr(config, "REPO_DIR", _plain_checkout(tmp_path / "repo"))
-    st = {"current_branch": "managed-branch", "current_sha": OTHER}
-    assert _runtime_repo_identity(st) == ("managed-branch", OTHER)
+    before = dict(st)
+    assert _runtime_repo_identity(st) == ("ouroboros", SHA)
+    assert st == before
 
 
 def test_source_mode_state_gap_is_filled_from_the_checkout(tmp_path, monkeypatch):
@@ -140,12 +143,9 @@ def test_api_state_serves_the_honest_identity(tmp_path, monkeypatch, stamped, de
     payload = json.loads(response.body)
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"  # #1139: the page's build check reads this sha
-    if stamped:
-        assert payload["branch"] == "managed-branch"
-        assert payload["sha"] == OTHER[:8]
-    else:
-        assert payload["branch"] == (None if detached else "ouroboros")
-        assert payload["sha"] == SHA[:8]
+    assert (payload["branch"], payload["sha"]) == (
+        None if detached else "ouroboros", SHA[:8],
+    )
     # The published schema must accept what the real state endpoint sends,
     # not invent a branch merely to satisfy a string-only consumer.
     import jsonschema

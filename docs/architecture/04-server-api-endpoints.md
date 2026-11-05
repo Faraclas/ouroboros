@@ -1,6 +1,6 @@
 # 4. Server API Endpoints
 
-Browser/CLI routes: `gateway/router.py`; Host Service: §12. Tests check this table in both directions. Shapes: `GET /api/contract`.
+Routes: `gateway/router.py`; shapes: `GET /api/contract`; Host Service: §12. Tests pin it.
 
 `OUROBOROS_NETWORK_PASSWORD` gates non-loopback HTTP and WebSocket access; loopback bypasses it. Health, login/logout and GET/HEAD of the selected public `/auth/` assets stay reachable. A trusted proxy supplies client/TLS facts (`FORWARDED_ALLOW_IPS`; DEPLOYMENT). Browser sessions use an expiring HttpOnly HMAC cookie, `Secure` only under TLS. A pre-accept 4401 WebSocket close appears as a refused handshake (1006); an HTTP 401 confirms sign-out and opens `/auth/login?next=`, resending nothing. Without a password, remote access stays open by operator choice. The gate separately serves `GET/HEAD /api/widget-assets/{token}/{path}` using only the scoped lease (§3), even when a cookie is present; that token never authenticates other requests.
 
@@ -15,7 +15,7 @@ Files routes: `gateway/files.py::file_browser_routes()` (envelopes/parity: §11)
 | GET | `/` | |
 | GET | `/api/health` | 200 during boot too; the `boot` document: §2 Boot order |
 | GET | `/api/contract` | |
-| GET | `/api/state` | |
+| GET | `/api/state` | current checkout pair; never saved stamp |
 | GET | `/api/consciousness` | the consciousness panel: status, spend by cause, places and recent wakes (read-only) |
 | GET | `/api/extensions` | installed-skill projection; never fetches |
 | POST | `/api/skills/{skill}/publish-preflight` | |

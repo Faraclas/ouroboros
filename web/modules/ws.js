@@ -30,8 +30,8 @@ const POST_OPEN_RETRY_MAX_MS = 30000;
  * that disappears or garbles means the page can no longer be proven current
  * (reload). One narrow exception (owner-selected default under uncertainty,
  * netres Q19): a served SHA that is EXACTLY the empty string — the
- * unversioned /api/state fact the server actually sends (sha stays "" while
- * current_sha is unset) — keeps the page when no non-empty SHA was ever
+ * unversioned /api/state fact (the checkout commit is unavailable) — keeps
+ * the page when no non-empty SHA was ever
  * remembered, accepting possibly-stale assets as the disclosed tradeoff.
  * Non-string, whitespace-only, missing-field and parse-failure values after
  * a previous connection are NOT that fact and reload as unknown.

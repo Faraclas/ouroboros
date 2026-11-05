@@ -74,17 +74,14 @@ def _git_checkout_identity(repo_dir: Any) -> tuple:
 
 
 def _runtime_repo_identity(st: Dict[str, Any]) -> tuple:
-    """(branch, sha) for ``/api/state``: supervisor-stamped state values win
-    (they carry managed update/reset provenance); the live checkout fills the
-    source-mode gap; nothing is invented when both are silent."""
-    branch = st.get("current_branch") or None
-    sha = str(st.get("current_sha") or "")
-    if branch and sha:
-        return branch, sha
+    """Current disk identity only; ``st`` is historical managed provenance.
+
+    Never fill a missing checkout field from a saved stamp. The startup-captured
+    generation baseline is separately exposed as update status's ``running_sha``.
+    """
     from ouroboros.config import REPO_DIR
 
-    checkout_branch, checkout_sha = _git_checkout_identity(REPO_DIR)
-    return branch or checkout_branch, sha or checkout_sha
+    return _git_checkout_identity(REPO_DIR)
 
 
 def _evolution_state_public(evolution_state: Dict[str, Any]) -> Dict[str, Any]:
@@ -998,11 +995,8 @@ async def api_state(request: Request) -> JSONResponse:
                 round((spent / limit * 100) if limit > 0 else 0, 1)
                 if spent is not None else None
             ),
-            # W2-F3: state values when the supervisor stamped them, else the
-            # actual runtime checkout (source-mode installs never stamp state).
-            # The retired bare "ouroboros" default was dead code — load_state
-            # always seeds the key (None), so the default never fired — and a
-            # guessed branch is not identity.
+            # One current checkout observation, never historical stamp halves.
+            # This is disk identity, not proof of every loaded module.
             "branch": runtime_branch,
             "sha": (runtime_sha or "")[:8],
             "evolution_enabled": bool(evolution_enabled) if evolution_known else None,

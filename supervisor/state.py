@@ -1273,7 +1273,7 @@ def status_text(workers_dict: Dict[int, Any], pending_list: list,
     lines = []
     lines.append(f"owner_id: {st.get('owner_id')}")
     lines.append(f"session_id: {st.get('session_id')}")
-    lines.append(f"version: {st.get('current_branch')}@{(st.get('current_sha') or '')[:8]}")
+    lines.append(f"saved checkout: {st.get('current_branch')}@{(st.get('current_sha') or '')[:8]}")
     busy_count = sum(1 for w in workers_dict.values() if getattr(w, 'busy_task_id', None) is not None)
     lines.append(f"workers: {len(workers_dict)} (busy: {busy_count})")
     lines.append(f"pending: {len(pending_list)}")

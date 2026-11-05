@@ -1205,7 +1205,7 @@ def _format_budget_line(st: Dict[str, Any]) -> str:
     sha = (st.get("current_sha") or "")[:8]
     branch = st.get("current_branch") or "?"
     if st.get("_budget_accounting_available") is False:
-        return f"—\nBudget: unavailable (physical-attempt ledger error) | {branch}@{sha}"
+        return f"—\nBudget: unavailable (physical-attempt ledger error) | saved checkout {branch}@{sha}"
     spent = float(st.get("spent_usd") or 0.0)
     total = float(TOTAL_BUDGET_LIMIT or 0.0)
     pct = (spent / total * 100.0) if total > 0 else 0.0
@@ -1225,7 +1225,7 @@ def _format_budget_line(st: Dict[str, Any]) -> str:
     )
     return (
         f"—\nBudget: ${spent:.4f} / ${total:.2f} ({pct:.2f}%) "
-        f"[{detail}] | {branch}@{sha}"
+        f"[{detail}] | saved checkout {branch}@{sha}"
     )
 
 
