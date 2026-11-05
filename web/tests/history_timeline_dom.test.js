@@ -316,3 +316,32 @@ test('a line disclosure or late full output keeps a pinned timeline where it is;
     f.renderLiveCardTimeline(f.record);
     assert.equal(f.record.timelineEl.scrollTop, 60, 'a new newest line is followed');
 });
+
+
+test('live-card fallback skips hidden and zero-area following rows before saving the reading anchor', () => {
+    let padding = 0;
+    const box = (top, width, height) => ({ top, bottom: top + height, left: 0, right: width, width, height });
+    const messages = { scrollTop: 200, getBoundingClientRect: () => box(0, 600, 400) };
+    const item = (kind, geometry, rendered = true) => ({
+        dataset: kind === 'ordinary' ? { historyId: 'chat:visible' } : { deckTucked: '1' },
+        classList: { contains: name => kind === 'card' && name === 'chat-live-card' },
+        isConnected: true, getBoundingClientRect: geometry,
+        getClientRects() { return rendered ? [geometry()] : []; },
+        querySelectorAll: () => [], matches: () => false, closest: () => null,
+    });
+    const hidden = item('hidden', () => box(0, 0, 0), false);
+    const card = item('card', () => box(-messages.scrollTop, 600, 220));
+    const zero = item('zero', () => box(0, 0, 0));
+    const following = item('ordinary', () => box(250 + padding - messages.scrollTop, 600, 100));
+    messages.children = [hidden, card, zero, following];
+    messages.contains = node => messages.children.includes(node);
+    const anchors = createTimelineAnchors({ messagesDiv: messages, liveCardRecords: new Map() });
+    const saved = anchors.captureVisibleTimelineAnchor();
+    assert.equal(saved.node, following);
+    assert.equal(saved.historyId, 'chat:visible');
+    assert.equal(saved.offset, 50);
+    padding = 63;
+    assert.equal(anchors.restoreVisibleTimelineAnchor(saved), true);
+    assert.equal(messages.scrollTop, 263);
+    assert.equal(following.getBoundingClientRect().top, 50);
+});

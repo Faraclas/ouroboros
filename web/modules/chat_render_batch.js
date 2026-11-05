@@ -640,9 +640,10 @@ export function createTimelineAnchors({ messagesDiv, liveCardRecords }) {
                 // card. Pinning the card's own top, far above the viewport, would let
                 // the card's shrink or growth move the content the reader is on.
                 const following = nodes.find((item) => {
-                    if (item === topNode) return false;
+                    if (item === topNode || !item.getClientRects().length) return false;
                     const rect = item.getBoundingClientRect();
-                    return rect.top >= messagesRect.top && rect.top < messagesRect.bottom;
+                    return rect.width > 0 && rect.height > 0
+                        && rect.top >= messagesRect.top && rect.top < messagesRect.bottom;
                 });
                 if (following) { topNode = following; node = following; }
             }
