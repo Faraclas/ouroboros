@@ -1,6 +1,7 @@
 """Book projections share captured sources without narrowing Main Max."""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -10,10 +11,10 @@ from ouroboros.context_fit import MinimumViewUnfit, build_context_fit_plan
 from ouroboros.memory import Memory
 
 
-def _capture(tmp_path, task=None):
+def _capture(tmp_path, task=None, *, system_prompt="I am Ouroboros."):
     repo, drive = tmp_path / "repo", tmp_path / "data"
     files = {
-        "prompts/SYSTEM.md": "I am Ouroboros.", "BIBLE.md": "The complete constitution.",
+        "prompts/SYSTEM.md": system_prompt, "BIBLE.md": "The complete constitution.",
         "docs/ARCHITECTURE.md": "# Body\n\nThe whole body map.\n\n## Chapters\n\n- [Runtime](architecture/runtime.md)\n",
         "docs/architecture/runtime.md": "# Runtime\n\nHow I keep work alive.\n\n## Execution\n\nFull mechanism and WHY.\n",
         "docs/DEVELOPMENT.md": "# Engineering\n\nHow I change.\n\n## Chapters\n\n- [Change](development/change.md)\n",
@@ -22,7 +23,7 @@ def _capture(tmp_path, task=None):
     for path, text in files.items():
         target = repo / path
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text)
+        target.write_text(text, encoding="utf-8")
     memory = Memory(drive_root=drive, repo_dir=repo)
     memory.ensure_files()
     (drive / "memory" / "identity.md").write_text("My complete identity.")
@@ -85,6 +86,20 @@ def test_child_keeps_biography_and_book_orientation_in_max(tmp_path):
     assert "Work from this assignment first" in text and "name what you read in your report" in text
     assert "The shared biography is loaded above" not in text
     assert "parent's selected discussion" not in text
+
+
+@pytest.mark.parametrize("mode", ["max", "low", "nano"])
+@pytest.mark.parametrize("task_fields", [
+    {},
+    {"metadata": {"source": "task_followup", "origin_task_id": "earlier-owner"}},
+    {"delegation_role": "subagent"},
+], ids=["root", "scheduled-related-root", "native-child"])
+def test_current_shared_prompt_reaches_each_native_context(tmp_path, mode, task_fields):
+    """Delivery of the complete source, not a keyword/obedience assertion."""
+    prompt = (Path(__file__).resolve().parents[1] / "prompts" / "SYSTEM.md").read_text(encoding="utf-8")
+    env, core, task = _capture(tmp_path, task_fields, system_prompt=prompt)
+    rendered = _text(_plan(env, core, task, mode), mode)
+    assert rendered.count(prompt) == 1
 
 
 def test_missing_chapter_cannot_masquerade_as_a_complete_book(tmp_path):
