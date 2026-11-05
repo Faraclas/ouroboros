@@ -381,7 +381,13 @@ def _native(main_call, monkeypatch, tmp_path, *, task_text="hi", owner_mode="low
     tools._ctx.task_metadata = {"model_role": "main"}
     tools._ctx.model_wait_context = owner
     env, memory, _rooms = world(tmp_path / "w")
-    task = {"type": "task", "text": task_text, "id": "tmain", "chat_id": 1}
+    # This is a synthetic installation: neither a session queue nor a cached
+    # host-wide process scan is part of the window/rebind input under test.
+    from ouroboros import config, context_health
+    monkeypatch.setattr(config, "DATA_DIR", env.drive_root)
+    monkeypatch.setattr(context_health, "_stray_server_note", lambda _env: "")
+    task = {"type": "task", "text": task_text, "id": "tmain", "chat_id": 1,
+            "budget_drive_root": str(env.drive_root)}
     core = context._capture_context_core(env, memory, task, None, None)
     core = core if view is None else dataclasses.replace(core, memory_view_json=view)
     core = dataclasses.replace(core, architecture_md=core.architecture_md + "\n\n" + "word " * (books // 5)) if books else core
@@ -985,3 +991,22 @@ def test_a_short_nano_task_stays_text_when_the_fixed_part_alone_exceeds_the_targ
     assert context_fit.tool_schema_tokens(heavy) > OWNER_NANO_TARGET_TOKENS  # the target is out of reach anyway
     assert "FINAL: no new files." in json.dumps(first[1]["content"]) and "[Exact task input source]" not in json.dumps(first)
     assert len(words) > 2_000  # the pointer would have been "shorter", and bought nothing
+
+
+def test_native_context_fixture_does_not_read_another_session_queue_or_host_probe(main_call, monkeypatch, tmp_path):
+    import time
+    from ouroboros import config, context_health
+    foreign = tmp_path / 'foreign-session'
+    (foreign / 'state').mkdir(parents=True)
+    (foreign / 'state/queue_snapshot.json').write_text(json.dumps({
+        'running': [{'id': 'foreign-work'}], 'pending': [], 'worker_total': 7,
+        'reaping_count': 0, 'assignable_idle_workers': 0}), encoding='utf-8')
+    (foreign / 'state/reviewer_slot_last_execution.json').write_text(json.dumps({
+        'FOREIGN-REVIEWER-HISTORY': {'status': 'ok', 'ts': '2026-01-01T00:00:00Z'}}), encoding='utf-8')
+    monkeypatch.setattr(config, 'DATA_DIR', foreign)
+    monkeypatch.setattr(context_health, '_STRAY_PROBE_CACHE', {'ts': time.time(), 'note': 'FOREIGN-STRAY-PROBE'})
+    _ctx, _gateway, _tools, _events, plan, _windows = _native(main_call, monkeypatch, tmp_path)
+    rendered = json.dumps(plan(1_000_000).projection('low').system_message())
+    assert str(foreign) not in rendered
+    assert 'FOREIGN-STRAY-PROBE' not in rendered
+    assert 'FOREIGN-REVIEWER-HISTORY' not in rendered

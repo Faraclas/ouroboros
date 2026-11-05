@@ -734,3 +734,20 @@ def test_empty_inline_manifest_is_a_read_without_a_task_store(tmp_path):
     absent = tmp_path / 'not-created'
     assert resolve_attachment_manifest(absent, '', {}) == []
     assert not absent.exists()
+
+
+@pytest.mark.parametrize('rootless', [False, True])
+@pytest.mark.parametrize('missing', [False, True])
+def test_inline_manifest_resolution_preserves_metadata_before_byte_use(tmp_path, rootless, missing):
+    from ouroboros.artifacts import stage_task_attachments, resolve_attachment_manifest, materialize_inherited_attachment_manifest
+    original = tmp_path / 'document.txt'
+    original.write_text('Captured owner input', encoding='utf-8')
+    manifest = stage_task_attachments(tmp_path, 'legacy-input', [{'path': str(original)}])
+    if missing:
+        __import__('pathlib').Path(manifest[0]['abs_path']).unlink()
+    resolved = resolve_attachment_manifest(None if rootless else tmp_path,
+                                           '' if rootless else 'legacy-input', {'attachment_manifest': manifest})
+    assert len(resolved) == 1 and resolved[0]['abs_path'] == manifest[0]['abs_path']
+    copied, error = materialize_inherited_attachment_manifest(resolved, tmp_path / 'receiver', 'child')
+    assert bool(error) is missing
+    assert bool(copied) is not missing

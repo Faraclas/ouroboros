@@ -361,7 +361,7 @@ def resolve_attachment_manifest(drive_root: Any, task_id: str, authority: Any) -
             raise ValueError("attachment manifest count is invalid")
     if not rows:
         return []
-    root = task_artifact_dir_path(drive_root, task_id, create=False).resolve(strict=False)
+    root = None
     for row in rows:
         if row["status"] == "rejected":
             row.pop("abs_path", None)
@@ -371,22 +371,32 @@ def resolve_attachment_manifest(drive_root: Any, task_id: str, authority: Any) -
             if row.get("abs_path"):
                 try:
                     pathlib.Path(row["abs_path"]).stat()
-                except (FileNotFoundError, NotADirectoryError):
+                except OSError:
                     pass
                 else:
                     continue
             if row.get("root") != "artifact_store" or rel.is_absolute() or len(rel.parts) != 2 or rel.parts[0] != _ATTACHMENTS_SUBDIR or ".." in rel.parts:
                 continue  # preserve an old inline failure, not a guessed source
+            if drive_root is None or not task_id:
+                continue  # legacy inline consumers may have no task store
         if rel.is_absolute() or len(rel.parts) != 2 or rel.parts[0] != _ATTACHMENTS_SUBDIR or ".." in rel.parts:
             raise ValueError("attachment manifest contains an invalid file reference")
+        root = root or task_artifact_dir_path(drive_root, task_id, create=False).resolve(strict=False)
         path = root.joinpath(*rel.parts)
         if path.is_symlink() or not path.resolve(strict=False).is_relative_to(root):
+            if legacy:
+                continue
             raise ValueError("attachment manifest file escapes its task owner")
         if row.get("root") != "artifact_store" or type(row.get("size")) is not int or not re.fullmatch(r"[0-9a-f]{64}", str(row.get("sha256") or "")):
+            if legacy:
+                continue
             raise ValueError("attachment manifest file has no captured identity")
-        row["abs_path"] = str(path)
         if legacy:
-            path.stat()  # a missing placement can be retried at this owner's other known store
+            try:
+                path.stat()
+            except OSError:
+                continue  # metadata lookup/reuse does not require the original bytes
+        row["abs_path"] = str(path)
     return rows
 
 
