@@ -43,9 +43,9 @@ def _route(target: Mapping) -> dict:
 
 
 def _eligible(target: Mapping) -> bool:
-    from ouroboros.copilot_responses import copilot_endpoint, _copilot_uses_responses_api
-    return (target.get("provider") == "openai-compatible" and copilot_endpoint(target.get("base_url"))
-            and _copilot_uses_responses_api(target.get("resolved_model")))
+    from ouroboros.copilot_responses import uses_copilot_responses
+    return (target.get("provider") == "openai-compatible"
+            and uses_copilot_responses(target.get("base_url"), target.get("resolved_model")))
 
 
 @contextlib.contextmanager

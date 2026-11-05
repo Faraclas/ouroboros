@@ -76,6 +76,23 @@ def _resolve_or_provider(connection_routing: Any = None) -> Dict[str, Any]:
             **_or_provider_value(connection_routing)}
 
 
+def resolve_temperature(target: Dict[str, Any], explicit: Optional[float], hint: Optional[float]) -> Optional[float]:
+    """Resolve a nonbinding hint only after the invocation's effective route.
+
+    Raw operations and translated Copilot Responses defer hints to provider
+    defaults. Explicit values remain caller intent, including zero; this does
+    not assert provider acceptance or alter existing optional-field recovery.
+    """
+    from ouroboros.copilot_responses import uses_copilot_responses
+
+    if explicit is not None:
+        return explicit
+    if target.get("provider") == "claudexor" or uses_copilot_responses(
+            target.get("base_url"), target.get("resolved_model")):
+        return None
+    return hint
+
+
 def _resolver_route(model: str) -> RouteParts:
     """The route the resolver reads; a `` (local)`` display spelling keeps the remote
     head it always resolved to, its suffix staying part of the model id."""

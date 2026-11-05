@@ -1,7 +1,7 @@
 """Copilot option intent through real SDK/public paths; all HTTP is mocked.
 
-Temperature omission is an explicitly OPEN compatibility concern, not proof
-that the service rejects or ignores a supplied value. Only description is fixed.
+Explicit temperature and schema descriptions preserve caller intent. Review
+hints defer on the translated route; mocked acceptance is not service support.
 """
 import asyncio
 import copy
@@ -64,8 +64,9 @@ def option_wire(monkeypatch, tmp_path):
         pytest.fail("translated Responses must not teach Chat compatibility")
     def handle(self, request):
         sent.append({"path": request.url.path, "body": json.loads(request.read())})
-        if state["error"]:
-            return hm.Response(400, json={"error": state["error"]})
+        error = state["error"](sent[-1]) if callable(state["error"]) else state["error"]
+        if error:
+            return hm.Response(400, json={"error": error})
         return hm.Response(200, json=dict(
             id="format-fixture", model=target["resolved_model"], status="completed",
             output=[dict(type="message", role="assistant", status="completed",
@@ -166,14 +167,28 @@ def test_async_sdk_builder_preserves_description(option_wire, stream, descriptio
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("no_proxy", [False, True])
 @pytest.mark.parametrize("options", [{}, {"default_temperature": .2}, {"temperature": 0},
                                     {"temperature": .7, "default_temperature": .2}])
-def test_characterizes_current_temperature_omission(option_wire, asynchronous, stream, options):
-    """Present behaviour only; revise with an evidence-backed sampling repair."""
+def test_public_temperature_intent_not_review_hint(option_wire, asynchronous, stream, no_proxy, options):
+    """Explicit values survive; an optional review hint never becomes sampling."""
     invoke, sent, _, root, task_id = option_wire
-    message, usage = invoke(asynchronous=asynchronous, stream=stream, **options)
-    assert json.loads(message["content"]) == {"ok": True} and len(sent) == 1
-    assert "temperature" not in sent[0]["body"]
+    before = copy.deepcopy(options)
+    message, usage = invoke(asynchronous=asynchronous, stream=stream, no_proxy=no_proxy, **options)
+    assert json.loads(message["content"]) == {"ok": True} and len(sent) == 1 and options == before
+    expected = options.get("temperature")
+    assert sent[0]["body"].get("temperature") == expected
+    assert ("temperature" in sent[0]["body"]) == (expected is not None)
+    assert len(usage["ledger_attempt_ids"]) == 1
+    fact = usage["request_wire"]
+    manifest = json.loads((root / "observability" / "calls" / task_id / (fact["attempt_id"] + ".json")).read_text(encoding="utf-8"))
+    candidate = read_blob_ref(root, manifest["full_payload_ref"])
+    assert candidate.get("temperature") == expected
+    assert ("temperature" in candidate) == (expected is not None)
+    assert "default_temperature" not in candidate
+    assert manifest["candidate_raw_sha256"] == fact["candidate_sha256"]
+    assert usage["http_projection"]["temperature"] == expected
+    assert usage["request_wire"]["observed_http"]["temperature"] == expected
     assert_private_http(usage, root, task_id, sent[0]["body"])
 
 

@@ -218,6 +218,7 @@ def http_projection(request: Any) -> dict:
         "payload_sha256": physical_candidate_sha256(payload),
         "model": payload.get("model"),
         "effort": reasoning.get("effort") if isinstance(reasoning, dict) else None,
+        "temperature": payload.get("temperature"),
         "delivery": "not_attested",
     }
 

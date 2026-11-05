@@ -1299,9 +1299,9 @@ def finalize_wire_response(
         from ouroboros.request_wire_attempt import WireUsageDisclosure
 
         disclosure = WireUsageDisclosure.from_candidate(candidate, capture).as_dict()
-        from ouroboros.copilot_responses import copilot_endpoint, _copilot_uses_responses_api
-        translated = (copilot_endpoint(registered.target.get("base_url"))
-                      and _copilot_uses_responses_api(registered.target.get("resolved_model")))
+        from ouroboros.copilot_responses import uses_copilot_responses
+        translated = uses_copilot_responses(registered.target.get("base_url"),
+                                           registered.target.get("resolved_model"))
         projection = normalized_usage.get("http_projection")
         if translated:
             disclosure.update(candidate_boundary="sdk_input", applied_effort_source="sdk_input",

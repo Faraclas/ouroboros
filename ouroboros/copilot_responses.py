@@ -181,6 +181,9 @@ def _copilot_chat_to_responses_payload(payload: Dict[str, Any]) -> Dict[str, Any
     if mapped_eff:
         out["reasoning"] = {"effort": mapped_eff}
 
+    if payload.get("temperature") is not None:
+        out["temperature"] = payload["temperature"]
+
     rf = payload.get("response_format")
     if isinstance(rf, dict) and rf.get("type"):
         if rf["type"] == "json_object":
@@ -320,6 +323,11 @@ def copilot_endpoint(base_url: Any) -> bool:
         return False
 
 
+def uses_copilot_responses(base_url: Any, model: Any) -> bool:
+    """The existing codec selection, not evidence that an option is supported."""
+    return copilot_endpoint(base_url) and _copilot_uses_responses_api(model)
+
+
 def _prepare_request(request: Any, httpx_mod: Any):
     if request.method != "POST" or not copilot_endpoint(str(request.url)):
         return None
@@ -329,7 +337,7 @@ def _prepare_request(request: Any, httpx_mod: Any):
         payload = json.loads(request.read())
     except (ValueError, UnicodeError):
         return None
-    if not isinstance(payload, dict) or not _copilot_uses_responses_api(payload.get("model")):
+    if not isinstance(payload, dict) or not uses_copilot_responses(str(request.url), payload.get("model")):
         return None
     body = json.dumps(_copilot_chat_to_responses_payload(payload)).encode("utf-8")
     path = request.url.path[:-len("/chat/completions")] + "/responses"
