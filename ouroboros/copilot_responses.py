@@ -67,7 +67,7 @@ _COPILOT_EFFORT_MAP = {
     "medium": "medium",
     "high": "high",
     "xhigh": "xhigh",
-    "max": "xhigh",
+    "max": "max",
     "ultra": "xhigh",
 }
 

@@ -1,10 +1,8 @@
 # Naming and boundaries
 
-This chapter owns the rules that keep the body legible from outside: naming and
-dependency direction, the CLI contract, cognitive quality and LLM-first affordances,
-where a fact may live in the two books, the anti-patterns behind real incidents,
-external facts and provider independence. Each rule names what enforces it or says
-that only review does, and points to ARCHITECTURE for mechanism.
+Rules for naming, boundaries, CLI, cognitive quality, LLM-first affordances and
+provider independence. Each names its gate or review-only status; ARCHITECTURE
+owns mechanisms.
 
 - Code, comments, docstrings, commit messages and product UI strings are English source
   copy; a non-English owner reads the install's translation memory
@@ -301,6 +299,7 @@ Tests: `test_image_capability_contract.py` (unknown images), `test_model_name_in
 
 | Location | Fact | Evidence & re-probe | If stale |
 |---|---|---|---|
+| `copilot_responses.py` | Distinct `max` for gpt-6.1-sol | `api.business.githubcopilot.com/models`, 2026-11-04 task69a7ca11 (catalog, not applied effort) | May surface rejection or use existing value repair |
 | `copilot_native_custody.py` | `api.business.githubcopilot.com` gpt-6.1-sol/high: encrypted reasoning/phase replay | 2026-11-04 task2df086c5 three-send/two-replay HTTP fixture; Microsoft `responsesApi.ts@3712bd7d` | Re-probe before widening; false trust rejects (one400 strip), excess stripping loses continuity |
 | `llm_openai_compatible.py::_copilot_block_choice` | Copilot business HTTPS Chat uses unindexed content blocks | HTTP probe 2026-11-03; sources/digests in `test_copilot_choice_blocks.py`. Re-probe before widening | Changed dialect: ambiguity rejects without resend; other hosts keep standard choices |
 | `ouroboros/tools/imagegen.py`; `ouroboros/gateways/image_api.py` | Image wire facts | [Dated sources](../IMAGE_GENERATION.md#direct-api-contracts); re-check each exact route | Stale positives refuse requests; negatives hide capability |

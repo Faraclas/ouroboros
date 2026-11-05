@@ -177,10 +177,16 @@ def test_domain_and_model_boundary(clean_env, host, model, translate):
                        http_client=hm.Client(transport=hm.MockTransport(handle))) as remote:
         nt.attach_copilot_client(remote)
         nt.attach_copilot_client(remote)  # same client and with_options share its http owner
-        remote.with_options(timeout=17).chat.completions.create(model=model, messages=[dict(role="user", content="fixture")])
+        remote.with_options(timeout=17).chat.completions.create(
+            model=model, messages=[dict(role="user", content="fixture")], reasoning_effort="max")
     assert len(seen) == 1
     assert seen[0].url.path == ("/responses" if translate else "/chat/completions")
     assert seen[0].extensions["timeout"]["read"] == 17
+    body = json.loads(seen[0].content)
+    if translate:
+        assert body["reasoning"] == {"effort": "max"} and "reasoning_effort" not in body
+    else:
+        assert body["reasoning_effort"] == "max" and "reasoning" not in body
 
 
 def test_redirect_auth_metadata_and_observation_failure(monkeypatch, clean_env):
@@ -265,7 +271,9 @@ def test_concurrent_sender_observations_are_isolated(monkeypatch):
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("effort,native_effort", [("minimal", "low"), ("high", "high"), ("max", "xhigh"), ("none", None)])
+@pytest.mark.parametrize("effort,native_effort", [
+    ("minimal", "low"), ("low", "low"), ("medium", "medium"), ("high", "high"),
+    ("xhigh", "xhigh"), ("max", "max"), ("ultra", "xhigh"), ("none", None)])
 def test_accounted_consumer_keeps_sdk_and_http_boundaries(tmp_path, monkeypatch, clean_env, asynchronous, stream, effort, native_effort):
     import openai
     from ouroboros import usage_accounting as ua
@@ -311,6 +319,8 @@ def test_accounted_consumer_keeps_sdk_and_http_boundaries(tmp_path, monkeypatch,
     fact = usage["request_wire"]
     observed = fact["observed_http"]
     assert fact["candidate_boundary"] == "sdk_input"
+    assert fact["applied_effort_source"] == "sdk_input"
+    assert fact["reported_effort"] is None and fact["reported_effort_source"] is None
     assert fact["applied_effort"] == effort and observed["effort"] == native_effort
     assert fact["candidate_sha256"] != observed["payload_sha256"]
     assert observed["sdk_candidate_sha256"] == fact["candidate_sha256"]
