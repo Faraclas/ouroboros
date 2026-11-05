@@ -128,8 +128,9 @@ def test_shell_catalog_schema_bytes_and_handler_owners_are_stable():
     # only outputs accept a relative '../', judged by resolved location. Rolled for the
     # tool-reuse sprint (20.10): run_script says the selected cwd is not on Python's
     # import path and that a reusable script lives in a skill payload run with run_command.
+    # Rolled for current-byte capture: explicit eligible outputs need no same-run write.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "466aa899d0d740260f9eddb78cb22226ffdebe29e73b0407d5c07bd5636ebd92"
+        "a92485821fa34c72f5cfbb4656e714fb80310a4025bcbe076ecb5573b5585121"
     )
     original = json.loads(schema_bytes)
     for schema in original:

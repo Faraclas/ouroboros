@@ -379,7 +379,7 @@ def test_an_absent_output_and_a_readable_one_need_no_disclosure(project):
     registry._ctx.emit_progress_fn = seen.append
     result = _run(registry, "run_command", active / "site", ["kept.txt", "fresh.txt"], "Path('fresh.txt').write_text('new')")
     assert result.code == "OK" and "output baseline unavailable" not in result.text, result.text
-    assert "unchanged output (cosmetic): kept.txt" in result.text and not any("baseline" in row for row in seen)
+    assert result.text.count("registered output") == 2 and not any("baseline" in row for row in seen)
 
 
 @posix_permissions

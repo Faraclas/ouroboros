@@ -263,6 +263,29 @@ def _call_target_signature(args: Dict[str, Any]) -> tuple[str, set[str]]:
     return json.dumps(parts, sort_keys=True, default=str), paths
 
 
+def _output_target_matches(args: Dict[str, Any], later_args: Dict[str, Any], paths: list[str]) -> bool:
+    """Match outputs, never a shared cwd or a relative name in another folder.
+
+    Use recorded lexical coordinates only; recovery does not re-read today's files.
+    Unknown/default bindings can conservatively withhold credit, not capture.
+    """
+    import os.path
+
+    cwd = str(args.get("cwd") or "")
+    same_context = ((bool(cwd) or bool(later_args.get("outputs")))
+                    and cwd == str(later_args.get("cwd") or "")
+                    and args.get("root") == later_args.get("root"))
+    targets = [args.get("path"), *(args.get("outputs") or [])]
+    for target in targets:
+        if not isinstance(target, str) or not target:
+            continue
+        if target in paths and (pathlib.Path(target).is_absolute() or same_context):
+            return True
+        if pathlib.Path(cwd).is_absolute() and os.path.normpath(os.path.join(cwd, target)) in paths:
+            return True
+    return False
+
+
 def _tool_error_record(item: Dict[str, Any], *, recovered_by: int | None = None) -> Dict[str, Any]:
     record = {
         "tool": str(item.get("tool") or "unknown"),
@@ -366,10 +389,17 @@ def _classify_tool_errors(llm_trace: Dict[str, Any]) -> Dict[str, List[Dict[str,
             # trace preview — the same typed signal turn_has_reviewable_effects uses, so
             # the marker is never re-derived from prose on this layer (C9.5).
             artifact_registered = bool(later.get("artifact_registered"))
+            produced = later.get("artifact_produced_paths")
             if status in ("artifact_output_error", "artifact_output_undeclared"):
-                recovered = artifact_registered and (same_path or not target_paths)
+                # Successful capture of the failed output suffices, even unchanged.
+                captured = [later_args.get("path"), *(later_args.get("outputs") or []), *(produced or [])]
+                matched = _output_target_matches(args, later_args, captured) if isinstance(produced, list) else (same_path or not target_paths)
+                recovered = artifact_registered and matched
             else:
-                recovered = same_target or (artifact_registered and same_path)
+                # Capture alone proves no producer repair; legacy traces retain
+                # their historical signal. Empty provenance never invokes it.
+                artifact_recovery = _output_target_matches(args, later_args, produced) if isinstance(produced, list) else same_path
+                recovered = same_target or (artifact_registered and artifact_recovery)
             if recovered:
                 recovered_by = later_idx
                 break

@@ -2,8 +2,8 @@
 
 Owns the protected and credential-like refusals that keep a control-plane or
 secret path out of the deliverable store, the complete file/directory
-fingerprints that decide whether a declared output actually changed, and the
-copy into the task artifact store. The allowed artifact roots and the lexical
+fingerprints that describe whether this invocation changed it, and current
+capture into the task artifact store. The allowed artifact roots and the lexical
 audit that notices an undeclared user_files deliverable live with the upstream
 extraction in ``tools/shell_audit.py``; the handlers that call this surface
 stay with ``tools/shell.py``.
@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 
 import hashlib
+import json
 import os
 import pathlib
 import stat
@@ -29,6 +30,7 @@ from ouroboros.tools.registry import (
     ToolContext,
 )
 from ouroboros.tools.deliverables_shell import lexical_user_files_block_reason
+from ouroboros.tools.tool_result import _MAX_META_BYTES
 from ouroboros.tools.shell_audit import (
     _allowed_output_roots,
     _presence_allows_user_output,
@@ -448,8 +450,8 @@ def _declared_output_baseline(
 ) -> tuple[Dict[str, tuple[bool, int, str]], str]:
     """``(baseline, problem)``: a baseline that could not be taken is said before launch.
 
-    Without it registration cannot tell an unchanged existing output from a new one,
-    so the problem also rides in the result; no baseline evidence is invented."""
+    The baseline describes production, not export freshness. Capture still reads
+    current eligible bytes when the baseline is unavailable."""
     try:
         return _snapshot_declared_outputs(
             ctx, outputs, work_dir, cwd_root=cwd_root, changed_paths=changed_paths, binding=binding,
@@ -543,14 +545,15 @@ def _register_process_outputs(
     before_outputs: Dict[str, tuple[bool, int, str]] | None = None,
     binding: ResolvedResourceBinding | None = None,
     output_context: DockerOutputContext | None = None,
-) -> tuple[str, bool, bool]:
-    """Copy declared command outputs into the task artifact store."""
+) -> tuple[str, bool, bool, list[str]]:
+    """Return note, failure, actual capture, and changed captured output paths."""
 
     if not outputs:
-        return "", False, False
+        return "", False, False, []
     notes: list[str] = []
     failed = False
     registered = False  # at least one canonical artifact record was actually created
+    produced_paths: set[str] = set()  # changed admitted captures, never unrelated siblings
     for raw_item in outputs:
         text = str(raw_item or "").strip()
         try:
@@ -587,13 +590,8 @@ def _register_process_outputs(
         before = (before_outputs or {}).get(str(source), (False, -1, ""))
         after = _fingerprint_output(source, resolved_output=resolved)
         if before[0] and before == after:
-            # Present-but-unchanged is NOT a failure (a deterministic re-run, or a
-            # command that re-verifies an existing artifact): note it cosmetically
-            # and skip re-registration. "Did it actually work?" lives on the
-            # objective/review axis, not the tool-execution axis (Bible P5). A
-            # genuinely MISSING declared output above stays a blocking failure.
-            notes.append(f"unchanged output (cosmetic): {text}")
-            continue
+            # Invocation provenance cannot establish freshness of the canonical copy.
+            notes.append(f"capturing existing output (unchanged during invocation): {text}")
         if source.is_file():
             try:
                 record = copy_file_to_task_artifacts(ctx, source, kind="process_output")
@@ -603,6 +601,8 @@ def _register_process_outputs(
                 continue
             if record:
                 registered = True
+                if str(source) in (before_outputs or {}) and before != after:
+                    produced_paths.update((text, str(source)))
                 notes.append(
                     f"registered output {source} -> artifact_store:{record.get('name')} "
                     f"sha256={str(record.get('sha256') or '')[:12]}"
@@ -655,6 +655,8 @@ def _register_process_outputs(
                 continue
             if records:
                 registered = True
+                if str(source) in (before_outputs or {}) and before != after:
+                    produced_paths.update((text, str(source)))
                 names = ", ".join(str(record.get("name") or "") for record in records)
                 notes.append(f"registered directory output {source} -> artifact_store:{names}")
             else:
@@ -663,17 +665,21 @@ def _register_process_outputs(
         else:
             notes.append(f"skipped non-file output: {text}")
             failed = True
+    # Reserve half the existing producer budget for process facts and wrappers.
+    # Capture is unlimited; optional recovery evidence must not break publication.
+    if len(json.dumps(sorted(produced_paths), ensure_ascii=True).encode("utf-8")) > _MAX_META_BYTES // 2:
+        produced_paths.clear()  # omission would activate historical broad recovery
+        notes.append("production recovery unavailable: changed-path evidence exceeds its metadata share; capture is unaffected")
     if not notes:
-        return "", False, False
-    # Only canonical registration gets ARTIFACT_OUTPUTS; cosmetic unchanged-output
-    # notes use ARTIFACT_OUTPUT_NOTE and cannot forge artifact_registered recovery.
+        return "", False, False, []
+    # Only actual canonical capture gets ARTIFACT_OUTPUTS; it proves no producer success.
     if failed:
         prefix = "⚠️ ARTIFACT_OUTPUT_ERROR"
     elif registered:
         prefix = "ARTIFACT_OUTPUTS"
     else:
         prefix = "ARTIFACT_OUTPUT_NOTE"
-    return "\n\n" + prefix + ":\n" + "\n".join(f"- {note}" for note in notes), failed, registered
+    return "\n\n" + prefix + ":\n" + "\n".join(f"- {note}" for note in notes), failed, registered, sorted(produced_paths)
 
 
 def _sensitive_output_component_reason(parts: tuple[str, ...]) -> str:

@@ -823,6 +823,7 @@ def _stop_service(ctx: ToolContext, name: str = "service") -> str:
         artifact_note = ""
         artifact_failed = False
         artifact_registered = False
+        produced_paths = []
         if record.outputs:
             try:
                 from ouroboros.tools.shell import _register_process_outputs
@@ -835,7 +836,7 @@ def _stop_service(ctx: ToolContext, name: str = "service") -> str:
                     cwd_source=record.cwd_source,
                     skill_name=record.skill_name,
                 )
-                artifact_note, artifact_failed, artifact_registered = _register_process_outputs(
+                artifact_note, artifact_failed, artifact_registered, produced_paths = _register_process_outputs(
                     ctx,
                     record.outputs,
                     pathlib.Path(record.cwd),
@@ -874,14 +875,14 @@ def _stop_service(ctx: ToolContext, name: str = "service") -> str:
                 status="ok",
                 code="OK",
                 text=rendered,
-                meta={"artifact_registered": True} if artifact_registered else {},
+                meta={"artifact_registered": True, "artifact_produced_paths": produced_paths} if artifact_registered else {},
             ),
         )
     payload = executor_stop_service(ctx, service_name)
     if payload is not None:
         if payload.get("stop_failed"):
             return "⚠️ SERVICE_STOP_ERROR (stop_service): executor backend did not confirm service termination.\n\n" + json.dumps(payload, ensure_ascii=False, indent=2)
-        artifact_registered = _finalize_executor_service_outputs(ctx, payload)
+        artifact_registered, produced_paths = _finalize_executor_service_outputs(ctx, payload)
         rendered = json.dumps(payload, ensure_ascii=False, indent=2)
         if payload["artifact_output_failed"]:
             text = "⚠️ ARTIFACT_OUTPUT_ERROR (stop_service): declared executor service outputs were not finalized.\n\n" + rendered
@@ -899,23 +900,24 @@ def _stop_service(ctx: ToolContext, name: str = "service") -> str:
                 status="ok",
                 code="OK",
                 text=rendered,
-                meta={"artifact_registered": True} if artifact_registered else {},
+                meta={"artifact_registered": True, "artifact_produced_paths": produced_paths} if artifact_registered else {},
             ),
         )
     return f"⚠️ SERVICE_NOT_FOUND: {name}"
 
 
-def _finalize_executor_service_outputs(ctx: ToolContext, payload: Dict[str, Any]) -> bool:
-    """Finalize a confirmed stop with its start context; return registration status.
+def _finalize_executor_service_outputs(ctx: ToolContext, payload: Dict[str, Any]) -> tuple[bool, list[str]]:
+    """Finalize a confirmed stop; return capture and changed captured paths.
 
     Shared by explicit stop and normal task completion. Kept services and Panic
     bypass this; an unconfirmed stop retains custody and its output inputs.
     """
     if payload.get("stop_failed") or payload.get("cleanup_dispatched") is False:
-        return False
+        return False, []
     artifact_note = ""
     artifact_failed = False
     artifact_registered = False
+    produced_paths = []
     before_outputs = payload.pop("_before_outputs", {})
     output_context = payload.pop("_output_context", None)
     if payload.get("outputs"):
@@ -930,7 +932,7 @@ def _finalize_executor_service_outputs(ctx: ToolContext, payload: Dict[str, Any]
                 cwd_source=str(payload.get("cwd_source") or ""),
                 skill_name=str(payload.get("skill_name") or ""),
             )
-            artifact_note, artifact_failed, artifact_registered = _register_process_outputs(
+            artifact_note, artifact_failed, artifact_registered, produced_paths = _register_process_outputs(
                 ctx,
                 [str(item) for item in (payload.get("outputs") or [])],
                 pathlib.Path(str(payload.get("host_cwd") or ".")),
@@ -947,7 +949,7 @@ def _finalize_executor_service_outputs(ctx: ToolContext, payload: Dict[str, Any]
     if artifact_note:
         payload["artifact_outputs"] = artifact_note.strip()
     payload["artifact_output_failed"] = bool(artifact_failed)
-    return bool(artifact_registered)
+    return bool(artifact_registered), produced_paths
 
 
 def stop_task_services(ctx: ToolContext) -> List[Dict[str, Any]]:
@@ -1167,7 +1169,7 @@ def get_tools() -> List[ToolEntry]:
                 "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Ordinary literal environment overrides, passed unchanged on local and Docker executors over the minimal host baseline. Use env_from_settings for secrets."},
                 "env_from_settings": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Root tasks and Cyber acting tasks: environment name to saved setting key. References override literal env; Settings-classified secrets are masked in diagnostics. Explicit read-only tasks retain their existing limits."},
                 "readiness": {"type": "object", "default": {}, "description": "Optional {log_contains|stdout_contains, timeout_sec} readiness probe."},
-                "outputs": {"type": "array", "items": {"type": "string"}, "default": [], "description": "Files generated by the service to copy into the task artifact store when the service stops. A declaration whose location is refused stops the start before the service launches. Only outputs accept a relative '../' spelling, judged by its resolved location like an absolute one; cwd and file-tool path rules are unchanged."},
+                "outputs": {"type": "array", "items": {"type": "string"}, "default": [], "description": "Eligible files/directories captured at their current bytes when the service stops, even if unchanged during its lifetime. A declaration whose location is refused stops the start before the service launches. Only outputs accept a relative '../' spelling, judged by its resolved location like an absolute one; cwd and file-tool path rules are unchanged."},
                 "keep_alive": {"type": "boolean", "default": False, "description": "Leave this service running after the task ends (e.g. a dev server the user or an external verifier still needs). It stays custody-ledgered and dies with the server session or panic."},
             }, "required": ["cmd"]},
         }, _start_service, is_code_tool=True, timeout_sec=30, mutates_worktree=True),

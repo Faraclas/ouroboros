@@ -478,7 +478,7 @@ def _run_shell(
                 + _format_process_output(res.stdout or "", res.stderr or "")
             )
             return _masked_green_disclosure(ctx, _publish_process_result(ctx, "ARTIFACT_OUTPUT_UNDECLARED", text, exit_code=0, shell_regex_auto_corrected=regex_autocorrected, meta=process_meta), cmd)
-        artifact_note, artifact_failed, artifact_registered = _register_process_outputs(
+        artifact_note, artifact_failed, artifact_registered, produced_paths = _register_process_outputs(
             ctx,
             outputs,
             pathlib.Path(work_dir),
@@ -526,10 +526,10 @@ def _run_shell(
                 + artifact_note
                 + executor_note
             )
-            result = _masked_green_disclosure(ctx, _publish_process_result(ctx, "ARTIFACT_OUTPUT_ERROR", text, exit_code=0, shell_regex_auto_corrected=regex_autocorrected, meta=process_meta), cmd)
+            result = _masked_green_disclosure(ctx, _publish_process_result(ctx, "ARTIFACT_OUTPUT_ERROR", text, exit_code=0, shell_regex_auto_corrected=regex_autocorrected, meta={**process_meta, "artifact_produced_paths": produced_paths}), cmd)
             return _disclose_output_audit_failure(ctx, result, audit_error)
         text = autocorrect_note + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n{_format_process_output(res.stdout or '', res.stderr or '')}{artifact_note}{audit_note}{scratch_note}{executor_note}"
-        result = _masked_green_disclosure(ctx, _publish_process_result(ctx, "SHELL_REGEX_AUTO_CORRECTED" if regex_autocorrected else "OK", text, exit_code=0, artifact_registered=bool(artifact_registered and not artifact_failed), shell_regex_auto_corrected=regex_autocorrected, meta=process_meta), cmd)
+        result = _masked_green_disclosure(ctx, _publish_process_result(ctx, "SHELL_REGEX_AUTO_CORRECTED" if regex_autocorrected else "OK", text, exit_code=0, artifact_registered=bool(artifact_registered and not artifact_failed), shell_regex_auto_corrected=regex_autocorrected, meta={**process_meta, "artifact_produced_paths": produced_paths}), cmd)
         return _disclose_output_audit_failure(ctx, result, audit_error)
     except OwnerPauseRefused as exc:
         return _publish_tool_result(ctx, launch_refusal_result(exc))
@@ -725,7 +725,7 @@ def get_tools() -> List[ToolEntry]:
 	                    "type": "array",
 	                    "items": {"type": "string"},
 	                    "default": [],
-	                    "description": "Generated paths copied/registered after success, e.g. outputs=['report.txt']. The managed artifact directory is created lazily; do not move files into an assumed physical store. A declaration whose location is refused stops the call before it starts. Only outputs accept a relative '../' spelling, judged by its resolved location like an absolute one; cwd and file-tool path rules are unchanged.",
+	                    "description": "Eligible paths captured at their current bytes after success, even if this invocation did not change them, e.g. outputs=['report.txt']. The managed artifact directory is created lazily; do not move files into an assumed physical store. A declaration whose location is refused stops the call before it starts. Only outputs accept a relative '../' spelling, judged by its resolved location like an absolute one; cwd and file-tool path rules are unchanged.",
 	                },
 	                "scratch": {
 	                    "type": "array",
@@ -771,7 +771,7 @@ def get_tools() -> List[ToolEntry]:
 	                    "type": "array",
 	                    "items": {"type": "string"},
 	                    "default": [],
-	                    "description": "Generated paths copied/registered after success, e.g. outputs=['report.txt']. The managed artifact directory is created lazily; do not move files into an assumed physical store. A declaration whose location is refused stops the call before it starts. Only outputs accept a relative '../' spelling, judged by its resolved location like an absolute one; cwd and file-tool path rules are unchanged.",
+	                    "description": "Eligible paths captured at their current bytes after success, even if this invocation did not change them, e.g. outputs=['report.txt']. The managed artifact directory is created lazily; do not move files into an assumed physical store. A declaration whose location is refused stops the call before it starts. Only outputs accept a relative '../' spelling, judged by its resolved location like an absolute one; cwd and file-tool path rules are unchanged.",
 	                },
 	                "scratch": {
 	                    "type": "array",

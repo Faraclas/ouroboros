@@ -395,7 +395,7 @@ def test_run_script_directory_output_keeps_ordinary_names_and_reports_dotenv_ski
     assert not any(name.endswith(".env") for name in names)
 
 
-def test_run_command_external_workspace_unchanged_directory_output_is_cosmetic(tmp_path, monkeypatch):
+def test_run_command_external_workspace_preexisting_directory_is_captured(tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
     system_repo = tmp_path / "system"
     workspace = tmp_path / "workspace"
@@ -424,10 +424,14 @@ def test_run_command_external_workspace_unchanged_directory_output_is_cosmetic(t
         },
     )
 
-    # C2 (v6.36.0): present-but-unchanged is a cosmetic note, NOT a blocking error
-    # (a deterministic re-run / re-verify is not a failure). Missing outputs still block.
+    # Current eligible bytes are captured even when the command did not produce them.
     assert "ARTIFACT_OUTPUT_ERROR" not in result
-    assert "unchanged output (cosmetic): site" in result
+    assert "registered directory output" in result
+    import zipfile
+
+    archive = next((data / "task_results/artifacts" / ctx.task_id).glob("site.*.zip"))
+    with zipfile.ZipFile(archive) as bundle:
+        assert bundle.read("index.html") == b"<h1>old</h1>"
 
 
 def test_run_command_executor_failure_keeps_trace(tmp_path, monkeypatch):

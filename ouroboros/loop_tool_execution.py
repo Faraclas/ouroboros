@@ -482,6 +482,8 @@ def _typed_result_metadata(
                     tool_result_meta=dict(tool_result.meta))
         if tool_result.meta.get("artifact_registered") is True:
             meta["artifact_registered"] = True
+            if isinstance(tool_result.meta.get("artifact_produced_paths"), list):
+                meta["artifact_produced_paths"] = list(tool_result.meta["artifact_produced_paths"])
         if isinstance(tool_result.meta.get("verification"), dict):  # the criterion verdict beside this status (#1585)
             meta["verification"] = dict(tool_result.meta["verification"])
         if isinstance(tool_result.meta.get("image_attachment"), dict):

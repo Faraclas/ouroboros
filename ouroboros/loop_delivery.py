@@ -284,7 +284,7 @@ def delivery_evidence_fingerprint(
         "material_tool_results": [
             {"index": index, **{key: call.get(key) for key in (
                 "tool", "args", "status", "is_error", "result", "result_ref", "artifact_registered",
-            )}}
+            )}, **({"artifact_produced_paths": call["artifact_produced_paths"]} if "artifact_produced_paths" in call else {})}
             for index, call in enumerate(llm_trace.get("tool_calls") or [])
             if isinstance(call, dict) and index in getattr(tool_ctx, "_delivery_material_tool_indices", ())
         ],

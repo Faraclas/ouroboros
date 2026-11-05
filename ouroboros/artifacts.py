@@ -1252,7 +1252,7 @@ def copy_file_to_task_artifacts(ctx: Any, source_path: Union[pathlib.Path, str],
         stem = source.name[: -len(suffix)] if suffix else source.name
         digest = sha256(str(source.resolve(strict=False)).encode("utf-8", errors="replace")).hexdigest()[:8]
         dest = artifact_dir / f"{stem}.{digest}{suffix}"
-    if kind == "user_file" and reused_existing_source and dest.resolve(strict=False) != source.resolve(strict=False):
+    if kind in {"user_file", "process_output"} and reused_existing_source and dest.resolve(strict=False) != source.resolve(strict=False):
         _archive_previous_artifact_version(pathlib.Path(getattr(ctx, "drive_root")), task_id, dest, source)
     if immutable and dest.exists() and not dest.is_symlink() and (not source.exists() or not dest.samefile(source)):
         measured = stream_artifact_file(dest, expected=source_identity)
