@@ -257,7 +257,7 @@ class AttemptRequest:
     source: str = ""
     root_limit_usd: Optional[float] = None
     force_unknown_reservation: bool = False
-    # Applied payload TTL; empty construction sites fall back to the owner SSOT.
+    # SDK candidate's requested TTL, not provider-applied retention.
     prompt_cache_ttl: str = ""
     candidate_raw_sha256: Optional[str] = None
     candidate_raw_size_bytes: Optional[int] = None
@@ -1041,7 +1041,7 @@ def _transition_once(reservation: AttemptReservation, state: str, **fields: Any)
             raise_group_refusal(view, scope)
         replaced = {"seq", "ts", "revision", "pre_compaction_seq", "settle_reason", "reason"}
         if state == "settled":
-            replaced.update(("effort", "effort_resolution", "processing", "speed", "service_tier", "cost_basis", "cost_evidence"))
+            replaced.update(("effort", "effort_resolution", "processing", "speed", "service_tier", "cost_basis", "cost_evidence", "prompt_cache_ttl_evidence"))
             if "effort" not in fields and isinstance(current.get("effort"), dict):  # Keep candidate facts, not older observations.
                 fields["effort"] = {**current["effort"], "reported": None, "report_source": None}
         row = {key: value for key, value in current.items() if key not in replaced}
@@ -1162,7 +1162,8 @@ def settle_attempt(
     stash_task_cache_split(
         (_CURRENT_SCOPE.get() or UsageScope()).task_id, reservation.model,
         int(fields.get("cached_tokens") or 0), provider=reservation.provider,
-        ttl_seconds=3600.0 if fields["prompt_cache_ttl"] == "1h" else 300.0,
+        ttl_seconds=(0.0 if reservation.provider == "openai-compatible"
+                     else 3600.0 if fields["prompt_cache_ttl"] == "1h" else 300.0),
         processing_mode=observed_processing_mode(reservation.provider, fields),
     )
 
@@ -1291,7 +1292,7 @@ def _settlement_fields(reservation, usage, cost_usd, cost_final) -> Dict[str, An
         cached_tokens=cached_tokens,
         cache_write_tokens=cache_write_tokens,
         prompt_cache_ttl=str(normalized.get("prompt_cache_ttl") or ""),
-        **{key: copy.deepcopy(normalized[key]) for key in ("effort", "effort_resolution", "processing", "speed", "service_tier", "cost_basis", "cost_evidence", "cost_invalid")
+        **{key: copy.deepcopy(normalized[key]) for key in ("effort", "effort_resolution", "processing", "speed", "service_tier", "cost_basis", "cost_evidence", "cost_invalid", "prompt_cache_ttl_evidence")
            if key in normalized},
     )
 
@@ -1340,7 +1341,7 @@ def _return_physical_claim(attempt_id: str) -> None:
                 state.used -= 1
 
 
-def _terminalize_failed_attempt(reservation: AttemptReservation, exc: BaseException) -> str:
+def _terminalize_failed_attempt(reservation: AttemptReservation, exc: BaseException, request: AttemptRequest | None = None) -> str:
     """Route a raised provider send to its honest terminal ledger state."""
     if getattr(exc, "receiver_abandoned", False):  # owner Pause: the sender settles it late; still dispatched
         return "dispatched"
@@ -1354,6 +1355,9 @@ def _terminalize_failed_attempt(reservation: AttemptReservation, exc: BaseExcept
         if isinstance(evidence, dict):
             evidence = {key: value for key, value in evidence.items() if key != "error"}
         usage, cost, final = usage_from_response(evidence)
+        if provider == "openai-compatible":
+            from ouroboros.llm_observability import record_cache_ttl_evidence
+            record_cache_ttl_evidence(usage, exc, request.prompt_cache_ttl if request else None)
         if final and cost is not None:
             settle_attempt(reservation, usage, cost_usd=cost, cost_final=True)
             return "settled"
@@ -1366,8 +1370,11 @@ def _terminalize_failed_attempt(reservation: AttemptReservation, exc: BaseExcept
         # The usage frame was read before the body was judged unusable: money is
         # known, so settle through the success path's extractor and cost derivation
         # from that frame alone (no assembled-body facts such as service_tier, no
-        # cache-TTL injection or token-density observation); only the answer is missing.
+        # applied-retention inference or token-density observation); only the answer is missing.
         usage, cost, final = usage_from_response({"usage": stream_usage})
+        if provider == "openai-compatible":
+            from ouroboros.llm_observability import record_cache_ttl_evidence
+            record_cache_ttl_evidence(usage, exc, request.prompt_cache_ttl if request else None)
         settle_attempt(reservation, dict(usage or {}), cost_usd=cost, cost_final=final)
         return "settled"
     else:
@@ -1483,7 +1490,7 @@ def execute_physical_attempt(
     except BaseException as exc:
         terminal_state = "dispatched"
         try:
-            terminal_state = _terminalize_failed_attempt(reservation, exc)
+            terminal_state = _terminalize_failed_attempt(reservation, exc, request)
         except Exception:
             log.exception("Failed to mark provider attempt unresolved: %s", reservation.attempt_id)
         _record_attempt_capture(
@@ -1500,7 +1507,10 @@ def _account_response(reservation, request, response, extractor, manifest_ref):
     try:
         usage, cost, final = extractor(response, payload=payload) if extractor is usage_from_response else extractor(response)
         usage = dict(usage or {})
-        if request.prompt_cache_ttl and not usage.get("prompt_cache_ttl"):
+        if request.provider == "openai-compatible":
+            from ouroboros.llm_observability import record_cache_ttl_evidence
+            record_cache_ttl_evidence(usage, response, request.prompt_cache_ttl)
+        elif request.prompt_cache_ttl and not usage.get("prompt_cache_ttl"):
             usage["prompt_cache_ttl"] = request.prompt_cache_ttl
         settle_attempt(reservation, usage, cost_usd=cost, cost_final=final)
         _observe_token_density(request, usage)
@@ -1554,7 +1564,7 @@ async def execute_physical_attempt_async(
         except BaseException as exc:
             terminal_state = "dispatched"
             try:
-                terminal_state = await presend_off_loop(_terminalize_failed_attempt, reservation, exc)
+                terminal_state = await presend_off_loop(_terminalize_failed_attempt, reservation, exc, request)
             except Exception:
                 log.exception("Failed to mark provider attempt unresolved: %s", reservation.attempt_id)
             _record_attempt_capture(
@@ -1575,7 +1585,7 @@ async def execute_physical_attempt_async(
         elif getattr(exc, "model_sender_cancelled_before_entry", False):
             await presend_off_loop(_pre_dispatch_failure, reservation, request, exc, candidate_manifest_ref=manifest_ref)
         elif getattr(exc, "model_sender_not_started", False):
-            terminal_state = await presend_off_loop(_terminalize_failed_attempt, reservation, exc)
+            terminal_state = await presend_off_loop(_terminalize_failed_attempt, reservation, exc, request)
             _record_attempt_capture(reservation, request, terminal_state,
                                     candidate_manifest_ref=manifest_ref, exc=exc)
         raise

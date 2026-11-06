@@ -519,7 +519,7 @@ class _OpenAICompatibleLaneMixin:
         """Normalize a reply without generation lookup; skip_cost_fetch also skips tariffs."""
         usage = dict(resp_dict.get("usage") or {})
         # Host-authored attempt disclosures cannot originate in provider JSON.
-        for key in ("request_wire", "request_wire_history", "request_wire_history_omitted"):
+        for key in ("request_wire", "request_wire_history", "request_wire_history_omitted", "prompt_cache_ttl_evidence"):
             usage.pop(key, None)
         from ouroboros.llm_observability import response_http_projection
         projection = response_http_projection(wire_completion)
@@ -674,7 +674,10 @@ class _OpenAICompatibleLaneMixin:
         usage["resolved_model"] = str(target.get("usage_model") or target.get("resolved_model") or "")
         terminal = current_wire_candidate()  # the TTL the terminal candidate carried, after any hint repair
         prompt_cache_ttl = _applied_payload_cache_ttl(terminal.physical_payload()) if terminal is not None else prompt_cache_ttl
-        if prompt_cache_ttl and not usage.get("prompt_cache_ttl"):
+        if target.get("provider") == "openai-compatible":
+            from ouroboros.llm_observability import record_cache_ttl_evidence
+            record_cache_ttl_evidence(usage, wire_completion, prompt_cache_ttl)
+        elif prompt_cache_ttl and not usage.get("prompt_cache_ttl"):
             usage["prompt_cache_ttl"] = prompt_cache_ttl
         # Anthropic's per-tier write split, when the route passed it through.
         _write_split = self._cache_write_split(usage)

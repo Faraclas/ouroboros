@@ -5,6 +5,7 @@ from __future__ import annotations
 from ouroboros.config import runtime_setting
 
 import contextlib
+import copy
 import hashlib
 import pathlib
 import queue
@@ -1123,9 +1124,9 @@ def _record_round_cache_facts(
 
     Returns ``(prompt_cache_ttl, cache_hit_rate, cache_cold_restart,
     gap_since_prev_round_sec, duration_ms)``: a later round whose prompt was almost entirely
-    re-written is a provider-cache expiry/invalidation made structurally visible,
+    re-written is a cache miss/invalidation observation, not an expiry diagnosis,
     and the gap since the previous successful round is the datum that separates a
-    TTL expiry (long wait) from a prefix rewrite. Also records the APPLIED TTL of
+    possible TTL expiry (long wait) from a prefix rewrite. Also records the requested TTL of
     this task's latest send — the recorded fact the wait-tool cache-horizon
     disclosure reads (one place, never re-derived). ``duration_ms`` spans the logical
     round from its first started frame (retries, fallbacks and waits included) and
@@ -1148,6 +1149,7 @@ def _record_round_cache_facts(
         cache_cold_restart = False if False in (low, high) else None if None in (low, high) else True
     accumulated_usage["_last_llm_round_finished_monotonic"] = now
     accumulated_usage["_last_prompt_cache_ttl"] = prompt_cache_ttl
+    accumulated_usage["_last_prompt_cache_ttl_evidence"] = copy.deepcopy(usage.get("prompt_cache_ttl_evidence"))
     accumulated_usage["_last_round_cache_usage"] = {  # also this accepted call's own money, as its producer stated it
         "round": round_idx, "model": model, "provider": provider, "billing": (usage.get("cost_evidence") or {}).get("billing"),
         **{key: usage.get(key) for key in ("prompt_tokens", "cached_tokens", "cache_write_tokens", "cost", "cost_final")},

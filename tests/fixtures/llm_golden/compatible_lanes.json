@@ -193,6 +193,12 @@
             "response_finish_reason": "stop",
             "provider": "openai-compatible",
             "resolved_model": "openai-compatible/glm-5",
+            "prompt_cache_ttl_evidence": {
+              "requested": null,
+              "request_boundary": "sdk_input",
+              "http": null,
+              "provider_reported": null
+            },
             "cost_estimated": true,
             "cost_final": false,
             "request_wire": {

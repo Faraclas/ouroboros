@@ -239,6 +239,7 @@ def usage_from_response(response: Any, *, payload=_UNREAD_PAYLOAD) -> Tuple[Dict
     # never arbitrary extensions inside a provider's token-usage block.
     normalized.pop("effort", None)
     normalized.pop("effort_resolution", None)
+    normalized.pop("prompt_cache_ttl_evidence", None)
     if isinstance(payload, dict):
         if "service_tier" in payload:
             normalized["service_tier"] = payload["service_tier"]

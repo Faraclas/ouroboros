@@ -461,7 +461,7 @@ def legacy_candidates(snapshot: Tuple[list, Dict[str, Any], Dict[str, str]],
 # outcome facts that only the attempt's later rows wrote.
 _SETTLEMENT_FIELDS = frozenset({
     "settle_reason", "reason", "cost_usd", "cost_final", "prompt_tokens", "completion_tokens",
-    "cached_tokens", "cache_write_tokens", "prompt_cache_ttl", "effort_resolution", "processing", "speed",
+    "cached_tokens", "cache_write_tokens", "prompt_cache_ttl", "prompt_cache_ttl_evidence", "effort_resolution", "processing", "speed",
     "service_tier", "cost_basis", "cost_evidence", "input_token_usage", "attempt_execution",
 })
 _DISPATCH_FIELDS = frozenset({

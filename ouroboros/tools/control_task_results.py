@@ -638,22 +638,21 @@ def _wait_attention_poll(
 
 
 def cache_horizon_note(ctx: Any, elapsed_sec: Any) -> str:
-    """One factual line when a blocking wait outlived the APPLIED prompt-cache TTL.
+    """A requested-tier estimate after a long wait, never provider expiry evidence.
 
     Reads the RECORDED fact of this task's latest send — ``_last_prompt_cache_ttl``
     in the loop's accumulated usage (published on the tool ctx), converted by
     ``llm.cache_ttl_seconds`` — never a route-level prediction (a second predictor
-    can disagree with the payload after route-filter/promotion/cap). Empty string
-    when the horizon is unknown or not yet elapsed. UNKNOWN covers three cases,
+    can disagree with the candidate after route-filter/promotion/cap). Empty string
+    when the request-tier estimate is unknown or not elapsed. UNKNOWN includes
     all silent: no cached send recorded, a route that carries no markers at all,
     and a send whose markers were BARE (reported ``"default"``) — a bare marker
     names no tier, so its horizon is the provider's business and inventing one
     would mislead the agent into re-planning its waits around a number nobody
     established. Only the explicitly stamped ``5m``/``1h`` tiers speak here.
-    Deliberately NO token-count predictions: the submarine forensics showed the
-    fact ("the wait outlived the cache") is what changes the agent's next decision
-    (batch waits, longer single windows), while "~X tokens will re-write" is a
-    counterfactual — the next send may reroute, compact, or still hit a live cache.
+    No token-count or provider-expiry prediction follows: the next send may
+    reroute, compact, or still hit a live cache. Responses HTTP observations name
+    a different protocol with no established mapping to these request tiers.
 
     REACHABILITY, honestly: the root waits (``wait_task``, ``wait_tasks``) feed
     their own elapsed window, a LOWER bound on cache age, so at the shipped ``1h``
@@ -672,6 +671,11 @@ def cache_horizon_note(ctx: Any, elapsed_sec: Any) -> str:
     usage = getattr(ctx, "_accumulated_usage", None)
     if not isinstance(usage, dict):
         return ""
+    evidence = usage.get("_last_prompt_cache_ttl_evidence")
+    if isinstance(evidence, dict) and isinstance(evidence.get("http"), dict):
+        # Responses submission has no established mapping to our 5m/1h tiers,
+        # including bare breakpoints. An observed omission establishes no horizon.
+        return ""
     applied_ttl = str(usage.get("_last_prompt_cache_ttl") or "").strip()
     from ouroboros.llm import cache_ttl_seconds
 
@@ -680,7 +684,8 @@ def cache_horizon_note(ctx: Any, elapsed_sec: Any) -> str:
         return ""
     return (
         f"⚠️ configured prompt-cache horizon ({applied_ttl}, {horizon}s) elapsed since the "
-        f"last model response ({elapsed:.0f}s ago); the next model send may be cold."
+        f"last model response ({elapsed:.0f}s ago); requested-tier estimate only, "
+        "provider retention is unverified; the next model send may be cold."
     )
 
 

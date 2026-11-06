@@ -6,6 +6,7 @@ import pathlib
 import logging
 import contextlib
 import contextvars
+import copy
 from typing import Any, Dict, Tuple
 
 from ouroboros.observability import new_call_id, persist_call
@@ -202,6 +203,25 @@ def response_http_projection(response: Any):
     return fact[1] if isinstance(fact, tuple) and len(fact) == 2 and fact[0] is _HTTP_OBSERVATION_TOKEN else None
 
 
+def record_cache_ttl_evidence(usage: dict, response: Any, requested: str | None) -> None:
+    """Compatible-lane request estimates and observations, never applied retention.
+
+    Settlement and the returned response call the same projection. Provider usage
+    extensions remain attributed but cannot author the SDK candidate's tier or
+    the host-only HTTP observation. Missing observation is unknown, not omission.
+    """
+    reported = usage.get("prompt_cache_ttl")
+    projection = response_http_projection(response)
+    usage.pop("prompt_cache_ttl", None)
+    if requested:
+        usage["prompt_cache_ttl"] = requested
+    usage["prompt_cache_ttl_evidence"] = {
+        "requested": requested or None, "request_boundary": "sdk_input",
+        "http": copy.deepcopy(projection.get("cache")) if isinstance(projection, dict) else None,
+        "provider_reported": copy.deepcopy(reported),
+    }
+
+
 def http_projection(request: Any) -> dict:
     """Secret-free outgoing application-body facts, joined to this send only."""
     from ouroboros.usage_accounting import last_physical_attempt_capture
@@ -219,6 +239,14 @@ def http_projection(request: Any) -> dict:
         "model": payload.get("model"),
         "effort": reasoning.get("effort") if isinstance(reasoning, dict) else None,
         "temperature": payload.get("temperature"),
+        "cache": {
+            "breakpoints": sum(
+                isinstance(block, dict) and isinstance(block.get("prompt_cache_breakpoint"), dict)
+                for item in payload.get("input", []) if isinstance(item, dict)
+                for block in (item.get("content") if isinstance(item.get("content"), list) else [])),
+            "key_present": "prompt_cache_key" in payload,
+            "options_present": "prompt_cache_options" in payload,
+        },
         "delivery": "not_attested",
     }
 
