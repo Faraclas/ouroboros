@@ -686,6 +686,10 @@ class _StreamAssembly:
     def retain(self, *, complete: bool, error: BaseException | None = None) -> dict:
         if error is not None:
             self.preserve_failure_usage(error)
+            from ouroboros._usage_response import provider_usage_fields
+            claims = provider_usage_fields(self.accumulator.body)
+            if claims:
+                error.provider_claims = claims  # not a received body or partial counters/text
         from ouroboros import config
         from ouroboros.observability import persist_call, write_blob
         from ouroboros.usage_accounting import current_usage_scope, last_physical_attempt_capture, current_physical_attempt_drive_root

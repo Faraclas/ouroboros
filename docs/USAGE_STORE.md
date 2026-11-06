@@ -116,6 +116,7 @@ network-bound runs inside it.
   cash and `cost_partial`, with no reservation bound; an exact subtotal remains
   exact while `unknown_unmetered` counts its unpriced remainder once per row.
 - Nonfinite money is refused before anything is written.
+- Optional `provider_usage` in attempt `extra` retains outer provider-response billing/retention/reasoning claims, with `source: provider_response`. Standard counts, USD, requested tiers and host HTTP evidence stay separate. Settlement replaces prior claims; journal export keeps them off synthesized reserved/dispatched rows. No history backfill or schema migration; absent remains absent and malformed values remain attributed evidence.
 
 ## 4. Reads
 

@@ -192,7 +192,31 @@ def _normalized_input_token_usage(raw: Any) -> Optional[Dict[str, Any]]:
     return normalized
 
 
-def usage_from_response(response: Any, *, payload=_UNREAD_PAYLOAD) -> Tuple[Dict[str, Any], Optional[float], bool]:
+def provider_usage_fields(body: Any) -> Dict[str, Any]:
+    """Designated outer service claims, not inner usage assertions of provenance."""
+    if not isinstance(body, dict):
+        return {}
+    fields = {key: copy.deepcopy(body[key]) for key in ("copilot_usage", "prompt_cache_retention") if key in body}
+    reasoning = body.get("reasoning")
+    if isinstance(reasoning, dict):
+        selected = {key: copy.deepcopy(reasoning[key]) for key in ("effort", "context") if key in reasoning}
+        if selected:
+            fields["reasoning"] = selected
+    return fields
+
+
+def provider_usage_evidence(body: Any) -> Dict[str, Any]:
+    """Preserve claims without adopting billing categories as counts/prices/TTL.
+
+    Partial/malformed values remain attributed evidence, not inferred zeros.
+    """
+    fields = provider_usage_fields(body)
+    reasoning = fields.pop("reasoning", {})
+    fields.update(("reasoning_" + key, value) for key, value in reasoning.items())
+    return {"source": "provider_response", **fields} if fields else {}
+
+
+def usage_from_response(response: Any, *, payload=_UNREAD_PAYLOAD, provider_payload=_UNREAD_PAYLOAD) -> Tuple[Dict[str, Any], Optional[float], bool]:
     """Extract common usage/cost facts without retaining response text."""
     if payload is _UNREAD_PAYLOAD:
         payload = _plain(response)
@@ -240,6 +264,10 @@ def usage_from_response(response: Any, *, payload=_UNREAD_PAYLOAD) -> Tuple[Dict
     normalized.pop("effort", None)
     normalized.pop("effort_resolution", None)
     normalized.pop("prompt_cache_ttl_evidence", None)
+    normalized.pop("provider_usage", None)
+    claims = provider_usage_evidence(payload if provider_payload is _UNREAD_PAYLOAD else provider_payload)
+    if claims:
+        normalized["provider_usage"] = claims
     if isinstance(payload, dict):
         if "service_tier" in payload:
             normalized["service_tier"] = payload["service_tier"]

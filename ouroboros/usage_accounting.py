@@ -1041,7 +1041,7 @@ def _transition_once(reservation: AttemptReservation, state: str, **fields: Any)
             raise_group_refusal(view, scope)
         replaced = {"seq", "ts", "revision", "pre_compaction_seq", "settle_reason", "reason"}
         if state == "settled":
-            replaced.update(("effort", "effort_resolution", "processing", "speed", "service_tier", "cost_basis", "cost_evidence", "prompt_cache_ttl_evidence"))
+            replaced.update(("effort", "effort_resolution", "processing", "speed", "service_tier", "cost_basis", "cost_evidence", "prompt_cache_ttl_evidence", "provider_usage"))
             if "effort" not in fields and isinstance(current.get("effort"), dict):  # Keep candidate facts, not older observations.
                 fields["effort"] = {**current["effort"], "reported": None, "report_source": None}
         row = {key: value for key, value in current.items() if key not in replaced}
@@ -1112,7 +1112,7 @@ def release_attempt(
         {"candidate_manifest_ref": candidate_manifest_ref} if candidate_manifest_ref else {}))
 
 
-def mark_unresolved(reservation: AttemptReservation, reason: str) -> None:
+def mark_unresolved(reservation: AttemptReservation, reason: str, *, provider_usage=None) -> None:
     try:
         from ouroboros.observability import redact_projection
 
@@ -1121,7 +1121,8 @@ def mark_unresolved(reservation: AttemptReservation, reason: str) -> None:
         ).value)
     except Exception:
         safe_reason = "provider_outcome_unknown:redaction_failed"
-    _transition(reservation, "unresolved", reason=safe_reason[:500])
+    _transition(reservation, "unresolved", reason=safe_reason[:500], **(
+        {"provider_usage": copy.deepcopy(provider_usage)} if provider_usage else {}))
 
 
 def terminalize_abandoned_attempt(
@@ -1292,7 +1293,7 @@ def _settlement_fields(reservation, usage, cost_usd, cost_final) -> Dict[str, An
         cached_tokens=cached_tokens,
         cache_write_tokens=cache_write_tokens,
         prompt_cache_ttl=str(normalized.get("prompt_cache_ttl") or ""),
-        **{key: copy.deepcopy(normalized[key]) for key in ("effort", "effort_resolution", "processing", "speed", "service_tier", "cost_basis", "cost_evidence", "cost_invalid", "prompt_cache_ttl_evidence")
+        **{key: copy.deepcopy(normalized[key]) for key in ("effort", "effort_resolution", "processing", "speed", "service_tier", "cost_basis", "cost_evidence", "cost_invalid", "prompt_cache_ttl_evidence", "provider_usage")
            if key in normalized},
     )
 
@@ -1351,10 +1352,11 @@ def _terminalize_failed_attempt(reservation: AttemptReservation, exc: BaseExcept
         return "released"
     provider = str(reservation.provider or "").strip().lower()
     stream_usage = getattr(exc, "stream_usage", None)
+    claims_body = getattr(exc, "provider_claims", payload)  # stream metadata, not a received whole body
     for evidence in ({"usage": stream_usage}, payload):
         if isinstance(evidence, dict):
             evidence = {key: value for key, value in evidence.items() if key != "error"}
-        usage, cost, final = usage_from_response(evidence)
+        usage, cost, final = usage_from_response(evidence, provider_payload=claims_body)
         if provider == "openai-compatible":
             from ouroboros.llm_observability import record_cache_ttl_evidence
             record_cache_ttl_evidence(usage, exc, request.prompt_cache_ttl if request else None)
@@ -1370,8 +1372,8 @@ def _terminalize_failed_attempt(reservation: AttemptReservation, exc: BaseExcept
         # The usage frame was read before the body was judged unusable: money is
         # known, so settle through the success path's extractor and cost derivation
         # from that frame alone (no assembled-body facts such as service_tier, no
-        # applied-retention inference or token-density observation); only the answer is missing.
-        usage, cost, final = usage_from_response({"usage": stream_usage})
+        # applied-retention inference or density). Outer provider claims stay attributed.
+        usage, cost, final = usage_from_response({"usage": stream_usage}, provider_payload=claims_body)
         if provider == "openai-compatible":
             from ouroboros.llm_observability import record_cache_ttl_evidence
             record_cache_ttl_evidence(usage, exc, request.prompt_cache_ttl if request else None)
@@ -1382,7 +1384,7 @@ def _terminalize_failed_attempt(reservation: AttemptReservation, exc: BaseExcept
         cause = attempt_custody_event_fields(exc).get("transport_cause_type")
         suffix = f" [cause: {cause}]" if cause else ""
         # Suffix leads: a verbose provider body must not truncate it away (mark_unresolved keeps 500 chars).
-        mark_unresolved(reservation, f"{type(exc).__name__}{suffix}: {exc}")
+        mark_unresolved(reservation, f"{type(exc).__name__}{suffix}: {exc}", provider_usage=usage.get("provider_usage"))
         return "unresolved"
 
 

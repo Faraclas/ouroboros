@@ -10,6 +10,7 @@ unknown outcomes never authorize another send.
 from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
+from ouroboros._usage_response import provider_usage_fields
 from ouroboros.llm_stream import IncompleteProviderStream, RejectedProviderStream, _tool_call_problem
 
 
@@ -297,6 +298,7 @@ def _copilot_responses_to_chat_completion(rjson: Dict[str, Any], requested_model
             "finish_reason": finish_reason,
         }],
         "usage": _copilot_response_usage(rjson),
+        **provider_usage_fields(rjson),
     }
 
 
@@ -320,6 +322,7 @@ def _copilot_chat_completion_to_sse(chat_comp: Dict[str, Any]) -> bytes:
             "finish_reason": choice.get("finish_reason") or "stop",
         }],
         "usage": chat_comp.get("usage"),
+        **provider_usage_fields(chat_comp),
     }
     return f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode("utf-8")
 

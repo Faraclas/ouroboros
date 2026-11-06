@@ -518,6 +518,10 @@ class _OpenAICompatibleLaneMixin:
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Normalize a reply without generation lookup; skip_cost_fetch also skips tariffs."""
         usage = dict(resp_dict.get("usage") or {})
+        from ouroboros._usage_response import provider_usage_evidence
+        usage.pop("provider_usage", None)
+        if claims := provider_usage_evidence(resp_dict):
+            usage["provider_usage"] = claims
         # Host-authored attempt disclosures cannot originate in provider JSON.
         for key in ("request_wire", "request_wire_history", "request_wire_history_omitted", "prompt_cache_ttl_evidence"):
             usage.pop(key, None)
