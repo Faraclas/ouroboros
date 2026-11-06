@@ -175,6 +175,20 @@ def observed_processing_mode(provider: str, usage: Dict[str, Any]) -> str:
     return value if isinstance(value, str) else ""
 
 
+def reported_cache_write_tokens(usage: Dict[str, Any]) -> Optional[int]:
+    """Standard write count shared by settlement and returned compatible usage.
+
+    Preserve the accounting grammar: first non-null top-level alias, then a
+    usable detail count (zero included). Invalid details fall back to the top.
+    This never reads provider billing claims or changes counter coercion.
+    """
+    count = _reported_token_count(usage, "cache_creation_input_tokens", "cache_write_tokens")
+    details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
+    detail = _reported_token_count(details, "cache_write_tokens", "cache_creation_tokens",
+                                   "cache_creation_input_tokens") if isinstance(details, dict) else None
+    return detail if detail is not None else count
+
+
 def _normalized_input_token_usage(raw: Any) -> Optional[Dict[str, Any]]:
     """The complete native input split, or None; never repair partial evidence."""
     keys = ("total_tokens", "cache_read_tokens", "cache_write_tokens")
@@ -234,9 +248,7 @@ def usage_from_response(response: Any, *, payload=_UNREAD_PAYLOAD, provider_payl
     cache_read = _reported_token_count(
         usage, "cache_read_input_tokens", "cached_tokens", "precached_prompt_tokens",
     )
-    cache_write = _reported_token_count(
-        usage, "cache_creation_input_tokens", "cache_write_tokens",
-    )
+    cache_write = reported_cache_write_tokens(usage)
     input_tokens = _reported_token_count(usage, "input_tokens")
     prompt = _reported_token_count(usage, "prompt_tokens")
     if prompt is None and any(
@@ -248,10 +260,6 @@ def usage_from_response(response: Any, *, payload=_UNREAD_PAYLOAD, provider_payl
     if isinstance(details, dict):
         detail_read = _reported_token_count(details, "cached_tokens")
         cache_read = detail_read if detail_read is not None else cache_read
-        detail_write = _reported_token_count(
-            details, "cache_write_tokens", "cache_creation_tokens", "cache_creation_input_tokens",
-        )
-        cache_write = detail_write if detail_write is not None else cache_write
     normalized = {
         **usage,
         "prompt_tokens": prompt,

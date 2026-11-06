@@ -118,7 +118,7 @@ def test_native_claims_reach_both_usage_consumers_without_reinterpreting_counts(
     assert message['content'] == 'ok' and len(sent) == 1 and body == before
     expected = evidence(body)
     assert usage.get('provider_usage') == expected
-    assert usage.get('cache_write_tokens') in (standard_write, None)  # standard zero may remain nested
+    assert usage.get('cache_write_tokens') == standard_write
     assert usage['cost'] is None and not usage['cost_final']
     with hold(root) as view: row = view.attempt(usage['ledger_attempt_ids'][0])
     assert row['state'] == 'settled' and row.get('provider_usage') == expected

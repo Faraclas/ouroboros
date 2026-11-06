@@ -6,7 +6,7 @@ loop round, ``emit_llm_usage_event`` and the supervisor's ``llm_usage`` handler.
 fake LLM that already returns normalized usage cannot see this boundary: the
 Anthropic/GigaChat adapters used to synthesize missing counters as 0, and the
 OpenAI-compatible adapter left a reported nested cache 0 behind its detail block.
-Billing-facing usage stays byte-identical; the golden replays pin that.
+Native billing shapes remain pinned; compatible standard cache writes now share settlement precedence.
 """
 from __future__ import annotations
 

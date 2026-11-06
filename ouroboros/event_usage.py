@@ -12,8 +12,8 @@ REPORTED_TOKENS_KEY = "reported_tokens"
 TOKEN_COUNTER_ALIASES = {
     "prompt_tokens": ("prompt_tokens", "input_tokens"),
     "completion_tokens": ("completion_tokens", "output_tokens"),
-    # A detail block (OpenAI chat/Responses, OpenRouter) or DeepSeek's mirror may hold
-    # the only report: adapters lift a positive count to the top level, never a 0.
+    # A detail block or DeepSeek mirror may hold the only report; preserve it
+    # even when an adapter has not lifted that counter to the top level.
     "cached_tokens": ("cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens",
                       "input_tokens_details.cached_tokens", "prompt_cache_hit_tokens"),
     "cache_write_tokens": ("cache_write_tokens", "cache_creation_input_tokens",
