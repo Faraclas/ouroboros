@@ -111,6 +111,13 @@ def install_bootstrap_harness(monkeypatch, data, *, repo=None, review_mode="requ
     from ouroboros.review_execution import ReviewAttemptResult
 
     data = Path(data)
+    # Direct bootstrap admission reads the supervisor wallet. Keep that owner
+    # on this fixture's data too, rather than a previous test's shared ledger.
+    from supervisor import state
+    for name in ("DRIVE_ROOT", "STATE_PATH", "STATE_LAST_GOOD_PATH", "STATE_LOCK_PATH",
+                 "TOTAL_BUDGET_LIMIT", "_OPENROUTER_DIAGNOSTIC"):
+        monkeypatch.setattr(state, name, getattr(state, name))  # restore every binding on teardown
+    state.init(data, state.TOTAL_BUDGET_LIMIT)  # same limit, no refill or admission bypass
     repo = Path(repo or Path(__file__).resolve().parents[1])
     data.mkdir(parents=True, exist_ok=True)
     (data / "memory").mkdir(exist_ok=True)
