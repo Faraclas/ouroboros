@@ -820,6 +820,18 @@ def _classify_action(
     profile = candidate.accepted_profile
     payload = candidate.physical_payload()
     hint = _named_cache_hint(payload, evidence, low)
+    native_hint = (evidence.param.rsplit(".", 1)[-1] == "prompt_cache_breakpoint" or (
+        not evidence.param and "prompt_cache_breakpoint" in _error_tokens(low)
+        and any(marker in low for marker in _CAPABILITY_REJECTION_MARKERS)))
+    if native_hint and evidence.status in {400, 422}:
+        from ouroboros.copilot_responses import uses_copilot_responses
+        if (profile.provider == "openai-compatible" and uses_copilot_responses(
+                registered.target.get("base_url"), registered.target.get("resolved_model"))
+                and _field_is_present(payload, "cache_control")
+                and any(marker in low for marker in _HINT_REFUSAL_MARKERS)):
+            # Native boundary maps from the whole marker, never its unmapped TTL.
+            # Reuse the existing per-call omission rail, never learn Chat support.
+            hint = "cache_control"
     if hint:  # before every value guard: a refused part echoes its marker as the refused value
         return PendingWireAction(profile, {
             "kind": "drop_field", "fields": [hint], "reason_code": "provider_unsupported_field",

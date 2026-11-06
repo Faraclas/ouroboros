@@ -83,6 +83,7 @@ def _copilot_chat_to_responses_payload(payload: Dict[str, Any]) -> Dict[str, Any
     model = str(payload.get("model") or "")
     out: Dict[str, Any] = {"model": model}
     input_items = []
+    cache_boundaries = 0
     for msg in payload.get("messages") or []:
         if not isinstance(msg, dict):
             continue
@@ -97,7 +98,10 @@ def _copilot_chat_to_responses_payload(payload: Dict[str, Any]) -> Dict[str, Any
             content_val = raw_content
         elif isinstance(raw_content, list):
             has_image = any(isinstance(b, dict) and b.get("type") == "image_url" for b in raw_content)
-            if not has_image:
+            stable_system = role == "system" and any(
+                isinstance(b, dict) and b.get("type") == "text" and str(b.get("text") or "").strip()
+                and isinstance(b.get("cache_control"), dict) for b in raw_content)
+            if not has_image and not stable_system:
                 content_val = "".join(
                     b if isinstance(b, str) else str(b.get("text") or "")
                     for b in raw_content
@@ -111,8 +115,16 @@ def _copilot_chat_to_responses_payload(payload: Dict[str, Any]) -> Dict[str, Any
                         blocks.append({"type": text_type, "text": b})
                     elif isinstance(b, dict):
                         btype = b.get("type")
-                        if btype == "text":
-                            blocks.append({"type": text_type, "text": str(b.get("text") or "")})
+                        if btype == "text" or not has_image:
+                            block = {"type": text_type, "text": str(b.get("text") or "")}
+                            # Dated Copilot input_text support; leave implicit lookup on.
+                            # Preserve only stable system boundaries, at most three in
+                            # implicit mode. TTL/key/tool/rolling semantics are not mapped.
+                            if (role == "system" and btype == "text" and block["text"].strip()
+                                    and isinstance(b.get("cache_control"), dict) and cache_boundaries < 3):
+                                block["prompt_cache_breakpoint"] = {"mode": "explicit"}
+                                cache_boundaries += 1
+                            blocks.append(block)
                         elif btype == "image_url":
                             img = b.get("image_url")
                             url_str = img.get("url") if isinstance(img, dict) else str(img or "")

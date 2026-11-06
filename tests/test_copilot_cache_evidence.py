@@ -57,7 +57,7 @@ def test_public_cache_evidence_reaches_settlement_and_wait(option_wire, monkeypa
     assert usage['prompt_cache_ttl'] == ttl  # requested candidate tier, NOT retention
     evidence = usage['prompt_cache_ttl_evidence']
     assert evidence == {'requested': ttl, 'request_boundary': 'sdk_input',
-                        'http': {'breakpoints': 0, 'key_present': False, 'options_present': False},
+                        'http': {'breakpoints': 2, 'key_present': False, 'options_present': False},
                         'provider_reported': None}
     assert usage['request_wire']['observed_http']['cache'] == evidence['http']
     with hold(root) as view:
