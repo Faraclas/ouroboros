@@ -496,7 +496,7 @@ class _ProviderRoutingMixin:
         # explicit transport ignores the Client-level limits); on proxy-routed
         # installs the helper returns None and SDK defaults keep proxy mounts.
         from ouroboros.net_transport import keepalive_http_client, openai_client_class
-        from ouroboros.copilot_responses import attach_copilot_client
+        from ouroboros.net_transport import attach_remote_client
 
         kwargs: Dict[str, Any] = {
             "api_key": str(target.get("api_key") or ""),
@@ -511,7 +511,7 @@ class _ProviderRoutingMixin:
             kwargs["base_url"] = base_url
         if headers:
             kwargs["default_headers"] = headers
-        return attach_copilot_client(openai_client_class(target)(**kwargs))
+        return attach_remote_client(openai_client_class(target)(**kwargs))
 
     def _get_remote_client(self, target: Dict[str, Any]):
         base_url = str(target.get("base_url") or "")
@@ -563,7 +563,7 @@ class _ProviderRoutingMixin:
         client = self._async_remote_clients.get(cache_key)
         if client is None:
             from ouroboros.net_transport import keepalive_http_client, openai_client_class
-            from ouroboros.copilot_responses import attach_copilot_client
+            from ouroboros.net_transport import attach_remote_client
 
             kwargs: Dict[str, Any] = {
                 "api_key": api_key,
@@ -576,7 +576,7 @@ class _ProviderRoutingMixin:
                 kwargs["base_url"] = base_url
             if headers_dict:
                 kwargs["default_headers"] = headers_dict
-            client = attach_copilot_client(openai_client_class(target, async_client=True)(**kwargs), async_client=True)
+            client = attach_remote_client(openai_client_class(target, async_client=True)(**kwargs), async_client=True)
             self._async_remote_clients[cache_key] = client
         return client
 

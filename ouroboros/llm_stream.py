@@ -738,6 +738,7 @@ class _StreamAssembly:
 
 
 def consume_stream(stream: Any, *, native: bool = False, expected_choices: int = 1) -> AssembledResponse:
+    from ouroboros.response_cleanup import close_response
     response = stream if native else getattr(stream, "response", stream)
     assembly = _StreamAssembly(response, native, expected_choices)
     try:
@@ -746,7 +747,7 @@ def consume_stream(stream: Any, *, native: bool = False, expected_choices: int =
             if assembly.feed(chunk):
                 break
         body = assembly.result()
-        response.close()
+        close_response(response)
     except BaseException as exc:
         # A rejected body that reached its terminal frame is complete wire.
         assembly.retain(complete=assembly.accumulator.done, error=exc)
@@ -761,6 +762,7 @@ def consume_stream(stream: Any, *, native: bool = False, expected_choices: int =
 
 async def consume_stream_async(stream: Any, *, expected_choices: int = 1) -> AssembledResponse:
     from ouroboros._usage_wait import presend_off_loop
+    from ouroboros.response_cleanup import close_response_async
 
     response = getattr(stream, "response", stream)
     assembly = _StreamAssembly(response, False, expected_choices, defer_binding=True)
@@ -776,7 +778,7 @@ async def consume_stream_async(stream: Any, *, expected_choices: int = 1) -> Ass
         body = assembly.result()
         if assembly.pending_generations:
             await presend_off_loop(assembly.bind_pending_generations)
-        await response.aclose()
+        await close_response_async(response)
     except BaseException as exc:
         assembly.retain(complete=assembly.accumulator.done, error=exc)
         try:

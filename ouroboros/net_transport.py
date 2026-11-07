@@ -373,6 +373,13 @@ def _openai_httpx_module():
     return httpx
 
 
+def attach_remote_client(client, *, httpx_mod=None, async_client=False):
+    """Protect received response cleanup, then attach the route's existing codec."""
+    from ouroboros.response_cleanup import protect_httpx_client
+    protect_httpx_client(getattr(client, "_client", None), asynchronous=async_client)
+    return attach_copilot_client(client, httpx_mod=httpx_mod, async_client=async_client)
+
+
 def make_no_proxy_client(target: Dict[str, Any], timeout: Any) -> Tuple[Any, Any]:
     """Per-call OpenAI client fully isolated from proxy/SSL environment.
 
@@ -394,7 +401,7 @@ def make_no_proxy_client(target: Dict[str, Any], timeout: Any) -> Tuple[Any, Any
         http_client=http_client,
         max_retries=0,
     )
-    return attach_copilot_client(oa_client, httpx_mod=httpx_mod, async_client=False), http_client
+    return attach_remote_client(oa_client, httpx_mod=httpx_mod, async_client=False), http_client
 
 
 def make_no_proxy_async_client(target: Dict[str, Any], timeout: Any) -> Tuple[Any, Any]:
@@ -417,7 +424,7 @@ def make_no_proxy_async_client(target: Dict[str, Any], timeout: Any) -> Tuple[An
         http_client=http_client,
         max_retries=0,
     )
-    return attach_copilot_client(oa_client, httpx_mod=httpx_mod, async_client=True), http_client
+    return attach_remote_client(oa_client, httpx_mod=httpx_mod, async_client=True), http_client
 
 
 def web_search_openai_client(
@@ -437,4 +444,4 @@ def web_search_openai_client(
     http_client = keepalive_http_client()
     if http_client is not None:
         kwargs["http_client"] = http_client
-    return attach_copilot_client(OpenAI(**kwargs))
+    return attach_remote_client(OpenAI(**kwargs))

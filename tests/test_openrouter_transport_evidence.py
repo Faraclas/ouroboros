@@ -95,13 +95,20 @@ def test_received_price_survives_stream_failure(isolated, asynchronous, phase, c
         chunks.append(b"data: [DONE]\n\n")
     wire = Wire(chunks, read_error=failure if phase != "close" else None,
                 close_error=failure if phase == "close" else RuntimeError("cleanup failed too"))
-    with pytest.raises(type(failure)) as caught:
-        run_driver(wire, asynchronous=asynchronous)
-    if not (asynchronous and phase == "cancel"):
-        assert caught.value is failure
+    if phase == "close":
+        result = run_driver(wire, asynchronous=asynchronous).model_dump()
+        assert result["choices"][0]["message"]["content"] == "answer"
+        assert result["usage"]["cost"] == cost
+        assert wire.close_calls == 1
+    else:
+        with pytest.raises(type(failure)) as caught:
+            run_driver(wire, asynchronous=asynchronous)
+        if not (asynchronous and phase == "cancel"):
+            assert caught.value is failure
     # The async accounting custody wrapper re-emits cancellation; the original
     # physical failure retains its usage and no caller receives a partial reply.
-    assert failure.stream_usage["cost"] == cost
+    if phase != "close":
+        assert failure.stream_usage["cost"] == cost
     rows = ledger_rows(isolated)
     assert len(rows) == 1  # No repeated generation after partial response or Stop.
     assert rows[0]["cost_usd"] == cost and rows[0]["cost_final"] is True
@@ -387,7 +394,8 @@ def test_main_does_not_resend_incomplete_response_with_settled_price(
     class Consumer:
         def chat(self, **kwargs):
             calls.append(kwargs)
-            return run_driver(wire, asynchronous=asynchronous)
+            result = run_driver(wire, asynchronous=asynchronous)
+            return LLMClient()._normalize_remote_response(result.model_dump(), target(), skip_cost_fetch=True)
 
     monkeypatch.setattr(main, "_prepare_main_messages", lambda messages, **kwargs: messages)
     monkeypatch.setattr(main, "_sleep_within_deadline", lambda *args, **kwargs: True)
@@ -398,13 +406,21 @@ def test_main_does_not_resend_incomplete_response_with_settled_price(
         Consumer(), [{"role": "user", "content": "hello"}], "vendor/fixture", [], "low", 2,
         logs, "money-task", 1, None, usage, "task",
     )
-    assert message is None and len(calls) == 1
-    assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
-    assert usage["_last_llm_retry_same_request"] is False
+    assert len(calls) == 1
+    if phase == "close":
+        assert message["content"] == "answer"
+        assert "_last_llm_error_kind" not in usage
+    else:
+        assert message is None
+        assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
+        assert usage["_last_llm_retry_same_request"] is False
     rows = ledger_rows(isolated)
     assert len(rows) == 1 and rows[0]["cost_usd"] == cost and rows[0]["cost_final"] is True
-    assert rows[0]["physical_failure"]
-    assert failure.physical_attempt_capture.state == "settled"
+    if phase == "read":
+        assert rows[0]["physical_failure"]
+        assert failure.physical_attempt_capture.state == "settled"
+    else:
+        assert not rows[0].get("physical_failure")
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
