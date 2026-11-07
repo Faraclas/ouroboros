@@ -763,8 +763,10 @@ async function revealMountedProjectSource(project, inst, sourceReveal, navigatio
     projectReveals.set(project.id, reveal);
     cancelProjectPaint(project.id, inst);
     try {
+        // The accepted room switch cancelled the quoting room's reading claim.
+        // Destination painting now belongs to this navigation and its own reader.
         return await inst.revealSource(sourceReveal.address,
-            () => navigation === projectNavigationGeneration && sourceReveal.current(), sourceReveal.page);
+            () => navigation === projectNavigationGeneration, sourceReveal.page);
     } finally {
         if (projectReveals.get(project.id) === reveal) projectReveals.delete(project.id);
     }
