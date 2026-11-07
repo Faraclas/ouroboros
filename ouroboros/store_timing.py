@@ -20,7 +20,8 @@ and the transaction's outcome stands.
 turn on its thread; a ``ContextVar``, the ``store._WAIT_BUDGET`` idiom): the same transactions as
 ``{kind}.{read|write}`` with their summed and longest holds (``….sec``, ``….max_sec``), plus the
 events ``count`` names (the chronicle index's opens, ``chronicle.locked``; a lock-free read counts
-``chronicle.read``). ``snapshot`` copies the meter by value for a receipt read from another thread.
+``chronicle.read``). Store buckets also carry the holding thread's ``….cpu_sec``; acquisition wait
+remains outside these holds. ``snapshot`` copies the meter by value for a receipt read from another thread.
 """
 from __future__ import annotations
 
@@ -35,7 +36,7 @@ from typing import Any, Dict, Iterator
 KINDS = {"current.sqlite": "current", "dialog.sqlite": "dialog", "usage.sqlite": "usage"}
 # The frames the site skips: the store transport, not the owner that opened the transaction.
 _STORE_FRAMES = frozenset({"store.py", "store_timing.py", "store_hot_facts.py", "store_task_cards.py", "task_store.py",
-                           "dialogue_store.py", "usage_store.py", "store_capture.py", "contextlib.py"})
+                           "task_results.py", "dialogue_store.py", "usage_store.py", "store_capture.py", "contextlib.py"})
 TOP_SITES = 3  # sites per bucket in the published row: the row's size bound (one row a minute), not a policy
 _LOCK = threading.Lock()
 _WINDOW: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -87,6 +88,7 @@ def record(conn: Any, write: bool, since: tuple, *, failed: bool = False) -> Non
                 side = f"{kind}.{'write' if write else 'read'}"
                 meter[side] = meter.get(side, 0) + 1
                 meter[side + ".sec"] = meter.get(side + ".sec", 0.0) + held
+                meter[side + ".cpu_sec"] = meter.get(side + ".cpu_sec", 0.0) + cpu
                 meter[side + ".max_sec"] = max(meter.get(side + ".max_sec", 0.0), held)
     except Exception:  # a diagnostic never changes the transaction's outcome
         pass

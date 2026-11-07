@@ -512,7 +512,7 @@ def _supervisor_tail(root: pathlib.Path) -> Dict[str, Any]:
 def _owner_turn(row: Dict[str, Any], ended: Dict[str, Any], today: Any) -> str:
     """One receipt in one line: when, the chat, how long my human waited to my first request (the
     handler's own wait when the acceptance stamp was unknown), the slowest phase, the dispatch basis
-    when it was not a seen send, the turn's transactions per store (r/w) and chronicle opens, the stall
+    when it was not a seen send, scoped transactions per store (r/w) and chronicle opens, the stall
     episode's top frame when its end row is still in the tail, and a journal row that was not written."""
     wait = row.get("owner_wait_sec")
     text = f"{_clock(row.get('ts'), today)} chat {row.get('chat_id')} waited " + (
@@ -521,7 +521,8 @@ def _owner_turn(row: Dict[str, Any], ended: Dict[str, Any], today: Any) -> str:
         text += f", slowest {row['slowest_phase']} {_sec(row.get('slowest_phase_sec'))}"
     if row.get("dispatch") not in (None, "observed_send"):
         text += f", {row['dispatch']}"
-    meter = row.get("meter") if isinstance(row.get("meter"), dict) else {}
+    requested = isinstance(row.get("request_meter"), dict)
+    meter = row["request_meter"] if requested else row.get("meter") if isinstance(row.get("meter"), dict) else {}
     stores: Dict[str, str] = {}
     for key, value in meter.items():
         if key.endswith("_sec") or key.endswith(".sec"):
@@ -529,7 +530,8 @@ def _owner_turn(row: Dict[str, Any], ended: Dict[str, Any], today: Any) -> str:
         kind, _dot, side = key.partition(".")
         stores[kind] = stores.get(kind, "") + (f" {value} locked" if side == "locked" else f" {value}{side[:1]}")
     if stores:
-        text += "; txns " + " · ".join(f"{kind}{counts}" for kind, counts in stores.items())
+        scope = "to first request" if requested else "at receipt publication"
+        text += f"; txns ({scope}) " + " · ".join(f"{kind}{counts}" for kind, counts in stores.items())
     frames = (ended.get(str(row.get("execution_id") or "")) or {}).get("top_frames")
     if isinstance(frames, list) and frames and isinstance(frames[0], dict) and frames[0].get("frame"):
         text += f"; top {str(frames[0]['frame']).rsplit('/', 1)[-1]}"

@@ -807,7 +807,7 @@ class TestVitalsFact:
         assert all(isinstance(value, str) for key, value in vitals.items()
                    if key not in ("owner_turns", "stalls, no end in window"))
         assert vitals["owner_turns"] == [
-            "19:55 chat 1 waited 91.2 s, slowest context_building 61.0 s; txns current 2r · chronicle 7 locked; top memory_view.py:_live_rooms"]
+            "19:55 chat 1 waited 91.2 s, slowest context_building 61.0 s; txns (at receipt publication) current 2r · chronicle 7 locked; top memory_view.py:_live_rooms"]
         turn = vitals["owner_turns"][0]
         assert "observed_send" not in turn and "not written" not in turn  # a seen send is the default basis
         assert vitals["stalls, no end in window"] == ["duty custody since 19:30", "turn t9 started since 19:40"]

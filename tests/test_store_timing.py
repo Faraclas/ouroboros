@@ -45,6 +45,19 @@ def test_the_window_counts_holds_per_kind_and_side_and_drain_resets_it(tmp_path)
     assert len(longest["sites"]) == 1 and longest["sites_omitted"] == 0, "nothing cut, nothing omitted"
 
 
+def test_meter_keeps_thread_cpu_and_load_result_names_its_caller(tmp_path, monkeypatch):
+    write_task_result(tmp_path, "seed", "running")
+    store_timing.drain()
+    monkeypatch.setattr(store_timing, "clock", lambda: 10.0)
+    cpu = iter([2.0, 2.25])
+    monkeypatch.setattr(store_timing, "cpu_clock", lambda: next(cpu))
+    with store_timing.metered() as meter:
+        load_task_result(tmp_path, "seed")
+    assert meter["current.read.cpu_sec"] == 0.25
+    site = store_timing.drain()["current"]["read"]["sites"][0]["site"]
+    assert site.startswith("tests.test_store_timing:test_meter_keeps_thread_cpu")
+
+
 def test_a_failure_inside_the_hook_never_reaches_the_transaction(tmp_path, monkeypatch):
     def broken():
         raise RuntimeError("site walk failed")

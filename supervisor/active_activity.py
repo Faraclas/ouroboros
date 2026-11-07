@@ -95,6 +95,7 @@ class TurnExecution:
     entered_at: float = field(default_factory=time.time)
     dispatch: str = ""
     meter: Optional[Dict[str, Any]] = field(default=None, repr=False, compare=False)
+    request_meter: Optional[Dict[str, Any]] = field(default=None, repr=False, compare=False)
     census: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -128,7 +129,8 @@ class TurnExecution:
         call_id, phase = str(data.get("llm_call_id") or ""), data.get("phase")
         if phase == "started":
             self.call = (call_id, time.monotonic(), False)
-            self.advance("requested", self.call[1])
+            if self.advance("requested", self.call[1]) and self.owner_turn:
+                self.request_meter = store_timing.snapshot(self.meter)
             return
         if self.call is None or self.call[0] != call_id:
             return  # a frame of a call this execution did not see start
@@ -156,7 +158,9 @@ class TurnExecution:
         ``accepted_at``, ``wait_before_entry_sec`` (wall clock: the routing pre-pass ran before this
         thread) and ``owner_wait_sec`` only when the canonical acceptance is known. ``dispatch``:
         ``not_observed`` while none happened; ``dispatched_at`` from the monotonic delta once it did.
-        ``meter``: the thread's own store counts so far; ``census``: the registry's count at entry."""
+        ``meter``: counts at receipt publication, not a backdated phase's counts; ``request_meter``:
+        the frozen counts at the first Main request, absent if none was seen. It excludes later call
+        bookkeeping, but is not a claim of physical dispatch. ``census``: the registry's count at entry."""
         marks = list(self.marks)
         if until is None:
             until = self.ended_at if self.ended_at is not None else time.monotonic()
@@ -175,6 +179,8 @@ class TurnExecution:
             "handler_wait_sec": round(handler_wait, 3), "phases": phases,
             "dispatch": self.dispatch or "not_observed",
             "meter": store_timing.snapshot(self.meter), "census": dict(self.census)}
+        if self.request_meter is not None:
+            row["request_meter"] = dict(self.request_meter)
         if phases:
             row["slowest_phase"], row["slowest_phase_sec"] = max(phases.items(), key=lambda item: item[1])
         accepted = _epoch(self.accepted_at)

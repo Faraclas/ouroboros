@@ -101,6 +101,57 @@ def test_a_route_that_observes_nothing_names_the_calls_start_as_its_basis(tmp_pa
     assert receipt["handler_wait_sec"] >= 0.0
 
 
+@pytest.mark.parametrize("observed", [False, True])
+def test_first_request_meter_excludes_later_call_work_and_is_not_replaced(tmp_path, observed):
+    """Real metered transactions and frame transport, without a provider call."""
+    from ouroboros import store_timing
+    from ouroboros.task_results import load_task_result, write_task_result
+
+    write_task_result(tmp_path, "seed", "running")
+    frames = queue.Queue()
+    with store_timing.metered() as meter:
+        execution = TurnExecution(chat_id=1, task_id="owner", owner_turn=True)
+        execution.meter = meter
+        turn = TurnEventQueue(frames, "owner", 1, on_frame=execution.observe)
+        load_task_result(tmp_path, "seed")
+        turn.put(_frame("started"))
+        assert "direct_turn" not in frames.get_nowait()
+        before = store_timing.snapshot(meter)
+        load_task_result(tmp_path, "seed")  # first-call preparation/bookkeeping after request
+        turn.put(_frame("observed", model_activity={"phase": "dispatching"}) if observed else _frame("finished"))
+        receipt = frames.get_nowait()["direct_turn"]
+        assert receipt["request_meter"] == before
+        assert receipt["request_meter"]["current.read"] == 1
+        assert receipt["meter"]["current.read"] == 2  # legacy current meter is unchanged
+        assert receipt["request_meter"]["current.read.cpu_sec"] >= 0
+        load_task_result(tmp_path, "seed")
+        turn.put(_frame("started", llm_call_id="call-2"))
+        frames.get_nowait()
+        assert execution.receipt()["request_meter"] == before
+        ctx = SimpleNamespace(RUNNING={}, PENDING=[], DRIVE_ROOT=tmp_path)
+        events._handle_main_llm_call_state({"type": "main_llm_call_state", **_frame("finished"), "direct_turn": receipt}, ctx)
+        saved = next(row for row in _journal(tmp_path) if row["type"] == "direct_turn")
+        assert saved["request_meter"] == before
+        from ouroboros.context_runtime_facts import _owner_turn
+
+        rendered = _owner_turn(saved, {}, "2026-11-07")
+        assert "txns (to first request) current 1r" in rendered
+        assert "current 2r" not in rendered
+
+
+def test_no_first_request_does_not_invent_a_request_meter():
+    execution = TurnExecution(chat_id=1, task_id="owner", owner_turn=True)
+    assert "request_meter" not in execution.receipt()
+
+
+def test_old_meter_is_labelled_as_publication_not_request_work():
+    from ouroboros.context_runtime_facts import _owner_turn
+
+    line = _owner_turn({"chat_id": 1, "meter": {"current.read": 9}}, {}, "2026-11-07")
+    assert "txns (at receipt publication) current 9r" in line
+    assert "to first request" not in line
+
+
 def test_a_wake_leaves_no_receipt_on_its_frame():
     execution = TurnExecution(chat_id=1, task_id="wake", owner_turn=False)
     frames: queue.Queue = queue.Queue()
