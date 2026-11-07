@@ -175,6 +175,34 @@ def observed_processing_mode(provider: str, usage: Dict[str, Any]) -> str:
     return value if isinstance(value, str) else ""
 
 
+def reported_cache_read_tokens(usage: Dict[str, Any]) -> Optional[int]:
+    """Accounting read split: usable selected details win, mirror is fallback.
+
+    First non-null top alias keeps the existing coercion/invalid semantics.
+    DeepSeek's hit mirror is last; miss is not added to cache-inclusive prompt.
+    The existing whole-block prompt-or-input selection is not a merge.
+    """
+    count = _reported_token_count(usage, "cache_read_input_tokens", "cached_tokens",
+                                  "precached_prompt_tokens", "prompt_cache_hit_tokens")
+    details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
+    detail = _reported_token_count(details, "cached_tokens") if isinstance(details, dict) else None
+    return detail if detail is not None else count
+
+
+def retain_reported_cache_tokens(usage: Dict[str, Any]) -> None:
+    """Keep normalized cache facts from falling through to lower raw aliases.
+
+    Raw events keep their strict grammar. Shared extraction and compatible
+    returns carry accounting facts, without changing other diagnostic counters.
+    """
+    from ouroboros.event_usage import REPORTED_TOKENS_KEY, event_token_counts
+
+    reported = event_token_counts(usage)
+    cache = {key: usage.get(key) for key in ("cached_tokens", "cache_write_tokens")}
+    if any(reported[key] != value for key, value in cache.items()):
+        usage[REPORTED_TOKENS_KEY] = {**reported, **cache}
+
+
 def reported_cache_write_tokens(usage: Dict[str, Any]) -> Optional[int]:
     """Standard write count shared by settlement and returned compatible usage.
 
@@ -245,9 +273,7 @@ def usage_from_response(response: Any, *, payload=_UNREAD_PAYLOAD, provider_payl
         usage = {}
     native_cache_read = _reported_token_count(usage, "cache_read_input_tokens")
     native_cache_write = _reported_token_count(usage, "cache_creation_input_tokens")
-    cache_read = _reported_token_count(
-        usage, "cache_read_input_tokens", "cached_tokens", "precached_prompt_tokens",
-    )
+    cache_read = reported_cache_read_tokens(usage)
     cache_write = reported_cache_write_tokens(usage)
     input_tokens = _reported_token_count(usage, "input_tokens")
     prompt = _reported_token_count(usage, "prompt_tokens")
@@ -256,10 +282,6 @@ def usage_from_response(response: Any, *, payload=_UNREAD_PAYLOAD, provider_payl
     ):
         # Anthropic native input_tokens excludes cache reads and writes.
         prompt = int(input_tokens or 0) + int(native_cache_read or 0) + int(native_cache_write or 0)
-    details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
-    if isinstance(details, dict):
-        detail_read = _reported_token_count(details, "cached_tokens")
-        cache_read = detail_read if detail_read is not None else cache_read
     normalized = {
         **usage,
         "prompt_tokens": prompt,
@@ -273,6 +295,7 @@ def usage_from_response(response: Any, *, payload=_UNREAD_PAYLOAD, provider_payl
     normalized.pop("effort_resolution", None)
     normalized.pop("prompt_cache_ttl_evidence", None)
     normalized.pop("provider_usage", None)
+    normalized.pop("reported_tokens", None)  # Provider JSON cannot supply a host count projection.
     claims = provider_usage_evidence(payload if provider_payload is _UNREAD_PAYLOAD else provider_payload)
     if claims:
         normalized["provider_usage"] = claims
@@ -300,14 +323,13 @@ def usage_from_response(response: Any, *, payload=_UNREAD_PAYLOAD, provider_payl
         normalized["cost_invalid"] = True
     if basis:  # the same consumed amount the loop lane reports, tagged on the settled row
         normalized.update(cost=cost, cost_basis=basis)
-    if cost is not None:
-        return normalized, cost, True
     completion = normalized["completion_tokens"]
     split = normalized.get("cache_write_tokens_by_ttl")
     cache_usage_reported = bool(cache_read or cache_write or (
         any(split.values()) if isinstance(split, dict) else split))
     if (
-        isinstance(payload, dict)
+        cost is None
+        and isinstance(payload, dict)
         and isinstance(payload.get("error"), dict)
         and prompt == 0
         and completion == 0
@@ -315,8 +337,9 @@ def usage_from_response(response: Any, *, payload=_UNREAD_PAYLOAD, provider_payl
         and not cache_usage_reported
     ):
         normalized.update(prompt_tokens=0, completion_tokens=0, cached_tokens=0, cache_write_tokens=0)
-        return normalized, 0.0, True
-    return normalized, None, False
+        cost = 0.0
+    retain_reported_cache_tokens(normalized)  # After every counter projection, including the free-error branch.
+    return normalized, cost, cost is not None
 
 
 def provider_failure_payload(exc: BaseException) -> Any:

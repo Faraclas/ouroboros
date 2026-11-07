@@ -15,10 +15,12 @@ TOKEN_COUNTER_ALIASES = {
     # A detail block or DeepSeek mirror may hold the only report; preserve it
     # even when an adapter has not lifted that counter to the top level.
     "cached_tokens": ("cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens",
-                      "input_tokens_details.cached_tokens", "prompt_cache_hit_tokens"),
+                      "input_tokens_details.cached_tokens", "precached_prompt_tokens", "prompt_cache_hit_tokens"),
     "cache_write_tokens": ("cache_write_tokens", "cache_creation_input_tokens",
                            "prompt_tokens_details.cache_write_tokens", "prompt_tokens_details.cache_creation_tokens",
-                           "prompt_tokens_details.cache_creation_input_tokens"),
+                           "prompt_tokens_details.cache_creation_input_tokens",
+                           "input_tokens_details.cache_write_tokens", "input_tokens_details.cache_creation_tokens",
+                           "input_tokens_details.cache_creation_input_tokens"),
 }
 
 

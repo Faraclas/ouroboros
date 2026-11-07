@@ -504,8 +504,19 @@ def _http_503():
     raise _Http503("HTTP 503: upstream overloaded")
 
 
+@pytest.fixture(params=["503", "504"], ids=["status-digits-in-time", "control-time"])
+def distinct_attempt_times(monkeypatch, request):
+    """A timestamp can contain status digits without reporting that HTTP status."""
+    from itertools import count
+    from ouroboros import loop_llm_call
+
+    ordinal = count()
+    monkeypatch.setattr(loop_llm_call, "utc_now_iso",
+                        lambda: f"2026-10-21T00:00:00.{next(ordinal):03d}{request.param}+00:00")
+
+
 def test_a_later_unknown_attempt_never_inherits_an_earlier_attempts_http_status(
-        data_root, tmp_path, quiet_primary, monkeypatch):
+        data_root, tmp_path, quiet_primary, monkeypatch, distinct_attempt_times):
     """One primary round sends twice: a 503, then a death whose outcome is unknown. The facts describe the
     attempt that triggered the switch from its own row; the 503 stays that earlier attempt's own fact."""
     from ouroboros import loop_llm_call
@@ -516,13 +527,14 @@ def test_a_later_unknown_attempt_never_inherits_an_earlier_attempts_http_status(
     text, usage, *_ = _run(tmp_path, llm)
     assert text == "done" and [model for model, _ in llm.sent] == [PRIMARY] * 3 + [FALLBACK] * 2
     [facts] = _facts(llm.sent[4][1])
-    assert "503" not in facts and "overloaded" not in facts
+    assert "HTTP 503" not in facts and "overloaded" not in facts
     failed = [ref for ref in usage["llm_call_refs"] if ref.get("failure_code")]
     assert (f"after {PRIMARY} failed with provider_outcome_unknown (code RuntimeError) at {failed[1]['ts']}. "
             "That attempt's outcome and cost stay unknown.") in facts
     assert 'Recorded error text: "' in facts and "Connection error." in facts
     assert [(ref["failure_code"], ref["status_code"]) for ref in failed] == [  # each attempt keeps its own status
         ("provider_transient", 503), ("provider_outcome_unknown", None)]
+    assert failed[0]["error"] not in facts
 
 
 @pytest.mark.parametrize("message,kind", [
@@ -602,7 +614,8 @@ def test_a_refusal_without_its_own_attempt_row_borrows_no_earlier_attempts_field
     assert not earlier["status_code"] if unknown else earlier["status_code"] == 400
 
 
-def test_an_empty_answer_names_its_own_attempt_and_no_earlier_status(data_root, tmp_path, quiet_primary, monkeypatch):
+def test_an_empty_answer_names_its_own_attempt_and_no_earlier_status(
+        data_root, tmp_path, quiet_primary, monkeypatch, distinct_attempt_times):
     """The empty-response path through the real loop: a 503, then empty answers until the primary's own
     budget is spent; the facts name the last empty attempt's own row, code, time and words, no status."""
     from ouroboros import loop_llm_call
@@ -621,4 +634,5 @@ def test_an_empty_answer_names_its_own_attempt_and_no_earlier_status(data_root, 
     [facts] = _facts(llm.sent[-1][1])
     assert (f"after {PRIMARY} failed with {failed[-1]['failure_code']} at {failed[-1]['ts']}. "
             f"Recorded error text: {json.dumps(failed[-1]['error'], ensure_ascii=False)}.") in facts
-    assert "503" not in facts and "overloaded" not in facts
+    assert "HTTP 503" not in facts and "overloaded" not in facts
+    assert failed[0]["error"] not in facts

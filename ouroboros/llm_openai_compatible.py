@@ -41,8 +41,11 @@ from ouroboros.request_wire_recovery import (
 )
 from ouroboros.utils import sanitize_tool_result_for_log
 from ouroboros.config import runtime_setting
-from ouroboros._usage_response import observed_processing_mode, reported_cache_write_tokens, reported_price
-from ouroboros.event_usage import REPORTED_TOKENS_KEY, event_token_counts
+from ouroboros._usage_response import (
+    observed_processing_mode, reported_cache_read_tokens, reported_cache_write_tokens,
+    retain_reported_cache_tokens, reported_price,
+)
+from ouroboros.event_usage import REPORTED_TOKENS_KEY
 
 
 # The moved warnings keep the logger identity they were emitted under.
@@ -648,30 +651,15 @@ class _OpenAICompatibleLaneMixin:
             # message-level 400 recovery. Only strings enter the transcript.
             msg.pop("reasoning_content", None)
 
-        if not usage.get("cached_tokens"):
-            prompt_details = usage.get("prompt_tokens_details") or {}
-            if isinstance(prompt_details, dict) and prompt_details.get("cached_tokens"):
-                usage["cached_tokens"] = int(prompt_details["cached_tokens"])
-        if not usage.get("cached_tokens") and usage.get("prompt_cache_hit_tokens"):
-            # DeepSeek mirrors its automatic-cache split as top-level
-            # prompt_cache_hit/miss_tokens beside the details block; the
-            # details block wins when present, this is the fallback.
-            try:
-                usage["cached_tokens"] = int(usage["prompt_cache_hit_tokens"])
-            except (TypeError, ValueError):
-                pass
-        # LM Studio MLX exposes prefix-cache hits only in stderr/logs, not
-        # OpenAI-compatible usage; cached_tokens=0 is therefore expected.
-
         # Use the same standard-count grammar as physical settlement. Truthy
         # alias fallbacks lose zero and can invent counts or raise after payment.
+        cache_read = reported_cache_read_tokens(usage)
+        if cache_read is not None or "cached_tokens" in usage:
+            usage["cached_tokens"] = cache_read
         cache_write = reported_cache_write_tokens(usage)
         if cache_write is not None or "cache_write_tokens" in usage:
             usage["cache_write_tokens"] = cache_write
-        reported = event_token_counts(usage)  # all counter projections above are final
-        if reported["cache_write_tokens"] != cache_write:
-            # Do not let a lower alias turn an authoritative unknown into a count.
-            usage[REPORTED_TOKENS_KEY] = {**reported, "cache_write_tokens": cache_write}
+        retain_reported_cache_tokens(usage)
 
         usage["provider"] = str(target.get("provider") or "openrouter")
         usage["resolved_model"] = str(target.get("usage_model") or target.get("resolved_model") or "")

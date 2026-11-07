@@ -281,7 +281,7 @@ def test_openai_compatible_reported_nested_zero_reaches_round_and_usage_rows(
     round_counts, usage_counts, usage = _loop_round(
         tmp_path, monkeypatch, "x-ai/grok-4.5", {"OPENROUTER_API_KEY": "or-fixture-key"}, step)
     assert round_counts == usage_counts == expected
-    assert "cached_tokens" not in usage or usage["cached_tokens"] == 40  # only a positive count is lifted
+    assert usage.get("cached_tokens") == expected[2]  # zero is also an authoritative accounting projection
 
 
 @pytest.mark.parametrize("raw,expected", [
