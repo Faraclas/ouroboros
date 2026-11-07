@@ -1,13 +1,6 @@
 name: Submit Claudexor dependency
 
 on:
-  push:
-    branches:
-      - main
-      - ouroboros
-    paths:
-      - ouroboros/claudexor_runtime_pin.json
-      - .github/workflows/dependency-graph.yml
   workflow_dispatch: {}
 
 permissions:
