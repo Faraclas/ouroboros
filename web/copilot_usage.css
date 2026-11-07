@@ -1,0 +1,63 @@
+/* Copilot account display, separate from the application's dispatch limits. */
+.copilot-usage-pill {
+    --copilot-ink: var(--tone-crimson-ink);
+    --copilot-surface: var(--tone-crimson);
+}
+:root[data-theme] .copilot-usage-pill.copilot-usage-pill.ui-chrome-control {
+    min-width: 90px;
+    color: var(--copilot-ink);
+    background: var(--copilot-surface);
+    padding: 3px 12px;
+    position: relative;
+    font-variant-numeric: tabular-nums;
+}
+:root[data-theme] .copilot-usage-pill[data-usage-tone="warning"] {
+    --copilot-surface: #685211;
+    --copilot-ink: #fff1bd;
+}
+:root[data-theme] .copilot-usage-pill[data-usage-tone="danger"] {
+    --copilot-surface: #972b36;
+    --copilot-ink: #fff4f4;
+}
+:root[data-theme] .copilot-usage-pill[data-usage-tone="neutral"] {
+    --copilot-surface: var(--chip-float);
+    --copilot-ink: var(--text-secondary);
+}
+:root[data-theme] .copilot-usage-pill.copilot-usage-pill.ui-chrome-control:hover { background: var(--copilot-surface); }
+:root[data-theme] .copilot-usage-pill .chat-budget-text { color: var(--copilot-ink); }
+.copilot-usage-pill .chat-budget-bar { background: rgba(128, 128, 128, .28); flex: 0 0 3px; height: 3px; }
+.copilot-usage-pill .chat-budget-bar-fill { background: var(--copilot-ink); }
+.copilot-usage-pill[data-usage-status="unavailable"] .chat-budget-bar,
+.copilot-usage-pill[data-usage-status="loading"] .chat-budget-bar { visibility: hidden; }
+.copilot-usage-stale { position: absolute; right: 3px; top: 3px; width: 12px; height: 12px; }
+.copilot-usage-stale[hidden] { display: none; }
+.copilot-credits-card {
+    padding: var(--space-5);
+    border-radius: var(--radius-object);
+    background: var(--surface-object);
+    box-shadow: var(--elev-rest);
+    margin-bottom: var(--space-4);
+}
+.copilot-credits-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.copilot-credits-head h3 { margin: 0; font-size: var(--type-body); }
+.copilot-credits-auto { color: var(--text-secondary); font-size: var(--type-meta); }
+.copilot-credits-primary { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-4) 0 var(--space-2); }
+.copilot-credits-primary strong { font-size: var(--type-page, 24px); font-weight: 600; color: var(--accent); }
+.copilot-credits-card[data-usage-tone="warning"] .copilot-credits-primary strong { color: var(--status-warn-fg); }
+.copilot-credits-card[data-usage-tone="danger"] .copilot-credits-primary strong { color: var(--status-error-fg); }
+.copilot-credits-card[data-usage-tone="neutral"] .copilot-credits-primary strong { color: var(--text-secondary); }
+.copilot-credits-scope { margin: 0 0 var(--space-5); color: var(--text-secondary); }
+.copilot-credits-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: var(--space-4) var(--space-5); margin: 0; }
+.copilot-credits-grid > div { min-width: 0; }
+.copilot-credits-grid dt { color: var(--text-secondary); font-size: var(--type-meta); margin-bottom: var(--space-1); }
+.copilot-credits-grid dd { margin: 0; color: var(--text-primary); font-size: var(--type-body); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.copilot-credits-note { color: var(--text-secondary); font-size: var(--type-meta); line-height: 1.5; margin: var(--space-5) 0 var(--space-3); }
+.copilot-credits-meta { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); color: var(--text-secondary); font-size: var(--type-meta); overflow-wrap: anywhere; }
+.copilot-credits-meta > span:empty { display: none; }
+.copilot-credits-error { margin: var(--space-3) 0 0; color: var(--status-warn-fg); font-size: var(--type-meta); }
+.copilot-credits-error[hidden] { display: none; }
+.copilot-app-accounting { margin: var(--space-5) 0 var(--space-3); font-size: var(--type-body); }
+.copilot-app-budget { margin-bottom: var(--space-4); }
+.copilot-app-budget > summary { cursor: pointer; color: var(--text-secondary); padding: var(--space-3) 0; font-size: var(--type-body); }
+.copilot-app-budget .costs-budget-card { margin-bottom: 0; }
+.copilot-app-budget-note { color: var(--text-secondary); font-size: var(--type-meta); margin: 0 0 var(--space-3); }

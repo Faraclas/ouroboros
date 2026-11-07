@@ -20,6 +20,10 @@ from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET
 
 LIMIT = 1024 * 1024
 WIDE, NARROW = {"width": 1473, "height": 978}, {"width": 390, "height": 844}
+READER_ENGINES = (
+    pytest.param("chromium", id="chromium"),
+    pytest.param("webkit", id="webkit"),
+)
 TABLE = ("| " + " | ".join(f"Measured column {index}" for index in range(12)) + " |\n"
          + "|" + "---|" * 12 + "\n" + "| " + " | ".join(f"value-{index}-with-length" for index in range(12)) + " |\n")
 BRIEF = (
@@ -117,6 +121,85 @@ def _reader(page):
     return page.evaluate(READER_STATE)
 
 
+def _launch_reader_browser(playwright, engine):
+    # Optional WebKit absence skips only its explicitly named test item.
+    # Missing libraries, crashes and every other launch failure remain failures.
+    if (engine == "webkit"
+            and not Path(playwright.webkit.executable_path).is_file()
+            and not os.environ.get("OUROBOROS_EXPECT_BROWSER_ENGINES")):
+        pytest.skip(f"optional WebKit executable is not installed: {playwright.webkit.executable_path}")
+    return getattr(playwright, engine).launch()
+
+
+def _remember_reader(page):
+    return page.evaluate_handle("""() => {
+        const dialog = document.querySelector('dialog.document-reader[open]');
+        return {dialog, body: dialog.querySelector('.document-reader-body'),
+            title: dialog.querySelector('.document-reader-title').textContent};
+    }""")
+
+
+def _same_reader(page, remembered):
+    assert page.evaluate("""saved => {
+        const dialog = document.querySelector('dialog.document-reader[open]');
+        return Boolean(dialog && dialog === saved.dialog
+            && dialog.querySelector('.document-reader-body') === saved.body
+            && dialog.querySelector('.document-reader-title').textContent === saved.title
+            && document.querySelectorAll('dialog.document-reader').length === 1
+            && dialog.getAttribute('aria-modal') === 'false'
+            && !dialog.matches(':modal'));
+    }""", remembered), "navigation retains the same modeless document and reading region"
+    return _reader(page)
+
+
+def _check_modeless_keyboard(page):
+    """A desktop reader leaves the real background composer usable."""
+    remembered = _remember_reader(page)
+    original = _reader(page)["markdown"]
+    try:
+        # Select real document text and open its actual selection menu.
+        paragraph = page.locator("dialog.document-reader .document-reader-markdown p").first
+        paragraph.evaluate("""node => {
+            const selection = getSelection(), range = document.createRange();
+            range.selectNodeContents(node);
+            selection.removeAllRanges(); selection.addRange(range);
+        }""")
+        paragraph.click(button="right")
+        menu = page.locator("dialog.document-reader .viper-selection-menu")
+        menu.wait_for(state="visible")
+        page.keyboard.press("Escape")
+        menu.wait_for(state="hidden")
+        assert _same_reader(page, remembered)["active"], "first Escape dismisses only the selection menu"
+
+        # Do not prescribe which button/link a platform includes in its Tab order.
+        left_reader = False
+        for _ in range(32):
+            page.keyboard.press("Tab")
+            if not _reader(page)["activeInside"]:
+                left_reader = True
+                break
+        assert left_reader, "Tab can leave a modeless reader"
+
+        composer = page.locator("#chat-input")
+        composer.click(timeout=5_000)
+        page.keyboard.type("A draft written while the document remains open.")
+        assert composer.input_value() == "A draft written while the document remains open."
+        assert composer.evaluate("node => document.activeElement === node")
+        page.keyboard.press("Escape")
+        assert _same_reader(page, remembered)["markdown"] == original
+        assert composer.evaluate("node => document.activeElement === node"), "outside Escape keeps composer focus"
+
+        # Invoke the real Close handler without a pointer's normal focus transfer:
+        # closing a reader that no longer owns focus must not steal it back.
+        page.locator('dialog.document-reader [data-reader-action="close"]').evaluate("node => node.click()")
+        page.locator("dialog.document-reader").wait_for(state="detached")
+        assert composer.evaluate("node => document.activeElement === node")
+        assert composer.input_value() == "A draft written while the document remains open."
+        composer.fill("")
+    finally:
+        remembered.dispose()
+
+
 def _open(page, name, *, ready=".document-reader-markdown, .document-reader-source, .document-reader-status:not(.is-loading)",
           feed="#chat-messages"):
     card = page.locator(f"{feed} .chat-file-card").filter(has_text=name)
@@ -136,6 +219,8 @@ def _open(page, name, *, ready=".document-reader-markdown, .document-reader-sour
 
 
 def _close_with_escape(page):
+    # Escape closes a focused reader, not whichever document happens to be open.
+    page.locator("dialog.document-reader .document-reader-body").focus()
     page.keyboard.press("Escape")
     page.locator("dialog.document-reader").wait_for(state="detached")
 
@@ -209,7 +294,8 @@ def _check_brief(state, title="brief.md"):
 
 @pytest.mark.ui_browser
 @pytest.mark.serial
-def test_delivered_documents_open_in_the_reader_live_and_after_reload(direct_server_with_data, monkeypatch, tmp_path):  # noqa: F811
+@pytest.mark.parametrize("engine", READER_ENGINES)
+def test_delivered_documents_open_in_the_reader_live_and_after_reload(direct_server_with_data, monkeypatch, tmp_path, engine):  # noqa: F811
     from playwright.sync_api import sync_playwright
     from ouroboros.artifacts import task_artifact_dir_path
     from tests import fixtures_mock_llm
@@ -227,9 +313,9 @@ def test_delivered_documents_open_in_the_reader_live_and_after_reload(direct_ser
     monkeypatch.setattr(fixtures_mock_llm._Handler, "do_POST", _send_files_mock(paths, calls))
     url = direct_server_with_data["url"]
     with sync_playwright() as playwright:
-        chromium = playwright.chromium.launch()
+        browser = _launch_reader_browser(playwright, engine)
         try:
-            page = chromium.new_page(viewport=WIDE, color_scheme="dark")
+            page = browser.new_page(viewport=WIDE, color_scheme="dark")
             page.add_init_script(f"({_CAPTURE_TEST_SOCKET})()")
             frames, requests, failed = {}, [], []
 
@@ -270,15 +356,12 @@ def test_delivered_documents_open_in_the_reader_live_and_after_reload(direct_ser
             page.wait_for_timeout(300)
             assert not [entry for entry in requests if "/artifacts/" in entry[0] or "/api/files/" in entry[0]
                         or "reader-probe" in entry[0] or "example.com" in entry[0]], requests
-            page.screenshot(path=str(evidence / "chromium-wide-dark-brief.png"))
+            page.screenshot(path=str(evidence / f"{engine}-wide-dark-brief.png"))
             ring = "() => getComputedStyle(document.querySelector('.document-reader-body')).outlineStyle"
             assert page.evaluate(ring) == "none", "a pointer open shows no ring on the reading region"
             page.keyboard.press("PageDown")
             page.wait_for_function("() => document.querySelector('.document-reader-body').scrollTop > 0")
             assert page.evaluate(ring) == "solid", "the first key shows the one focus ring"
-            for _ in range(8):
-                page.keyboard.press("Tab")
-                assert _reader(page)["activeInside"], "Tab stays inside the reader"
             page.locator('[data-reader-view="source"]').click()
             source_state = _reader(page)
             assert source_state["source"] == BRIEF and source_state["markdown"] is None
@@ -287,6 +370,11 @@ def test_delivered_documents_open_in_the_reader_live_and_after_reload(direct_ser
             _close_with_escape(page)
             assert page.evaluate("() => document.activeElement?.closest('.chat-file-card')?.textContent.includes('brief.md')")
             _check_reader_place(page, "brief.md", state)
+
+            # Tab can intentionally scroll/focus the background. Keep that exercise
+            # separate from the unchanged opener-position oracle above.
+            _open(page, "brief.md", ready=".document-reader-markdown")
+            _check_modeless_keyboard(page)
 
             state = _open(page, "notes.txt", ready=".document-reader-source")
             assert state["source"] == NOTES and not state["views"] and state["meta"].startswith("TXT · ")
@@ -306,7 +394,7 @@ def test_delivered_documents_open_in_the_reader_live_and_after_reload(direct_ser
             page.locator(".chat-file-card").filter(has_text="page.html").click()
             page.locator(".chat-file-dialog[open]").wait_for(state="visible")
             assert page.locator("dialog.document-reader").count() == 0, "HTML keeps the file dialog"
-            page.screenshot(path=str(evidence / "chromium-wide-dark-file-dialog.png"))
+            page.screenshot(path=str(evidence / f"{engine}-wide-dark-file-dialog.png"))
             page.locator('.chat-file-dialog[open] [data-file-action="close"]').click()
 
             # The stored copy of one delivery is damaged on disk after it was sent.
@@ -389,16 +477,18 @@ def test_delivered_documents_open_in_the_reader_live_and_after_reload(direct_ser
             assert close and close["x"] + close["width"] <= NARROW["width"] and close["y"] >= 0
             # Close stays beside the title; the other actions take one row below it.
             assert download["x"] + download["width"] <= NARROW["width"] and close["y"] < download["y"]
-            page.screenshot(path=str(evidence / "chromium-narrow-light-brief.png"))
+            page.screenshot(path=str(evidence / f"{engine}-narrow-light-brief.png"))
             page.locator('dialog.document-reader [data-reader-action="close"]').click()
             page.locator("dialog.document-reader").wait_for(state="detached")
             _check_reader_place(page, "brief.md", state)
         finally:
-            chromium.close()
+            browser.close()
 
-        webkit = playwright.webkit.launch()
+        # Retain the original complementary light-desktop/dark-phone phase,
+        # now on this test item's selected engine rather than another engine.
+        browser = _launch_reader_browser(playwright, engine)
         try:
-            page = webkit.new_page(viewport=WIDE, color_scheme="light")
+            page = browser.new_page(viewport=WIDE, color_scheme="light")
             requests = []
             page.on("request", lambda request: requests.append((request.url, request.headers.get("range"))))
             page.goto(url, wait_until="domcontentloaded")
@@ -408,7 +498,7 @@ def test_delivered_documents_open_in_the_reader_live_and_after_reload(direct_ser
             _check_brief(state)
             assert state["active"]
             assert page.evaluate("() => getComputedStyle(document.querySelector('.document-reader-body')).outlineStyle") == "none"
-            page.screenshot(path=str(evidence / "webkit-wide-light-brief.png"))
+            page.screenshot(path=str(evidence / f"{engine}-wide-light-brief.png"))
             _close_with_escape(page)
             assert page.evaluate("() => document.activeElement?.closest('.chat-file-card')?.textContent.includes('brief.md')")
             _check_reader_place(page, "brief.md", state)
@@ -420,14 +510,14 @@ def test_delivered_documents_open_in_the_reader_live_and_after_reload(direct_ser
             state = _open(page, "notes.txt", ready=".document-reader-source")
             assert state["source"] == NOTES
             assert [round(value) for value in state["rect"]] == [0, 0, NARROW["width"], NARROW["height"]], state["rect"]
-            page.screenshot(path=str(evidence / "webkit-narrow-dark-notes.png"))
+            page.screenshot(path=str(evidence / f"{engine}-narrow-dark-notes.png"))
             _close_with_escape(page)
             state = _open(page, "brief.md", ready=".document-reader-markdown")
             assert any(state["tables"]) and state["bodyOverflowX"] <= 1
-            page.screenshot(path=str(evidence / "webkit-narrow-dark-brief.png"))
+            page.screenshot(path=str(evidence / f"{engine}-narrow-dark-brief.png"))
             _close_with_escape(page)
         finally:
-            webkit.close()
+            browser.close()
 
 
 PROJECT_FILES = {"room-brief.md": BRIEF.encode(), "room-notes.txt": NOTES.encode()}
@@ -475,11 +565,10 @@ def _release(page, held):
 
 @pytest.mark.ui_browser
 @pytest.mark.serial
-def test_project_room_reader_survives_reload_and_closes_with_its_room(direct_server_with_data, monkeypatch, tmp_path):  # noqa: F811
-    """A Project room's delivered documents read live and after a reload; leaving the room
-    destroys its chat, which aborts a pending read and removes an open reader, and the room
-    reopens to a working reader. Leaving goes through the app's own `ouro:open-project`
-    navigation (what a Project reference does): a modal reader makes the panel's own Close inert."""
+@pytest.mark.parametrize("engine", READER_ENGINES)
+def test_project_room_reader_survives_reload_and_room_navigation(direct_server_with_data, monkeypatch, tmp_path, engine):  # noqa: F811
+    """A room's captured document, pending or loaded, survives changing rooms.
+    Explicit reader close still aborts an unfinished read and disposes its surface."""
     from playwright.sync_api import sync_playwright
     from tests import fixtures_mock_llm
 
@@ -499,9 +588,9 @@ def test_project_room_reader_survives_reload_and_closes_with_its_room(direct_ser
     other = _api(url, "POST", "/api/projects", {"name": "Other room"})["project"]
     assert int(room["chat_id"]) not in (1, int(other["chat_id"])), (room, other)
     with sync_playwright() as playwright:
-        chromium = playwright.chromium.launch()
+        browser = _launch_reader_browser(playwright, engine)
         try:
-            page = chromium.new_page(viewport=WIDE, color_scheme="dark")
+            page = browser.new_page(viewport=WIDE, color_scheme="dark")
             page.add_init_script(f"({_CAPTURE_TEST_SOCKET})()")
             frames, requests, failed = {}, [], []
 
@@ -536,7 +625,7 @@ def test_project_room_reader_survives_reload_and_closes_with_its_room(direct_ser
             assert state["active"]
             live_markdown = state["markdown"]
             assert not [entry for entry in requests if "/artifacts/" in entry[0] or "/api/files/" in entry[0]], requests
-            page.screenshot(path=str(evidence / "chromium-wide-dark-project-brief.png"))
+            page.screenshot(path=str(evidence / f"{engine}-wide-dark-project-brief.png"))
             _close_with_escape(page)
             assert page.evaluate(f"() => document.activeElement?.closest('{feed} .chat-file-card')?.textContent.includes('room-brief.md')")
             _check_reader_place(page, "room-brief.md", state, feed)
@@ -553,20 +642,30 @@ def test_project_room_reader_survives_reload_and_closes_with_its_room(direct_ser
             assert (artifact["room-brief.md"], None) in requests, requests
             _close_with_escape(page)
 
-            # Leaving the room while a read is pending aborts it and leaves nothing behind.
+            # Leaving the room keeps the same captured read, including its pending request.
             held = []
             page.route("**/artifacts/**", lambda route: held.append(route))
             page.locator(f"{feed} .chat-file-card").filter(has_text="room-notes.txt").click()
             page.locator("dialog.document-reader .document-reader-status.is-loading").wait_for(state="attached")
+            remembered = _remember_reader(page)
             failed.clear()
             page.evaluate(OPEN_ROOM, other)
             page.locator(f'#pchat-{other["id"]}-messages').wait_for(state="visible", timeout=30_000)
-            assert _await_abort(page, failed, artifact["room-notes.txt"]), "leaving the room aborted the pending read"
-            assert page.evaluate(LEFT_BEHIND, feed) == {
-                "readers": 0, "open_dialogs": 0, "room": False, "focus_connected": True}
+            assert _same_reader(page, remembered)["source"] is None
+            assert artifact["room-notes.txt"] not in failed
             _release(page, held)
-            # Nothing modal is left over the app: the room now shown takes a click at once.
-            page.locator(f'[id="pchat-{other["id"]}-input"]').click(timeout=5_000)
+            page.locator("dialog.document-reader .document-reader-source").wait_for(state="attached")
+            assert _same_reader(page, remembered)["source"] == NOTES
+            assert artifact["room-notes.txt"] not in failed
+            composer = page.locator(f'[id="pchat-{other["id"]}-input"]')
+            composer.click(timeout=5_000)
+            page.keyboard.type("The other room remains interactive.")
+            assert composer.input_value() == "The other room remains interactive."
+            page.keyboard.press("Escape")
+            assert _same_reader(page, remembered)["source"] == NOTES
+            composer.fill("")
+            _close_with_escape(page)
+            remembered.dispose()
 
             # The room reopens to a working reader (now from history, so the artifact route).
             feed = _enter_room(page, room)
@@ -575,18 +674,21 @@ def test_project_room_reader_survives_reload_and_closes_with_its_room(direct_ser
             assert state["source"] == NOTES and state["title"] == "room-notes.txt"
             assert (artifact["room-notes.txt"], None) in requests, requests
 
-            # Leaving with the document open closes it the same way.
+            # A loaded document also retains its exact nodes and source.
+            remembered = _remember_reader(page)
             page.evaluate(OPEN_ROOM, other)
             page.locator(f'#pchat-{other["id"]}-messages').wait_for(state="visible", timeout=30_000)
-            assert page.evaluate(LEFT_BEHIND, feed) == {
-                "readers": 0, "open_dialogs": 0, "room": False, "focus_connected": True}
+            assert _same_reader(page, remembered)["source"] == NOTES
+            _close_with_escape(page)
+            remembered.dispose()
+            assert page.evaluate(SCREEN) == NOTHING_LEFT
             page.locator(f'[id="pchat-{other["id"]}-input"]').click(timeout=5_000)
         finally:
-            chromium.close()
+            browser.close()
 
-        webkit = playwright.webkit.launch()
+        browser = _launch_reader_browser(playwright, engine)
         try:
-            page = webkit.new_page(viewport=NARROW, color_scheme="light")
+            page = browser.new_page(viewport=NARROW, color_scheme="light")
             failed = []
             page.on("requestfailed", lambda request: failed.append(request.url))
             page.goto(url, wait_until="domcontentloaded")
@@ -596,7 +698,7 @@ def test_project_room_reader_survives_reload_and_closes_with_its_room(direct_ser
             state = _open(page, "room-brief.md", ready=".document-reader-markdown", feed=feed)
             _check_brief(state, "room-brief.md")
             assert [round(value) for value in state["rect"]] == [0, 0, NARROW["width"], NARROW["height"]], state["rect"]
-            page.screenshot(path=str(evidence / "webkit-narrow-light-project-brief.png"))
+            page.screenshot(path=str(evidence / f"{engine}-narrow-light-project-brief.png"))
             _close_with_escape(page)
             assert page.evaluate(f"() => document.activeElement?.closest('{feed} .chat-file-card')?.textContent.includes('room-brief.md')")
             _check_reader_place(page, "room-brief.md", state, feed)
@@ -605,20 +707,37 @@ def test_project_room_reader_survives_reload_and_closes_with_its_room(direct_ser
             page.route("**/artifacts/**", lambda route: held.append(route))
             page.locator(f"{feed} .chat-file-card").filter(has_text="room-notes.txt").click()
             page.locator("dialog.document-reader .document-reader-status.is-loading").wait_for(state="attached")
+            remembered = _remember_reader(page)
             page.evaluate(OPEN_ROOM, other)
             page.locator(f'#pchat-{other["id"]}-messages').wait_for(state="visible", timeout=30_000)
-            assert _await_abort(page, failed, artifact["room-notes.txt"])
-            assert page.evaluate(LEFT_BEHIND, feed) == {
-                "readers": 0, "open_dialogs": 0, "room": False, "focus_connected": True}
+            assert _same_reader(page, remembered)["source"] is None
             _release(page, held)
+            page.locator("dialog.document-reader .document-reader-source").wait_for(state="attached")
+            assert _same_reader(page, remembered)["source"] == NOTES
+            assert artifact["room-notes.txt"] not in failed
+            _close_with_escape(page)
+            remembered.dispose()
             # On a phone the other room covers Main's menu: close it, then reopen the room.
-            page.locator("#project-panel-close").click()
+            page.locator(f'[data-pane-project="{other["id"]}"] [data-pane-close]').click()
             feed = _enter_room(page, room)
             state = _open(page, "room-notes.txt", ready=".document-reader-source", feed=feed)
             assert state["source"] == NOTES
             _close_with_escape(page)
+
+            # Explicit close, unlike navigation, aborts a pending read. Releasing
+            # its held route afterwards must not resurrect the closed reader.
+            held = _hold_artifacts(page)
+            failed.clear()
+            page.locator(f"{feed} .chat-file-card").filter(has_text="room-notes.txt").click()
+            page.locator("dialog.document-reader .document-reader-status.is-loading").wait_for(state="attached")
+            page.locator('dialog.document-reader [data-reader-action="close"]').click()
+            page.locator("dialog.document-reader").wait_for(state="detached")
+            assert _await_abort(page, failed, artifact["room-notes.txt"])
+            _release(page, held)
+            page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+            assert page.evaluate(SCREEN) == NOTHING_LEFT
         finally:
-            webkit.close()
+            browser.close()
 
 
 # A notification as the owner meets it: the real notifier decides on a socket frame and raises a
@@ -687,12 +806,10 @@ def _hold_artifacts(page):
 
 @pytest.mark.ui_browser
 @pytest.mark.serial
-def test_reader_closes_when_its_chat_leaves_the_screen_and_staged_files_stay(direct_server_with_data, monkeypatch, tmp_path):  # noqa: F811
-    """A document open — or still loading — in Main or in a room closes when that chat leaves the
-    screen without being destroyed: a notification opening a room over Main, a notification back to
-    Main that hides a room kept for its staged file, a switch to another room, a page change. The
-    pending read is aborted, no modal is left over the next view, and the kept room still holds its
-    staged file when it is shown again."""
+@pytest.mark.parametrize("engine", READER_ENGINES)
+def test_reader_persists_when_its_chat_leaves_the_screen_and_staged_files_stay(direct_server_with_data, monkeypatch, tmp_path, engine):  # noqa: F811
+    """Notifications, room switches and page changes retain the captured modeless
+    document; staged File objects remain with their original room."""
     from playwright.sync_api import sync_playwright
 
     root = direct_server_with_data["data_dir"]
@@ -710,8 +827,9 @@ def test_reader_closes_when_its_chat_leaves_the_screen_and_staged_files_stay(dir
     other = _api(url, "POST", "/api/projects", {"name": "Next room"})["project"]
     calls, frames = [], {}
     with sync_playwright() as playwright:
-        for engine, viewport, scheme in (("chromium", WIDE, "dark"), ("webkit", NARROW, "light")):
-            browser = getattr(playwright, engine).launch()
+        # Both phases use this independently selectable engine item.
+        for viewport, scheme in ((WIDE, "dark"), (NARROW, "light")):
+            browser = _launch_reader_browser(playwright, engine)
             try:
                 page = browser.new_page(viewport=viewport, color_scheme=scheme)
                 page.add_init_script(f"({_CAPTURE_TEST_SOCKET})()")
@@ -743,12 +861,17 @@ def test_reader_closes_when_its_chat_leaves_the_screen_and_staged_files_stay(dir
                 held = _hold_artifacts(page)
                 page.locator("#chat-messages .chat-file-card").filter(has_text="nav-notes.txt").click()
                 page.locator("dialog.document-reader .document-reader-status.is-loading").wait_for(state="attached")
+                remembered = _remember_reader(page)
                 _click_notification(page, int(room["chat_id"]), 1)
                 feed = f'#pchat-{room["id"]}-messages'
                 page.locator(feed).wait_for(state="visible", timeout=30_000)
-                assert _await_abort(page, failed, artifact["nav-notes.txt"]), "Main's pending read was aborted"
-                assert page.evaluate(SCREEN) == NOTHING_LEFT
+                assert _same_reader(page, remembered)["source"] is None
                 _release(page, held)
+                page.locator("dialog.document-reader .document-reader-source").wait_for(state="attached")
+                assert _same_reader(page, remembered)["source"] == NOTES
+                assert artifact["nav-notes.txt"] not in failed
+                _close_with_escape(page)
+                remembered.dispose()
 
                 # 2. The room holds a staged file and is reading; a notification goes back to Main.
                 page.locator("#project-panel .chat-file-input-hidden").set_input_files(
@@ -759,12 +882,17 @@ def test_reader_closes_when_its_chat_leaves_the_screen_and_staged_files_stay(dir
                 failed.clear()
                 page.locator(f"{feed} .chat-file-card").filter(has_text="kept-notes.txt").click()
                 page.locator("dialog.document-reader .document-reader-status.is-loading").wait_for(state="attached")
+                remembered = _remember_reader(page)
                 _click_notification(page, 1, 2)
                 page.wait_for_function("id => document.getElementById(`panel-pchat-${id}`)?.hidden === true", arg=room["id"])
-                assert _await_abort(page, failed, artifact["kept-notes.txt"]), "the kept room's pending read was aborted"
-                assert page.evaluate(SCREEN) == NOTHING_LEFT
+                assert _same_reader(page, remembered)["source"] is None
                 assert page.evaluate(KEPT_ROOM, room["id"]) == {"hidden": True, "pending": "1", "staged": ["kept.txt"]}
                 _release(page, held)
+                page.locator("dialog.document-reader .document-reader-source").wait_for(state="attached")
+                assert _same_reader(page, remembered)["source"] == NOTES
+                assert artifact["kept-notes.txt"] not in failed
+                _close_with_escape(page)
+                remembered.dispose()
                 page.locator("#project-panel").wait_for(state="hidden")
                 page.locator("#chat-input").click(timeout=5_000)
 
@@ -773,22 +901,29 @@ def test_reader_closes_when_its_chat_leaves_the_screen_and_staged_files_stay(dir
                 assert page.evaluate(KEPT_ROOM, room["id"]) == {"hidden": False, "pending": "", "staged": ["kept.txt"]}
                 state = _open(page, "kept-brief.md", ready=".document-reader-markdown", feed=feed)
                 _check_brief(state, "kept-brief.md")
+                remembered = _remember_reader(page)
                 page.evaluate(OPEN_ROOM, other)
                 page.locator(f'#pchat-{other["id"]}-messages').wait_for(state="visible", timeout=30_000)
-                assert page.evaluate(SCREEN) == NOTHING_LEFT
+                assert _same_reader(page, remembered)["markdown"] == state["markdown"]
                 assert page.evaluate(KEPT_ROOM, room["id"]) == {"hidden": True, "pending": "1", "staged": ["kept.txt"]}
+                _close_with_escape(page)
+                remembered.dispose()
                 page.locator(f'[id="pchat-{other["id"]}-input"]').click(timeout=5_000)
 
-                # 4. Back in Main, reading; a page change made while the reader is open (the
-                # navigation itself is inert under the modal, so the change is made by code).
+                # 4. A page change also retains the captured document. Programmatic
+                # navigation exercises the same transition while a phone's full sheet covers it.
                 _click_notification(page, 1, 3)
                 page.locator("#project-panel").wait_for(state="hidden")
                 state = _open(page, "nav-brief.md", ready=".document-reader-markdown")
                 _check_brief(state, "nav-brief.md")
+                remembered = _remember_reader(page)
                 page.evaluate("() => document.querySelector('[data-nav-page=\"settings\"]').click()")
                 page.locator("#page-settings.active").wait_for(state="attached")
+                assert _same_reader(page, remembered)["markdown"] == state["markdown"]
+                page.screenshot(path=str(evidence / f"{engine}-{scheme}-page-change-kept-reader.png"))
+                _close_with_escape(page)
+                remembered.dispose()
                 assert page.evaluate(SCREEN) == NOTHING_LEFT
-                page.screenshot(path=str(evidence / f"{engine}-{scheme}-page-change-no-reader.png"))
                 if viewport == NARROW:
                     page.locator("#page-settings [data-mobile-nav-toggle]").click()
                 page.locator('[data-nav-page="chat"]').click()
@@ -888,11 +1023,12 @@ COPY_STATE = """() => {
 
 @pytest.mark.ui_browser
 @pytest.mark.serial
-def test_reader_in_a_translated_ui_and_copy_without_async_clipboard(direct_server_with_data, monkeypatch, tmp_path):  # noqa: F811
+@pytest.mark.parametrize("engine", READER_ENGINES)
+def test_reader_in_a_translated_ui_and_copy_without_async_clipboard(direct_server_with_data, monkeypatch, tmp_path, engine):  # noqa: F811
     """With a non-English dictionary (the house idiom: the gateway's /api/ui/i18n answer, stubbed),
     the reader's controls are translated while the document — its name, even one the dictionary
     knows, its size line, its text and its authors' link and image titles — stays as written and
-    is never reported as a missing translation. Without the async clipboard, Copy inside the modal
+    is never reported as a missing translation. Without the async clipboard, Copy inside the modeless
     reader copies through a selection made inside the dialog. A code block past the 32 KiB
     rich-block bound stays plain and copies whole."""
     from playwright.sync_api import sync_playwright
@@ -909,8 +1045,9 @@ def test_reader_in_a_translated_ui_and_copy_without_async_clipboard(direct_serve
     assert len(HUGE_CODE) > 32768
     calls = []
     with sync_playwright() as playwright:
-        for engine, viewport, scheme in (("chromium", WIDE, "dark"), ("webkit", NARROW, "light")):
-            browser = getattr(playwright, engine).launch()
+        # Keep the delivery/history phases, but never change engines inside an item.
+        for viewport, scheme in ((WIDE, "dark"), (NARROW, "light")):
+            browser = _launch_reader_browser(playwright, engine)
             try:
                 page = browser.new_page(viewport=viewport, color_scheme=scheme)
                 page.add_init_script(f"({_CAPTURE_TEST_SOCKET})()")

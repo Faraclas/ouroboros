@@ -226,6 +226,7 @@ export function createChatMedia({
     onDomWrite = (mutate) => mutate(),
     replies = null,
     composer = () => null,
+    focusOrigin = () => {},
 }) {
     const disposers = new Set();
     const resourceOwners = new Map();
@@ -461,6 +462,13 @@ export function createChatMedia({
             }
         },
         copy: (file) => copyImage(file.source, file.mime),
+        sendToChat(text) {
+            const target = composer(); if (!target) return;
+            const draft = target.getDraft();
+            target.setDraft(draft + (draft && !draft.endsWith('\n') ? '\n' : '') + text);
+            focusOrigin(); target.focus();
+            target.input.setSelectionRange(target.getDraft().length, target.getDraft().length);
+        },
     };
     const reader = createDocumentReader({ actions: fileActions, formatSize: humanSize });
 
@@ -504,7 +512,7 @@ export function createChatMedia({
     }
 
     function openFileDialog(file, owner = null) {
-        reader.close({ restoreFocus: false });
+        // Reader remains open until its explicit Close.
         const dialog = ensureFileDialog();
         dialogFile = file;
         dialogOwner = owner;
@@ -1000,10 +1008,9 @@ export function createChatMedia({
         }
     }
 
-    // The chat left the screen: the reader or file dialog a card opened closes, nothing else.
+    // Hide transient file actions on navigation; captured modeless reading survives it.
     function closeTransient() {
-        reader.close({ restoreFocus: false });
-        closeFileDialog();
+        closeFileDialog(); // document stays available while collaborating
     }
 
     // Release only the evicted page's subtree; other media and copy controls
@@ -1173,6 +1180,7 @@ export function createChatMedia({
         reset,
         release,
         closeTransient,
+        hasOpenReader: () => reader.isOpen(),
         destroy,
     };
 }

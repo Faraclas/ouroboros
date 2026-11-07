@@ -203,7 +203,7 @@ def test_an_opened_room_lands_on_its_newest_reply_above_later_rows_and_a_read_ro
             assert landed["top"] >= landed["feedTop"] and gap > 1, ("on screen, above the bottom", landed, gap)
             _unread(row).wait_for(state="detached")
 
-            page.locator("#project-panel-close").evaluate("el => el.click()")
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').evaluate("el => el.click()")
             row.evaluate("el => el.click()")
             messages.locator(".chat-bubble").filter(has_text="Owner follow-up 5").wait_for(state="attached")
             page.evaluate(_SETTLE_RESTORE_FRAMES)
@@ -635,7 +635,7 @@ def test_an_ordinary_reopen_reads_its_room_while_an_old_question_reveal_is_held(
                     [{"name": "kept.txt", "mimeType": "text/plain", "buffer": b"kept"}])
                 page.locator("#project-panel .attach-name").filter(has_text="kept.txt").wait_for()
                 page.locator(_COMPOSER).fill(DRAFT)
-                page.locator("#project-panel-close").click()
+                page.locator(f'[data-pane-project="{slug}"] [data-pane-close]').click()
                 page.locator('.chat-instance-panel[data-pending-work="1"]').wait_for(state='attached')
                 assert page.locator('.chat-instance-panel[data-pending-work="1"]').count() == 1
                 dialogue_store.append(data, "chat", {"ts": "2026-09-28T10:30:00Z", "direction": "out", "chat_id": chat_id,
@@ -649,7 +649,7 @@ def test_an_ordinary_reopen_reads_its_room_while_an_old_question_reveal_is_held(
             page.wait_for_function("() => typeof window.__releaseQuestion === 'function'")
             page.wait_for_timeout(500)
             assert seen() == before, "landing on the question is not reading"
-            page.locator("#project-panel-close").click()
+            page.locator(f'[data-pane-project="{slug}"] [data-pane-close]').click()
             parked = page.locator('.chat-instance-panel[data-pending-work="1"]') if retained else messages
             parked.wait_for(state="attached" if retained else "detached")
             row.evaluate("el => el.click()")

@@ -1,0 +1,35 @@
+/* Logical organization uses the approved shell/palette. No room/work/status redesign. */
+/* Presence, not visibility: leaf rows keep the tree gutter; legacy rows have no branch. */
+.nav-project-item.nav-project-tree { grid-template-columns:24px minmax(0,1fr) var(--nav-kebab-w); padding-inline-start:calc(var(--project-depth,0) * 12px); box-sizing:border-box; }
+.nav-project-item.nav-project-tree > .nav-project-row { grid-column:2; padding-left:2px; min-width:0; }
+.nav-project-item.nav-project-tree > .nav-project-kebab,.nav-project-item.nav-project-tree > .nav-project-deleting-status { grid-column:3; }
+.nav-project-item.is-deleting.nav-project-tree { grid-template-columns:24px minmax(0,1fr) auto; }
+/* The baseline touch reveal restores two tracks; a tree row still needs its branch track. */
+@media (pointer:coarse) {
+    .nav-project-item.nav-project-tree:has(> .nav-project-kebab:is(:focus,[aria-expanded="true"])) { grid-template-columns:24px minmax(0,1fr) var(--nav-control-h); }
+}
+.nav-project-branch { grid-column:1; grid-row:1; width:24px; min-height:32px; border:0; background:transparent; color:var(--text-meta); font:inherit; font-size:20px; cursor:pointer; padding:0; border-radius:var(--radius-sm); }
+.nav-project-branch:hover { color:var(--text-primary); background:var(--bg-hover); }
+.nav-project-branch::before { content:''; display:block; width:6px; height:6px; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(45deg); margin:0 auto 3px; }
+.nav-project-branch[aria-expanded="false"]::before { transform:rotate(-45deg); margin-bottom:0; }
+.nav-project-context { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-meta); font-size:11px; font-weight:400; line-height:16px; }
+.nav-project-item > .nav-project-row:has(.nav-project-context) { min-height:44px; }
+.nav-project-branch:focus-visible { outline:2px solid var(--focus-accent-border); outline-offset:-2px; }
+.nav-project-item[data-pin-shortcut] .nav-row-label { font-style:normal; }
+.pm-row-parent { color:var(--text-meta); font-size:var(--type-meta); overflow-wrap:anywhere; }
+.pm-browse,.pm-parent-path,.pm-parent-pagination { display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-width:0; }
+.pm-browse .pm-note,.pm-parent-pagination .pm-note { margin:0; }
+.pm-browse [data-pm-scope] { margin-left:4px; overflow-wrap:anywhere; }
+.pm-parent { border-top:1px solid var(--divider); padding-top:20px; }
+.pm-parent-current { overflow-wrap:anywhere; color:var(--text-secondary); font-size:var(--type-meta); margin:8px 0 12px; }
+.pm-parent-path button { overflow-wrap:anywhere; white-space:normal; text-align:left; }
+.pm-parent-chooser { margin-top:16px; }
+.pm-parent-search { display:flex; align-items:end; gap:8px; margin-bottom:12px; }
+.pm-parent-search label { display:flex; flex:1; flex-direction:column; gap:6px; min-width:0; font-size:var(--type-meta); font-weight:600; }
+.pm-parent-search input { box-sizing:border-box; width:100%; min-width:0; min-height:36px; }
+.pm-parent-candidates { max-height:280px; overflow:auto; margin:12px 0; }
+.pm-parent-choice { display:flex; width:100%; flex-direction:column; align-items:start; text-align:left; white-space:normal; overflow-wrap:anywhere; margin-bottom:4px; }
+.pm-parent-choice[aria-pressed="true"] { border-color:var(--accent); background:var(--accent-08); }
+.pm-parent-choice .pm-note { margin:2px 0; font-size:var(--type-meta); }
+.pm-parent-pagination { justify-content:space-between; margin-bottom:12px; }
+@container projectcatalog (max-width:680px) { .pm-browse { gap:8px; } .pm-parent-search { flex-wrap:wrap; } .pm-parent-search label { flex-basis:100%; } .pm-parent-path .btn { max-width:100%; } }

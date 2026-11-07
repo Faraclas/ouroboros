@@ -69,7 +69,7 @@ test('a work\'s row goes to its current episode\'s card, else another shown epis
         'an earlier episode hidden under the chain\'s card is not shown');
 });
 
-test('the mounted list holds its order while open, settles ended work and only navigates to a question', async () => {
+test('the mounted list orders by observed start, retains keyed ended rows and only navigates to the actual question', async () => {
     const calls = [];
     const { prior, mount } = installDom(async (url, init) => {
         calls.push([String(url), init?.method || 'GET']);
@@ -93,7 +93,9 @@ test('the mounted list holds its order while open, settles ended work and only n
         Object.assign(badge.dataset, { tone: 'live', mark: 'moving', owner: '', amber: '' });  // what setStatus writes
         group.appendChild(badge);
         const messages = node('chat-messages', page);
-        let works = [running('t-run')];
+        const newer = { ...running('t-run'), since: Date.parse('2026-01-02T00:00:00Z') / 1000 };
+        const older = { ...asking('t-ask', 'q-ask'), since: Date.parse('2026-01-01T00:00:00Z') / 1000 };
+        let works = [newer];
         const reveals = [];
         shade = createRoomWork({
             page, statusBadge: badge, messagesDiv: messages, ws: { isConnected: () => true },
@@ -107,7 +109,7 @@ test('the mounted list holds its order while open, settles ended work and only n
         const anchor = header.children.find((child) => child.classList.contains('rw-shade-anchor'));
         const surface = anchor.children.find((child) => child.classList.contains('rw-surface'));
         assert.ok(surface.classList.contains('rw-shade'));
-        const list = surface.children[0];
+        const list = surface.querySelector('.rw-list');
         const ids = () => list.children.map((row) => row.dataset.id);
         assert.ok(trigger.contains(badge), 'the real status badge is the control’s word');
         assert.equal(trigger.dataset.tone, 'live');
@@ -116,14 +118,16 @@ test('the mounted list holds its order while open, settles ended work and only n
         trigger.click();
         assert.equal(shade.isOpen(), true);
         assert.deepEqual(ids(), ['t-run']);
-        // A question arriving while open joins at the end: order holds under the reader.
-        works = [running('t-run'), asking('t-ask', 'q-ask')];
+        // A question does not outrank a genuinely newer row; identity still survives paint.
+        const firstNode = list.children[0];
+        works = [newer, older];
         shade.update();
         assert.deepEqual(ids(), ['t-run', 't-ask']);
+        assert.equal(list.children[0], firstNode);
         // Each row's one mark: moving work in its word's ink, the owner's amber dot where the question waits.
         assert.deepEqual([markOf(list.children[0]), markOf(list.children[1])], [['moving', 'ink'], ['dot', 'owner']]);
         // Work that ends while open keeps its row, says so, and offers nothing.
-        works = [asking('t-ask', 'q-ask')];
+        works = [older];
         shade.update();
         const ended = list.children[0];
         assert.equal(ended.dataset.settled, '1');
@@ -138,19 +142,18 @@ test('the mounted list holds its order while open, settles ended work and only n
         assert.deepEqual(reveals, [['t-ask', 'q-ask', { focus: 'question' }]]);
         assert.equal(shade.isOpen(), false);
         assert.ok(calls.every(([url, method]) => method === 'GET' && !url.includes('/api/decisions')), JSON.stringify(calls));
-        // Closed, the list sorts again: the owner's turn first.
-        works = [running('t-run'), asking('t-ask', 'q-ask')];
+        // Reopening retains newest-first rather than sorting by owner attention.
+        works = [newer, older];
         trigger.click();
-        assert.deepEqual(ids(), ['t-ask', 't-run']);
-        // Reconcile ended-only Main membership before returning focus: a now-disabled
-        // status trigger cannot be the keyboard owner's next place.
+        assert.deepEqual(ids(), ['t-run', 't-ask']);
+        // Idle rooms retain the history door; it is not an execution or Stop control.
         works = [];
         shade.update();
         assert.equal(shade.isOpen(), true);
         trigger.click();
         assert.equal(shade.isOpen(), false);
-        assert.equal(trigger.disabled, true);
-        assert.ok(doc.activeElement === input, 'closing an ended-only list returns focus to the composer');
+        assert.equal(trigger.disabled, false, 'retained history remains reachable while idle');
+        assert.ok(doc.activeElement === trigger || doc.activeElement === input, 'closing returns to an available local control');
     } finally {
         shade?.destroy();
         restoreDom(prior);
@@ -184,7 +187,7 @@ test('View question reaches the asking task of a work, not its first root', asyn
         });
         const trigger = titleRow.children.find((child) => child.classList.contains('rw-trigger'));
         const list = header.children.find((child) => child.classList.contains('rw-shade-anchor')).children
-            .find((child) => child.classList.contains('rw-surface')).children[0];
+            .find((child) => child.classList.contains('rw-surface')).querySelector('.rw-list');
         const ask = async () => {
             trigger.click();
             list.children[0].children.find((child) => child.classList.contains('rw-verb')).children[0].click();
@@ -224,7 +227,7 @@ test('a pending send keeps its slot until its work is listed; the work takes the
             ws: { isConnected: () => true }, reading: { cancel() {}, scroll() {} },
             works: () => workState(works), liveCardRecords: records, pendingSubmissions: pending });
         const trigger = titleRow.children.find(el => el.classList.contains('rw-trigger'));
-        const list = header.children.find(el => el.classList.contains('rw-shade-anchor')).children[0].children[0];
+        const list = header.children.find(el => el.classList.contains('rw-shade-anchor')).querySelector('.rw-list');
         const turns = () => list.children.filter(el => el.dataset.id === 'turn-1');
         trigger.click();
         const card = node('div', 'chat-live-block', messages);
@@ -266,7 +269,7 @@ test('a work the server lists but cannot confirm keeps its Stop; a work kept fro
         shade = createRoomWork({ page, statusBadge: badge, messagesDiv: messages, ws: { isConnected: () => true },
             reading: { cancel() {}, scroll() {} }, works: () => state, liveCardRecords: new Map(), pendingSubmissions: new Map() });
         titleRow.children.find((el) => el.classList.contains('rw-trigger')).click();
-        const list = header.children.find((el) => el.classList.contains('rw-shade-anchor')).children[0].children[0];
+        const list = header.children.find((el) => el.classList.contains('rw-shade-anchor')).querySelector('.rw-list');
         const row = () => list.children.find((el) => el.dataset.id === 't-unknown');
         const more = () => row().children.find((el) => el.classList.contains('rw-more-slot')).children.length;
         assert.equal(row().dataset.tone, 'unknown');
@@ -299,7 +302,7 @@ test('a row names its card\'s coined name first, then its work\'s own name; a ho
                 room('working')), liveCardRecords: new Map([['t-run', record]]), pendingSubmissions: new Map(),
             hostReady: () => ready });
         titleRow.children.find((el) => el.classList.contains('rw-trigger')).click();
-        const list = header.children.find((el) => el.classList.contains('rw-shade-anchor')).children[0].children[0];
+        const list = header.children.find((el) => el.classList.contains('rw-shade-anchor')).querySelector('.rw-list');
         const row = () => list.children.find((el) => el.dataset.id === 't-run');
         const name = () => row().querySelector('.rw-name').textContent;
         const more = () => row().children.find((el) => el.classList.contains('rw-more-slot')).children.length;
@@ -477,7 +480,7 @@ test('an unloaded row reads the page around its task and lands on its card; one 
             works: () => workState([...works.values()]), liveCardRecords: records, pendingSubmissions: new Map() });
         const trigger = titleRow.children.find((el) => el.classList.contains('rw-trigger'));
         const anchor = header.children.find((el) => el.classList.contains('rw-shade-anchor'));
-        const list = anchor.children.find((el) => el.classList.contains('rw-surface')).children[0];
+        const list = anchor.querySelector('.rw-list');
         const row = (id) => list.children.find((el) => el.dataset.id === id);
         const main = (id) => row(id).querySelector('.rw-main');
         const text = (el) => [el.textContent, ...el.children.map(text)].join(' ');
@@ -596,7 +599,7 @@ test('Back reads the page it left again, stays after a failed read and takes a f
             works: () => workState([work_({ activity_id: 't-old', kind: 'direct_chat', chat_id: 1 })]),
             liveCardRecords: records, pendingSubmissions: new Map() });
         const trigger = titleRow.children.find((el) => el.classList.contains('rw-trigger'));
-        const list = header.children.find((el) => el.classList.contains('rw-shade-anchor')).children[0].children[0];
+        const list = header.children.find((el) => el.classList.contains('rw-shade-anchor')).querySelector('.rw-list');
         const main = () => list.children.find((el) => el.dataset.id === 't-old').querySelector('.rw-main');
         const back = page.children.find((el) => el.classList.contains('rw-back'));
         const live = page.children.find((el) => el.getAttribute('role') === 'status');

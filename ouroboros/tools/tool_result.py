@@ -102,6 +102,8 @@ def _code_spec(
 TOOL_CODE_SPECS: Mapping[str, ToolCodeSpec] = MappingProxyType(
     {
         "OK": _code_spec("ok", "ok", "info", "none"),
+        "ACTIVITY_NOT_FOUND": _code_spec("unavailable", "unavailable", "warning", "inspect the retained task identity"),
+        "ACTIVITY_ASSESSMENT_REFUSED": _code_spec("blocked", "blocked", "warning", "read the current source and caller authority"),
         "SAFETY_WARNING": _code_spec(
             "ok",
             "ok",

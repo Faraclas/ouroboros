@@ -1204,7 +1204,7 @@ def test_ui_smoke_project_panel_lifecycle_does_not_leak(direct_server_with_data)
                     page.wait_for_function("() => !document.querySelector('.chat-instance-panel[data-leaving]')")
 
                 def close_project():
-                    page.click("#project-panel-close")
+                    page.click('.viper-room-pane.viper-pane-focused:not([hidden]):not([data-leaving]) [data-pane-close]')
                     page.wait_for_function(
                         "() => !document.getElementById('project-panel')"
                         ".classList.contains('open')",

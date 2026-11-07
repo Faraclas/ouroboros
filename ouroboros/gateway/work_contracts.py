@@ -21,6 +21,7 @@ class WorkReason(TypedDict):
     count: NotRequired[int]
     ids: NotRequired[List[str]]
     since: NotRequired[Any]
+    observed_at: NotRequired[Any]  # chooser observation, not the beginning of a wait
     by: NotRequired["PauseAuthor"]
     wake: NotRequired["WakeSources"]
 
@@ -147,6 +148,8 @@ class RoomStatus(TypedDict):
     mark: str
     confirmed: bool
     works: List[str]
+    counts: NotRequired[Dict[str, int]]
+    running_services: NotRequired[int]
 
 
 class WorkSummary(TypedDict):

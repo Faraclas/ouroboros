@@ -157,8 +157,8 @@ def test_sidebar_activity_census_and_navigation(subscription_ui, width, theme, r
         return page.locator(f'[data-project-id="{project}"] .status-mark')
 
     def observe(project, shape, hue='ink'):
-        """The row's one mark (status_mark.js): its shape is what the work does, its hue whose move it is or new
-        messages. Only moving dots animate; nothing is drawn at rest."""
+        """The mark says work or the owner's move; the separate number says unread.
+        Only moving dots animate; nothing is drawn at rest."""
         target = marker(project)
         page.wait_for_function("([selector, shape, hue]) => { const m = document.querySelector(selector);"
                                " return m?.dataset.shape === shape && m.dataset.hue === hue; }",
@@ -168,11 +168,19 @@ def test_sidebar_activity_census_and_navigation(subscription_ui, width, theme, r
             const c=getComputedStyle(s); return {shown:c.display !== 'none',width:c.width,height:c.height,
                 animation:c.animationName,duration:c.animationDuration,delay:c.animationDelay};})})""")
         assert paint['hidden'] is (shape == 'none') and len(paint['dots']) == 3, (project, paint)
+        row = page.locator(f'[data-project-id="{project}"]')
+        own = row.locator('.nav-project-unread-own')
+        assert row.locator('.nav-project-unread-descendants').is_hidden(), project
+        if project == 'p-work':
+            assert row.get_attribute('data-unread') == '' and row.get_attribute('data-unread-count') == '4'
+            assert own.is_visible() and own.inner_text() == '4'
+        else:
+            assert own.is_hidden(), project
         if shape == 'none':
             return
         assert paint['gap'] == '3px'
-        # Work is three 4px dots (moving or still), a pause two 2x8 bars, a fact (an owner's move, new messages at
-        # rest) one 7px dot and an unconfirmed room one 7px ring.
+        # Work is three 4px dots (moving or still), a pause two 2x8 bars,
+        # an owner's move one 7px dot and an unconfirmed room one 7px ring.
         shown = [dot for dot in paint['dots'] if dot['shown']]
         size = {'moving': ('4px', '4px'), 'still': ('4px', '4px'), 'pause': ('2px', '8px')}.get(shape, ('7px', '7px'))
         assert len(shown) == {'moving': 3, 'still': 3, 'pause': 2}.get(shape, 1), (project, shape, paint)
@@ -186,30 +194,34 @@ def test_sidebar_activity_census_and_navigation(subscription_ui, width, theme, r
     def capture(suffix):
         setup_browser.capture(page, f'sidebar-{theme}-{width}-{reduced}-{suffix}')
 
-    observe('p-work', 'moving', 'unread')
+    observe('p-work', 'moving')
     observe('p-queue', 'still')
     # A model wait nobody has to act on continues by itself: the still dots, with its reason in the row's name.
     observe('p-wait', 'still')
     assert page.locator('[data-project-id="p-wait"]').get_attribute('title') == (
-        'Waiting room · Waiting · Waiting for the model to become available')
+        'Waiting room · Waiting · Waiting for the model to become available · Top level')
     observe('p-empty', 'none')
     assert page.locator('[data-project-id="p-empty"]').is_enabled()
     assert page.locator('[data-project-id="p-delete"]').is_disabled()
-    # A deleting row draws only `Deleting…`; its census fact stays in its name.
-    assert page.locator('[data-project-id="p-delete"]').get_attribute('title') == 'Deleting room — Deleting… · Working'
+    # A closing row draws only `Closing…`; its census fact and hierarchy stay in its name.
+    assert page.locator('[data-project-id="p-delete"]').get_attribute('title') == 'Deleting room — Closing… · Working · Top level'
     observe('p-delete', 'none')
-    # New messages are the row's fact and its mark's crimson hue on the work it shows: no dot of their own.
+    # The unread number is separate from the work mark, with no retired unread/activity dots.
     assert page.locator(WORK).get_attribute('data-unread') == ''
     assert page.locator('[data-project-id="p-queue"]').get_attribute('data-unread') is None
     assert page.locator('#nav-projects-list .nav-unread-dot, #nav-projects-list .nav-activity-marker').count() == 0
     # The Projects number counts unread messages (owner Q1 = B): the working room's four, not one room.
     assert page.locator('#nav-projects-count').inner_text() == '4'
-    assert page.locator(WORK).get_attribute('aria-label') == 'Working room · Working · new messages'
-    # Ink: amber is only what waits for the owner and crimson only new messages, so this wait and the queue take the
+    assert page.locator(WORK).get_attribute('aria-label') == (
+        'Working room · Working · Top level · 4 unread messages in Working room')
+    own = page.locator(WORK).locator('.nav-project-unread-own')
+    assert own.evaluate('el => getComputedStyle(el).backgroundColor') == token_color(page, 'p-work', '--tone-crimson')
+    assert own.evaluate('el => getComputedStyle(el).color') == token_color(page, 'p-work', '--tone-crimson-ink')
+    # Ink: amber is only what waits for the owner and crimson only the unread number, so work and the queue take the
     # row's own foreground: the marks never out-shout the name, and every name has one ink, read or not.
     for project in ('p-queue', 'p-wait'):
         assert dot_color(page, project) == row_color(page, project)
-    assert dot_color(page, 'p-work') == token_color(page, 'p-work', '--mark-unread')
+    assert dot_color(page, 'p-work') == row_color(page, 'p-work')
     assert row_color(page, 'p-work') == row_color(page, 'p-queue')
     for project in ('p-work', 'p-queue', 'p-wait'):
         assert dot_color(page, project) != token_color(page, project, '--project')
@@ -235,10 +247,12 @@ def test_sidebar_activity_census_and_navigation(subscription_ui, width, theme, r
     assert (header.get_attribute('data-shape'), header.get_attribute('data-hue')) == ('moving', 'ink')
     capture('states')
 
-    # The header's mark keeps its column in both states; collapse keeps only pinned rows; activity sorts nothing.
+    # The header's mark keeps its column; collapse retains unread destinations, not census-only work.
     order = page.locator('.nav-project-row').evaluate_all('els => els.map(el=>el.dataset.projectId)')
     page.locator('#nav-projects-toggle').click()
-    assert page.locator('#nav-projects-list').is_hidden(), 'nothing pinned: no row stays, work or unread alike'
+    assert page.locator('#nav-projects-list').is_visible()
+    assert page.locator('.nav-project-item:not([hidden]) > .nav-project-row').evaluate_all(
+        'els => els.map(el => el.dataset.projectId)') == ['p-work']
     assert page.locator('#nav-projects-show-all').count() == 0
     assert header.is_visible() and page.locator('#nav-projects-count').inner_text() == '4'
     capture('collapsed')
@@ -254,23 +268,26 @@ def test_sidebar_activity_census_and_navigation(subscription_ui, width, theme, r
     page.keyboard.press('End')
     page.evaluate("""() => { window.sidebarKept = {
         row:document.querySelector('[data-project-id="p-work"]'), menu:document.querySelector('.project-row-menu:not([data-leaving])'),
-        focus:document.activeElement, marker:document.querySelector('[data-project-id="p-work"] .status-mark')}; }""")
+        focus:document.activeElement, marker:document.querySelector('[data-project-id="p-work"] .status-mark'),
+        unread:document.querySelector('[data-project-id="p-work"] .nav-project-unread-own')}; }""")
     owner_wait = activity('work', 'p-work', required_question=dict(wait_for_answer=True, owner_wait_state='waiting'))
     refresh(active_chat_activities=[owner_wait])
-    # The owner's question is the one amber fact: the 7px amber dot outranks the new messages; the word says it.
+    # The owner's question is the one amber work fact; the unread number remains independently visible.
     observe('p-work', 'dot', 'owner')
     assert dot_color(page, 'p-work') == token_color(page, 'p-work', '--amber')
-    assert page.locator(WORK).get_attribute('title') == 'Working room · Waiting for your answer · new messages'
+    assert page.locator(WORK).get_attribute('title') == (
+        'Working room · Waiting for your answer · Top level · 4 unread messages in Working room')
     assert page.locator(WORK).get_attribute('data-unread') == '', 'the unread fact stands under the amber'
     mixed = [owner_wait, activity('independent', 'p-work', 'finalizing')]
     refresh(active_chat_activities=mixed)
     # Independent work goes on, but the owner's move stands alone in the mark; the row's name says both facts.
     observe('p-work', 'dot', 'owner')
     assert page.locator(WORK).get_attribute('aria-label').endswith(
-        'Finalizing… · A question waits for your answer · new messages')
+        'Finalizing… · A question waits for your answer · Top level · 4 unread messages in Working room')
     assert page.evaluate("""() => sidebarKept.row === document.querySelector('[data-project-id="p-work"]')
         && sidebarKept.menu === document.querySelector('.project-row-menu:not([data-leaving])') && sidebarKept.focus === document.activeElement
-        && sidebarKept.marker === document.querySelector('[data-project-id="p-work"] .status-mark')""")
+        && sidebarKept.marker === document.querySelector('[data-project-id="p-work"] .status-mark')
+        && sidebarKept.unread === document.querySelector('[data-project-id="p-work"] .nav-project-unread-own')""")
     assert page.locator('.nav-project-row').evaluate_all('els => els.map(el=>el.dataset.projectId)') == order
     capture('mixed-menu')
     page.keyboard.press('Escape')
@@ -281,28 +298,28 @@ def test_sidebar_activity_census_and_navigation(subscription_ui, width, theme, r
     # old row as unknown; a current positive row remains independently moving.
     owner_wait['required_question']['owner_wait_state'] = 'resumed'
     refresh(active_chat_activities=[owner_wait])
-    observe('p-work', 'moving', 'unread')
+    observe('p-work', 'moving')
     refresh(active_chat_activities=[activity('positive', 'p-queue', 'thinking')], active_chat_activities_complete=False)
-    observe('p-work', 'ring', 'unread')
+    observe('p-work', 'ring')
     observe('p-queue', 'moving')
     assert 'Activity unconfirmed' in page.locator(WORK).get_attribute('title')
     refresh(active_chat_activities=[], active_chat_activities_complete=True, supervisor_ready=False)
-    observe('p-work', 'ring', 'unread')
+    observe('p-work', 'ring')
     observe('p-queue', 'ring')
     refresh(active_chat_activities=initial, supervisor_ready=True)
-    observe('p-work', 'moving', 'unread')
+    observe('p-work', 'moving')
 
     # Missing census, HTTP failure, and transport failure all stop retained
     # observations. Exercise the actual state readers, not an exported reducer.
     body.pop('active_chat_activities')
     refresh()
-    observe('p-work', 'ring', 'unread')
+    observe('p-work', 'ring')
     for fault in ['http', 'network']:
         refresh(active_chat_activities=initial)
-        observe('p-work', 'moving', 'unread')
+        observe('p-work', 'moving')
         mode['fault'] = fault
         sockets[-1].send(json.dumps({'type': 'projects_changed'}))
-        observe('p-work', 'ring', 'unread')
+        observe('p-work', 'ring')
         mode['fault'] = ''
 
     # One page-wide state read is in flight at a time: a forced refresh that
@@ -325,7 +342,7 @@ def test_sidebar_activity_census_and_navigation(subscription_ui, width, theme, r
     assert page.evaluate('() => sidebarHeldCount()') == 1, 'a forced refresh behind a held read starts no second read'
     connections = len(sockets)
     sockets[-1].close()
-    observe('p-work', 'ring', 'unread')
+    observe('p-work', 'ring')
     page.wait_for_function('n => sidebarSockets.length > n && sidebarSockets.at(-1).readyState === WebSocket.OPEN', arg=connections)
     body['active_chat_activities'] = initial
     body['_testRevision'] += 1
@@ -342,37 +359,37 @@ def test_sidebar_activity_census_and_navigation(subscription_ui, width, theme, r
     # stands alone when the row is judged.
     page.wait_for_function('() => sidebarHeldCount().then(n => n > 0)')
     page.evaluate(FRAMES)
-    observe('p-work', 'ring', 'unread')
+    observe('p-work', 'ring')
     assert marker('p-work').is_visible()
     mode['fault'] = ''
     for route, snapshot in held:
         route.fulfill(json=snapshot)
     held.clear()
     page.wait_for_function('rev => sidebarReads.includes(rev)', arg=fresh_revision)
-    observe('p-work', 'moving', 'unread')
+    observe('p-work', 'moving')
 
     # A real socket close and reconnect stop motion immediately and preserve
     # unknown until the new connection's held state responses actually arrive.
     mode['fault'] = 'hold'
     connections = len(sockets)
     sockets[-1].close()
-    observe('p-work', 'ring', 'unread')
+    observe('p-work', 'ring')
     page.wait_for_function('n => sidebarSockets.length > n && sidebarSockets.at(-1).readyState === WebSocket.OPEN', arg=connections)
     page.evaluate(FRAMES)
-    observe('p-work', 'ring', 'unread')
+    observe('p-work', 'ring')
     mode['fault'] = ''
     for route, snapshot in held:
         route.fulfill(json=snapshot)
     held.clear()
     refresh(active_chat_activities=initial)
-    observe('p-work', 'moving', 'unread')
+    observe('p-work', 'moving')
     # WebSocket error uses the same production disconnect handler.
     page.evaluate("sidebarSockets.at(-1).dispatchEvent(new Event('error'))")
-    observe('p-work', 'ring', 'unread')
+    observe('p-work', 'ring')
     page.wait_for_function('n => sidebarSockets.length > n && sidebarSockets.at(-1).readyState === WebSocket.OPEN', arg=connections + 1)
     refresh(active_chat_activities=[], active_chat_activities_complete=True, supervisor_ready=True)
-    # At rest, a room with new messages is one crimson dot; a read one draws nothing, nor does the header.
-    observe('p-work', 'dot', 'unread')
+    # At rest no activity mark is drawn; the unread number remains, independently of the header's work.
+    observe('p-work', 'none')
     observe('p-queue', 'none')
     assert page.locator('.nav-projects-facts .status-mark').is_hidden()
     assert page.locator('#nav-projects-count').inner_text() == '4'
@@ -387,12 +404,12 @@ def test_sidebar_activity_census_and_navigation(subscription_ui, width, theme, r
     page.keyboard.press('Enter')
     page.locator('#project-panel').wait_for(state='visible')
     assert empty.get_attribute('aria-current') == 'page'
-    assert page.locator('#project-panel-title').inner_text() == 'Empty room'
+    assert page.locator('[data-pane-project="p-empty"] .app-page-title').inner_text() == 'Empty room'
     if width < 700:
         # The drawer stays painted for one beat while the room changes inside the card, then closes (owner 4A).
         rest(page)
         assert not page.locator('#primary-sidebar').evaluate("el=>el.classList.contains('open')")
-    page.locator('#project-panel-close').click()
+    page.locator('[data-pane-project="p-empty"] [data-pane-close]').click()
     page.locator('#project-panel').wait_for(state='hidden')
     assert page.locator('[data-nav-page="chat"]').get_attribute('aria-current') == 'page'
 
@@ -408,11 +425,19 @@ RAIL = """() => {
         const row = item.querySelector('.nav-project-row');
         const mark = row.querySelector('.status-mark');
         const label = row.querySelector('.nav-row-label');
+        const region = row.querySelector('.nav-project-unread');
+        const own = region.querySelector('.nav-project-unread-own');
         const style = getComputedStyle(mark);
         const dots = [...mark.children].filter((dot) => getComputedStyle(dot).display !== 'none');
         return {
             id: row.dataset.projectId, shape: mark.dataset.shape, hue: mark.dataset.hue,
             unread: row.hasAttribute('data-unread'), deleting: item.classList.contains('is-deleting'),
+            unreadCount: row.dataset.unreadCount, unreadRegionHidden: region.hidden,
+            unreadRegionAria: region.getAttribute('aria-hidden'),
+            descendantsHidden: region.querySelector('.nav-project-unread-descendants').hidden,
+            ownUnread: {shown: !region.hidden && !own.hidden && getComputedStyle(own).display !== 'none',
+                text: own.textContent, box: rect(own), fill: getComputedStyle(own).backgroundColor,
+                ink: getComputedStyle(own).color},
             active: row.classList.contains('active'), row: rect(row), label: rect(label),
             ellipsized: label.scrollWidth > label.clientWidth, marker: rect(mark),
             drawn: style.display !== 'none' && style.visibility !== 'hidden', opacity: style.opacity,
@@ -436,10 +461,8 @@ RAIL = """() => {
 # Where each drawn shape's dots start in the 18px column: three 4px dots and two 3px gaps fill it, two 2px bars
 # and one 7px dot or ring sit in its middle.
 OFFSETS = {'moving': [0, 7, 14], 'still': [0, 7, 14], 'pause': [5.5, 10.5], 'ring': [5.5], 'dot': [5.5]}
-# The quieter steps of the ink: still work 40 %, an unconfirmed ring 55 %, a pause 70 %; with new messages the
-# crimson needs more.
-OPACITY = {('still', 'ink'): '0.4', ('still', 'unread'): '0.6', ('ring', 'ink'): '0.55', ('ring', 'unread'): '0.6',
-           ('pause', 'ink'): '0.7'}
+# The quieter steps of the activity ink; unread is painted separately.
+OPACITY = {('still', 'ink'): '0.4', ('ring', 'ink'): '0.55', ('pause', 'ink'): '0.7'}
 
 
 def rail_rows(page):
@@ -450,22 +473,34 @@ def horizontal(rect):
     return rect and {key: rect[key] for key in ('left', 'right', 'width')}
 
 
-def assert_rail(page, rows, states, *, lit=()):
-    """Every drawn mark shares one 18px column, its shape and hue as the room and the row's unread fact say."""
+def assert_rail(page, rows, states, *, unread=(), lit=()):
+    """Every drawn mark shares one 18px column; unread owns a separate pill and physical 8px gaps."""
     live = [row for row in rows.values() if not row['deleting']]
     marker = next(row['marker'] for row in live if row['drawn'])
-    tokens = {hue: token_color(page, live[0]['id'], token) for hue, token in
-              (('unread', '--mark-unread'), ('owner', '--amber'))}
+    tokens = {'owner': token_color(page, live[0]['id'], '--amber')}
+    crimson = token_color(page, live[0]['id'], '--tone-crimson')
+    crimson_ink = token_color(page, live[0]['id'], '--tone-crimson-ink')
     project = token_color(page, live[0]['id'], '--project')
     for row in live:
         assert (row['shape'], row['hue']) == states[row['id']], (row['id'], row['shape'], row['hue'])
         assert row['drawn'] == (row['shape'] != 'none'), row['id']
-        assert row['unread'] == (row['hue'] == 'unread'), row['id']
-        # One mark, nothing else after the name: no unread dot of its own.
-        assert row['others'] == 2, row['id']
-        # The label cell ends one gap before the mark column in every row,
-        # so a row at rest (its mark removed from layout) still holds the slot.
-        assert row['label']['right'] == pytest.approx(marker['left'] - 8, abs=0.01), (row['id'], row['label'], marker)
+        expected_unread = row['id'] in unread
+        own = row['ownUnread']
+        assert row['unread'] == expected_unread and own['shown'] == expected_unread, row['id']
+        assert row['unreadCount'] == ('4' if expected_unread else '0'), row['id']
+        assert own['text'] == ('4' if expected_unread else ''), row['id']
+        assert row['unreadRegionHidden'] is (not expected_unread), row['id']
+        assert row['unreadRegionAria'] == 'true' and row['descendantsHidden'], row['id']
+        assert row['others'] == 3, row['id']  # label, activity mark, separate unread region
+        # The first visible trailing fact is one physical gap after the label.
+        # With no number the reserved activity rail is still only 8px away.
+        neighbor = own['box']['left'] if expected_unread else marker['left']
+        assert row['label']['right'] == pytest.approx(neighbor - 8, abs=0.01), (row['id'], row['label'], own, marker)
+        if expected_unread:
+            assert own['fill'] == crimson and own['ink'] == crimson_ink, row['id']
+            assert own['box']['width'] >= 18 and own['box']['height'] == pytest.approx(18, abs=0.01), row['id']
+            assert own['box']['right'] == pytest.approx(marker['left'] - 8, abs=0.01), (row['id'], own, marker)
+            assert abs((own['box']['top'] + own['box']['bottom']) - (row['row']['top'] + row['row']['bottom'])) <= 1
         assert row['trailingKind'] == 'nav-project-kebab'
         assert row['trailing']['left'] >= row['row']['right'] - 0.01, (row['id'], row['trailing'], row['row'])
         if not row['drawn']:
@@ -487,6 +522,7 @@ def assert_rail(page, rows, states, *, lit=()):
         if not row['deleting']:
             continue
         assert not row['drawn'] and row['shape'] == 'none' and not row['unread'], row['id']
+        assert not row['ownUnread']['shown'] and row['unreadRegionHidden'], row['id']
         assert row['trailingKind'] == 'nav-project-deleting-status'
         assert row['label']['right'] <= row['trailing']['left'] + 0.01, (row['id'], row['label'], row['trailing'])
     assert any(row['ellipsized'] for row in live)
@@ -516,10 +552,11 @@ def test_sidebar_activity_rail_geometry(subscription_ui, width, theme, reduced):
     initial = [row for spec in specs for row in spec[-1]] + [activity('main', phase='thinking')]
     mounted = mount_sidebar(ui, width, theme, reduced, projects, initial)
     refresh = mounted['refresh']
-    states = dict(wu=('moving', 'unread'), w=('moving', 'ink'), wl=('moving', 'unread'), qu=('still', 'unread'),
-                  q=('pause', 'ink'), a=('still', 'ink'), iu=('dot', 'unread'), i=('none', 'ink'),
+    states = dict(wu=('moving', 'ink'), w=('moving', 'ink'), wl=('moving', 'ink'), qu=('still', 'ink'),
+                  q=('pause', 'ink'), a=('still', 'ink'), iu=('none', 'ink'), i=('none', 'ink'),
                   dw=('none', 'ink'), d=('none', 'ink'))
     states = {'p-' + key: value for key, value in states.items()}
+    unread = {f'p-{spec[0]}' for spec in specs if spec[2]}
 
     def capture(suffix):
         setup_browser.capture(page, f'sidebar-{theme}-{width}-{reduced}-rail-{suffix}')
@@ -542,8 +579,8 @@ def test_sidebar_activity_rail_geometry(subscription_ui, width, theme, reduced):
                                arg=[project, shape])
 
     shaped('p-a', 'still')
-    assert page.locator('[data-project-id="p-dw"]').get_attribute('title') == 'Deleting working — Deleting… · Working'
-    reference = assert_rail(page, rail_rows(page), states)
+    assert page.locator('[data-project-id="p-dw"]').get_attribute('title') == 'Deleting working — Closing… · Working · Top level'
+    reference = assert_rail(page, rail_rows(page), states, unread=unread)
     capture('default')
 
     # Hovering a row reveals its sibling kebab and brightens the title; its working dots follow the row's ink.
@@ -553,38 +590,38 @@ def test_sidebar_activity_rail_geometry(subscription_ui, width, theme, reduced):
     settled('p-w', '--text-primary')
     hovered = rail_rows(page)
     assert hovered['p-w']['rowColor'] != plain and hovered['p-w']['dotColor'] == hovered['p-w']['rowColor']
-    same_rail(reference, assert_rail(page, hovered, states))
+    same_rail(reference, assert_rail(page, hovered, states, unread=unread))
     capture('hover')
     page.mouse.move(width / 2, 600)
 
     # Keyboard focus on a kebab and the open portalled menu leave every slot where it was.
     kebab = page.locator('[data-project-id="p-qu"] ~ .nav-project-kebab')
     kebab.focus()
-    same_rail(reference, assert_rail(page, rail_rows(page), states))
+    same_rail(reference, assert_rail(page, rail_rows(page), states, unread=unread))
     page.keyboard.press('Enter')
     page.locator('body > .project-row-menu:not([data-leaving])').wait_for()
-    same_rail(reference, assert_rail(page, rail_rows(page), states))
+    same_rail(reference, assert_rail(page, rail_rows(page), states, unread=unread))
     capture('menu')
     page.keyboard.press('Escape')
     page.locator('body > .project-row-menu:not([data-leaving])').wait_for(state='detached')
 
-    # An incomplete census retains every observed room as an unconfirmed ring; new messages keep their crimson.
+    # An incomplete census retains observed work as an ink ring; unread numbers remain separate.
     refresh(active_chat_activities=[], active_chat_activities_complete=False)
     unknown = {key: (('ring', hue) if shape not in ('none', 'dot') and key not in ('p-dw', 'p-d') else (shape, hue))
                for key, (shape, hue) in states.items()}
     shaped('p-w', 'ring')
-    same_rail(reference, assert_rail(page, rail_rows(page), unknown))
+    same_rail(reference, assert_rail(page, rail_rows(page), unknown, unread=unread))
     capture('unknown')
 
-    # Reading a room turns only its mark's hue back to the row's ink; the column does not move.
+    # Reading removes the separate number, not the activity mark; the rail does not move.
     refresh(active_chat_activities=initial, active_chat_activities_complete=True)
     shaped('p-w', 'moving')
     projects[0]['visible_revision'] = 0
     refresh(projects=projects)
     page.wait_for_function("() => !document.querySelector('[data-project-id=\"p-wu\"]').hasAttribute('data-unread')")
     read = rail_rows(page)
-    states['p-wu'] = ('moving', 'ink')
-    same_rail(reference, assert_rail(page, read, states))
+    unread.remove('p-wu')
+    same_rail(reference, assert_rail(page, read, states, unread=unread))
     capture('read')
 
     if width >= 700:
@@ -596,18 +633,22 @@ def test_sidebar_activity_rail_geometry(subscription_ui, width, theme, reduced):
         lit = rail_rows(page)
         assert lit['p-w']['active'] and lit['p-w']['rowColor'] == token_color(page, 'p-w', '--project')
         assert lit['p-w']['dotColor'] == lit['p-w']['rowColor']
-        same_rail(reference, assert_rail(page, lit, states, lit=('p-w',)))
+        same_rail(reference, assert_rail(page, lit, states, unread=unread, lit=('p-w',)))
         capture('active')
-        page.locator('#project-panel-close').click()
+        page.locator('[data-pane-project="p-w"] [data-pane-close]').click()
         page.locator('#project-panel').wait_for(state='hidden')
 
-    # A complete empty census draws nothing but new messages, which are one crimson dot in the same column.
+    # A complete empty census draws no activity marks; unread numbers keep their own slot.
     refresh(active_chat_activities=[])
     shaped('p-w', 'none')
     empty = rail_rows(page)
     for key, row in empty.items():
-        expected = ('dot', 'unread') if row['unread'] else ('none', 'ink')
-        assert (row['shape'], row['hue']) == expected, key
-        if row['drawn']:
-            assert horizontal(row['marker']) == pytest.approx(horizontal(reference['p-w']), abs=0.01), key
+        assert (row['shape'], row['hue']) == ('none', 'ink') and not row['drawn'], key
+        assert row['unread'] == (key in unread) and row['ownUnread']['shown'] == (key in unread), key
+        assert row['ownUnread']['text'] == ('4' if key in unread else ''), key
+        if not row['deleting']:
+            neighbor = row['ownUnread']['box']['left'] if key in unread else reference['p-w']['left']
+            assert row['label']['right'] == pytest.approx(neighbor - 8, abs=0.01), key
+            if key in unread:
+                assert row['ownUnread']['box']['right'] == pytest.approx(reference['p-w']['left'] - 8, abs=0.01), key
     capture('empty')

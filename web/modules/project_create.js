@@ -6,8 +6,8 @@
 // | clone a git URL (server-side, typed auth_required). The dialog carries the
 // honest trust line: attaching gives the agent write+shell in that folder
 // (notification model — attaching IS the grant; no second confirmation).
+import { canCloseProject } from './projects_manager.js';
 import { openConfirmDialog } from './confirm_dialog.js';
-import { createStatusMark, paintStatusMark } from './status_mark.js';
 import { bindDialogFocus, bindMenu } from './ui_interactions.js';
 
 // Mirrored from the frozen backend PROJECT_NAME_MAX contract.
@@ -217,37 +217,18 @@ export function repositionProjectRowMenu() {
 
 const shown = (node) => Boolean(node?.isConnected && node.getClientRects().length);
 
-// The menu's first line: the row's mark painted with the row's view and what it says in words (owner 19.10, 5A), so the
-// row's state reads in words where a finger opened the menu. Not an item: the arrows and the first focus pass it by,
-// and the menu's name says the same words. The words come translated (project_activity.js), so the interface
-// language's overlay leaves the line alone.
-function statusLine({ view, word = '', text = '' }) {
-    const line = document.createElement('div');
-    line.className = 'project-row-menu-status';
-    line.setAttribute('role', 'none');
-    line.dataset.i18nSkip = '';
-    const mark = createStatusMark(document, 'project-row-menu-mark');
-    paintStatusMark(mark, view);
-    const said = text.charAt(0).toLocaleUpperCase() + text.slice(1);
-    const lead = document.createElement('span');
-    lead.className = 'project-row-menu-word';
-    lead.textContent = word && said.startsWith(word) ? word : said;
-    line.append(mark, lead);
-    if (lead.textContent !== said) line.append(document.createTextNode(said.slice(lead.textContent.length)));
-    return line;
-}
-
-// Accessible row menu: Pin/Unpin, Rename, Delete. `project` is a sidebar read model;
+// Accessible row menu: Pin/Unpin, Rename, Close. `project` is a sidebar read model;
 // callbacks refresh the authoritative registry projection. `onPin` receives the state
 // the label named; a pin still being saved reads as such and cannot be pressed again.
 // The menu opens under `anchorEl` (the row's ⋯, or the focused row) or at a pointer's `point` (a right-click or a
 // long press on the row), whose focus returns to `anchorEl`. Only `menuButton`, the ⋯ that opened it, says it has a
-// popup. `status` ({ view, word, text }) is the row's mark and its words, the menu's first line. When the anchor is
-// gone or hidden (a collapse, an Unpin, a delete), the menu closes and the keyboard goes to `fallbackFocus`.
+// popup. Optional Work Items capture/navigation follow the management actions; work status stays in the header. When the anchor is
+// gone or hidden (a collapse, an Unpin, a close), the menu closes and the keyboard goes to `fallbackFocus`.
 // Returns true: the menu is open.
 export function openProjectRowMenu(project, {
-    apiClient, anchorEl, point = null, menuButton = null, status = null, fallbackFocus = null,
-    onChanged, onPin, isPinPending = () => false,
+    apiClient, anchorEl, point = null, menuButton = null, fallbackFocus = null,
+    onChanged, onPin, onOpenBeside, isPinPending = () => false,
+    onAddWorkItem, onGoToWorkItems,
 }) {
     const pinPending = isPinPending();
     const maxNameLength = PROJECT_NAME_MAX;
@@ -257,14 +238,17 @@ export function openProjectRowMenu(project, {
     menu.className = 'project-row-menu ui-popup';
     menu.setAttribute('role', 'menu');
     const name = project.name || project.id;
-    menu.setAttribute('aria-label', `Actions for ${name}${status?.text ? ` · ${status.text}` : ''}`);
+    menu.setAttribute('aria-label', `Actions for ${name}`);
     menu.innerHTML = `
+        ${onOpenBeside ? '<button type="button" role="menuitem" data-prm="beside">Open beside</button>' : ''}
         <button type="button" role="menuitem" data-prm="pin"${pinPending ? ' aria-disabled="true"' : ''}>${
             pinPending ? (pinned ? 'Unpinning…' : 'Pinning…') : (pinned ? 'Unpin' : 'Pin')}</button>
         <button type="button" role="menuitem" data-prm="rename">Rename…</button>
-        <button type="button" role="menuitem" class="danger" data-prm="delete">Delete project…</button>
+        ${canCloseProject(project) ? '<button type="button" role="menuitem" class="danger" data-prm="delete">Close project…</button>' : ''}
+        ${onAddWorkItem || onGoToWorkItems ? '<div class="project-row-menu-separator" role="separator"></div>' : ''}
+        ${onAddWorkItem ? '<button type="button" role="menuitem" data-prm="add-work-item">Add Work Item…</button>' : ''}
+        ${onGoToWorkItems ? '<button type="button" role="menuitem" data-prm="work-items">Go to Work Items</button>' : ''}
     `;
-    if (status?.text) menu.prepend(statusLine(status));
     // After a dialog the keyboard returns to the row, or to the fallback when the row has gone or hidden meanwhile.
     const focusBack = () => (shown(anchorEl) ? anchorEl : fallbackFocus)?.focus();
     let binding;
@@ -274,7 +258,10 @@ export function openProjectRowMenu(project, {
         const action = item?.dataset?.prm;
         if (!action || item.getAttribute('aria-disabled') === 'true') return;
         close({ restoreFocus: true });
-        if (action === 'pin') onPin?.(!pinned);
+        if (action === 'beside') onOpenBeside?.();
+        else if (action === 'add-work-item') onAddWorkItem?.();
+        else if (action === 'work-items') onGoToWorkItems?.();
+        else if (action === 'pin') onPin?.(!pinned);
         else if (action === 'rename') {
             const res = await openConfirmDialog({
                 title: 'Rename project',
@@ -303,9 +290,9 @@ export function openProjectRowMenu(project, {
             focusBack();
         } else if (action === 'delete') {
             const ok = await openConfirmDialog({
-                title: 'Delete project',
-                body: `Delete “${name}”? Running work will be cancelled. The Project will be removed from the active UI; its id, chat history, task bindings, memory, and working folder are preserved.`,
-                confirmLabel: 'Delete',
+                title: 'Close project',
+                body: `Close “${name}”? Unfinished work in this room will be stopped and the project removed from the active list. Immediate children move to its parent or top level; those child rooms and their work otherwise stay unchanged. Its history, notes, and working folder will be kept. Recurring schedules will be paused until you re-enable them in Dashboard Activity. You can reopen this room from Dashboard Projects.`,
+                confirmLabel: 'Close project',
                 danger: true,
             });
             if (ok === true) {
@@ -313,8 +300,8 @@ export function openProjectRowMenu(project, {
                 try { await apiClient.projectDelete(project.id); }
                 catch (e) {
                     await openConfirmDialog({
-                        title: 'Delete did not finish',
-                        body: `Delete did not finish: ${e?.body?.error || e?.message || e}`,
+                        title: 'Project closure not confirmed',
+                        body: `Project closure was not confirmed: ${e?.body?.error || e?.message || e}`,
                         alert: true,
                     });
                 }

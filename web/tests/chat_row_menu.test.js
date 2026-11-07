@@ -14,10 +14,12 @@ function fixture({ actions = undefined } = {}) {
     const feed = el('div', { className: 'chat-messages' });
     doc.body.append(feed);
     const started = [];
+    const selectedReplies = [], selections = [];
     const replies = {
         bubbleRef: (row) => (row.dataset.rowAddress ? { address: row.dataset.rowAddress } : null),
         cardRef: (record) => (record.replyable ? { address: `task:${record.groupId}` } : null),
         start: (ref) => started.push(ref.address),
+        startSelection: (ref, text) => selectedReplies.push([ref.address, text]),
     };
     const copied = [];
     const copy = el('button', { className: 'chat-message-copy' });
@@ -38,10 +40,11 @@ function fixture({ actions = undefined } = {}) {
     const cards = new Map();
     // chat.js's own wiring: the card's Stop… items come from its work, else from the card's own task controls.
     const menu = createChatRowMenu({ feed, replies, cardOf: (id) => cards.get(id),
-        actionsOf: (record) => cardMenuActions(works, record, activity), actions });
+        actionsOf: (record) => cardMenuActions(works, record, activity), actions,
+        sendSelection: text => selections.push(text) });
     const openMenu = () => doc.body.children.find((node) => node.classList.contains('chat-row-menu')) || null;
     const items = () => (openMenu()?.children || []).map((node) => node.dataset.rowAction);
-    return { ...env, feed, cards, bubble, plain, copy, link, words, menu, started, copied, opened, activity, works, openMenu, items,
+    return { ...env, feed, cards, bubble, plain, copy, link, words, menu, started, selectedReplies, selections, copied, opened, activity, works, openMenu, items,
         close() { menu.destroy(); env.restore(); } };
 }
 
@@ -98,33 +101,59 @@ test('a right-click on a bubble opens its menu at the pointer: Reply, Copy, Open
     } finally { f.close(); }
 });
 
-test('a link, a field or selected words keep the browser menu; a row with nothing to offer opens none', () => {
+function selection(f, extra = {}) {
+    return { isCollapsed: false, rangeCount: 1, anchorNode: f.words, focusNode: f.words,
+        toString: () => 'Exact selected passage', getRangeAt: () => ({ intersectsNode: node => node === f.bubble }), ...extra };
+}
+
+test('links and cross-message selections keep native menus; an unsaved row opens none', () => {
     const f = fixture();
     try {
         assert.equal(f.link.emit('contextmenu', { clientX: 1, clientY: 1 }).defaultPrevented, undefined);
         assert.equal(f.openMenu(), null);
-        f.doc.selection = { isCollapsed: false, anchorNode: f.words };
-        assert.equal(f.words.emit('contextmenu', { clientX: 1, clientY: 1 }).defaultPrevented, undefined, 'selected text stays copyable');
-        f.doc.selection = { isCollapsed: true, anchorNode: f.words };
+        f.doc.selection = selection(f, { focusNode: f.plain });
+        assert.equal(f.words.emit('contextmenu', { clientX: 1, clientY: 1 }).defaultPrevented, undefined, 'cross-message text is not assigned to one source');
+        f.doc.selection = { isCollapsed: true, rangeCount: 0, anchorNode: f.words };
         f.words.emit('contextmenu', { clientX: 1, clientY: 1 });
         assert.ok(f.openMenu(), 'a collapsed caret is no selection');
         f.openMenu().children[0].click();
         // A right button selects the word under it (macOS) before contextmenu: that selection is the gesture's own.
-        f.doc.selection = { isCollapsed: true, anchorNode: f.words };
+        f.doc.selection = { isCollapsed: true, rangeCount: 0, anchorNode: f.words };
         f.words.emit('pointerdown', { button: 2, pointerType: 'mouse', isPrimary: true, pointerId: 9 });
         let cleared = false;
-        f.doc.selection = { isCollapsed: false, anchorNode: f.words, removeAllRanges() { cleared = true; } };
+        f.doc.selection = selection(f, { removeAllRanges() { cleared = true; } });
         assert.equal(f.words.emit('contextmenu', { clientX: 1, clientY: 1 }).defaultPrevented, true);
         assert.ok(f.openMenu(), 'the row menu opens over the word the right button selected');
         assert.equal(cleared, true, 'and that gesture-made selection goes');
         f.openMenu().emit('keydown', { key: 'Escape', target: f.openMenu().children[0] });
-        // The owner's own selection, there before the right button went down, keeps the browser's menu.
+        // A pre-existing selection crossing messages is never attributed to this row.
+        f.doc.selection = selection(f, { focusNode: f.plain });
         f.words.emit('pointerdown', { button: 2, pointerType: 'mouse', isPrimary: true, pointerId: 10 });
         assert.equal(f.words.emit('contextmenu', { clientX: 1, clientY: 1 }).defaultPrevented, undefined);
         assert.equal(f.openMenu(), null);
         f.doc.selection = null;
         const event = f.plain.emit('contextmenu', { clientX: 1, clientY: 1 });
         assert.equal(event.defaultPrevented, undefined, 'an unsaved echo has no address and no Copy: nothing to offer');
+        assert.equal(f.openMenu(), null);
+    } finally { f.close(); }
+});
+
+test('selected Reply captures its original source; Send to chat is draft-only and Shift keeps the native menu', () => {
+    const f = fixture();
+    try {
+        f.doc.selection = selection(f);
+        assert.equal(f.words.emit('contextmenu', { clientX: 1, clientY: 1 }).defaultPrevented, true);
+        assert.deepEqual(f.items(), ['reply-selection', 'send-selection', 'copy-selection']);
+        f.bubble.dataset.rowAddress = 'row:1@later#b';
+        f.doc.selection = null; // menu focus or redraw may clear it
+        f.openMenu().children[0].click();
+        assert.deepEqual(f.selectedReplies, [['row:1@t#a', 'Exact selected passage']]);
+        f.doc.selection = selection(f);
+        f.words.emit('contextmenu', { clientX: 1, clientY: 1 });
+        f.openMenu().children[1].click();
+        assert.deepEqual(f.selections, ['Exact selected passage']);
+        assert.deepEqual(f.started, [], 'selected actions never submit an ordinary whole-message reply');
+        assert.equal(f.words.emit('contextmenu', { shiftKey: true }).defaultPrevented, undefined);
         assert.equal(f.openMenu(), null);
     } finally { f.close(); }
 });

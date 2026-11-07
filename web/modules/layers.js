@@ -113,7 +113,7 @@ export function createLayerStack({ win = globalThis.window, doc = globalThis.doc
     // ---- Escape closes the top layer unless something inside already took the key (a menu, the work list, a dialog)
     const onKeydown = (event) => {
         if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || !stack.length) return;
-        if (doc?.querySelector?.('dialog[open]')) return;  // a native modal dialog owns Escape until it adapts
+        if (doc?.querySelector?.('dialog:modal')) return;  // background modeless readers do not own this layer's key
         event.preventDefault();
         pop('escape');
     };

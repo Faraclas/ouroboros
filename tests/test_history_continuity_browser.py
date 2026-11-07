@@ -90,7 +90,7 @@ def test_deep_reopen_delay_retry_and_live_arrival(direct_server_with_data, brows
             for mode in ("fast", "delayed", "recent", "saved"):
                 read_back()
                 _screenshot(page, tmp_path, f"continuity-before-{mode}-{browser_engine}")
-                page.locator('#project-panel-close').click()
+                page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
                 page.locator(feed).wait_for(state='detached')  # the exit ends before this cold reopen
                 page.evaluate("fault => { window.__continuityFault = fault; }", {
                     "chatId": project["chat_id"], "delay": 800 if mode == "delayed" else 0,
@@ -123,16 +123,16 @@ def test_deep_reopen_delay_retry_and_live_arrival(direct_server_with_data, brows
             # Switching away while the reopen read is slow paints nothing into the
             # other room; opened again, the room is at its newest message.
             read_back()
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             page.locator(feed).wait_for(state='detached')
             page.evaluate("fault => { window.__continuityFault = fault; }", {
                 "chatId": project["chat_id"], "delay": 800})
             _click_project(page, project)
             page.locator(feed).wait_for(state="visible")
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             other_feed = _open_project(page, other)
             assert not page.locator(other_feed).get_by_text('Saved message', exact=False).count()
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{other["id"]}"] [data-pane-close]').click()
             _click_project(page, project)
             _idle(page, feed)
             page.evaluate("() => { window.__continuityFault = null; }")
@@ -319,7 +319,7 @@ def test_latest_supersedes_a_held_question_reveal_and_a_later_reveal_lands(direc
                 feed.scrollTop += node.getBoundingClientRect().top - feed.getBoundingClientRect().top - 80;
             }""")
             page.evaluate(_FRAMES)
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             page.locator(feed).wait_for(state='detached')  # reopening mid-exit would keep its loaded pages
             page.evaluate("""project => {
                 window.__holdQuestion = true;

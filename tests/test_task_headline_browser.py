@@ -87,7 +87,7 @@ def test_latest_authored_headline_after_held_history(direct_server_with_data, tm
                 observed["geometry"] = card.evaluate("""n => { const r=n.getBoundingClientRect(),
                     title=n.querySelector('[data-live-title]'); return {width:r.width, height:r.height,
                     overflow:n.scrollWidth > n.clientWidth, titleOverflow:title.scrollWidth > title.clientWidth}; }""")
-                page.locator('#project-panel-close').click()
+                page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             assert not errors.unexpected(), errors
             for observed in facts["cases"]:
                 assert observed["same_node"]

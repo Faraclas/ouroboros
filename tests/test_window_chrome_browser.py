@@ -230,12 +230,16 @@ def test_narrow_layouts_start_past_the_traffic_lights(subscription_ui):
     title = box(page, ".chat-page-header .app-page-title")
     assert title and clear_of_lights(title) and title["x"] >= START
     capture(page, "window-chrome-integrated-drawer")
-    bar = page.evaluate("getComputedStyle(document.querySelector('.project-panel-bar')).paddingLeft")
+    page.evaluate(OPEN_PANEL)
+    page.wait_for_selector('[data-pane-project="window-chrome"] .project-panel-bar')
+    bar = page.evaluate("getComputedStyle(document.querySelector('[data-pane-project=\"window-chrome\"] .project-panel-bar')).paddingLeft")
     assert float(bar.removesuffix("px")) >= START, "a full-width project panel starts past the lights too"
 
     wide = shell_page(ui, 1360)
     apply(wide)
-    bar = wide.evaluate("getComputedStyle(document.querySelector('.project-panel-bar')).paddingLeft")
+    wide.evaluate(OPEN_PANEL)
+    wide.wait_for_selector('[data-pane-project="window-chrome"] .project-panel-bar')
+    bar = wide.evaluate("getComputedStyle(document.querySelector('[data-pane-project=\"window-chrome\"] .project-panel-bar')).paddingLeft")
     assert bar == "14px", "a panel docked right keeps its own inset"
 
 
@@ -273,20 +277,32 @@ def test_onboarding_keeps_a_draggable_band_and_the_frame_inside_the_window(subsc
 
 def test_the_document_readers_name_in_the_band_stays_selectable_text(subscription_ui):
     """In the smallest window the reader's name lies in the band. It is the document's text, selectable
-    as everywhere in the reader (DESIGN "Document reading"), so a press on it selects; the head's empty
-    padding beside it is still the title bar's."""
+    as everywhere in the reader (DESIGN "Document reading"), so a press on it selects. The modeless
+    head has its own move cursor; unclaimed empty native band still drags the window."""
     page = shell_page(subscription_ui, 800, 500)
     apply(page)
     name = "delivery-notes-for-the-owner.txt"
     page.evaluate(OPEN_READER, name)
     page.wait_for_selector("dialog.document-reader[open] .document-reader-source")
+    # The modeless reader now starts at 10vh, not centered against the title bar.
+    # Move it into the native band using its own real drag surface, then keep
+    # the original selection/native-drag assertions at that same location.
+    title, head = box(page, ".document-reader-title"), box(page, ".document-reader-head")
+    delta = TOP / 2 - (title["y"] + title["height"] / 2)
+    page.mouse.move(head["x"] + 8, head["y"] + head["height"] - 4)
+    page.mouse.down()
+    page.mouse.move(head["x"] + 8, head["y"] + head["height"] - 4 + delta, steps=5)
+    page.mouse.up()
     title, head = box(page, ".document-reader-title"), box(page, ".document-reader-head")
     y = title["y"] + title["height"] / 2
     assert y < TOP and head["y"] + 4 < TOP, "the name and the head's top edge lie in the band at this window size"
     assert page.locator("html").get_attribute("data-window-chrome") == INTEGRATED
 
-    page.mouse.click(head["x"] + 8, head["y"] + 4)  # the head's own padding, an empty part of the band
-    assert drags(page) == ["drag"], "the band is the title bar over the reader too"
+    page.mouse.click(head["x"] + 8, head["y"] + 4)
+    assert drags(page) == [], "the reader's own move surface is not an AppKit window drag"
+    assert head["y"] > 1, "there is unclaimed native band above the moved reader"
+    page.mouse.click(150, 1)
+    assert drags(page) == ["drag"], "unclaimed empty band still belongs to the title bar"
     page.mouse.move(title["x"] + 1, y)
     page.mouse.down()
     page.mouse.move(title["x"] + 90, y, steps=5)
@@ -331,7 +347,7 @@ def test_from_the_minimum_window_width_every_top_control_clears_the_lights(subsc
     panel = page.evaluate("() => ({ left: document.getElementById('project-panel').getBoundingClientRect().x })")
     with_panel = [c for c in page.evaluate(CONTROLS) if not clear_of_lights(c)]
     assert with_panel == []
-    assert clear_of_lights(box(page, "#project-panel-title")), "the panel's title starts past the lights too"
+    assert clear_of_lights(box(page, '[data-pane-project="window-chrome"] .app-page-title')), "the panel's title starts past the lights too"
     capture(page, f"window-chrome-{width}-project-panel")
     record(f"window-chrome-width-{width}", {"baseline": baseline, "integrated": integrated, "panel_left": panel["left"],
                                              "controls_in_band": [c for c in page.evaluate(CONTROLS) if c["y"] < TOP]})
@@ -387,7 +403,7 @@ def test_band_presses_over_a_scrolled_transcript_are_the_title_bars(request, mon
     # Panic stands in every room's bar and takes a press there (a trial: nothing is stopped).
     page.locator(f'{header} [data-chat-command="panic"]').click(trial=True)
     if room == "project":
-        page.locator("#project-panel-close").click(trial=True)
+        page.locator('[data-pane-project="window-chrome"] [data-pane-close]').click(trial=True)
     facts["gutter"] = page.evaluate(script(GUTTER_FACTS), TOP)
     below = page.evaluate(script(BELOW_BAND))
     target = page.evaluate(script(POINT), below)

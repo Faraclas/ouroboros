@@ -54,7 +54,23 @@ REASON_TEXT = {
     "model_access": "The model needs you: sign in or restore access",
     "model_wait": "Waiting for the model to become available",
     "project_admission": "Waiting for Project verification",
-    "queued": "Waiting for a free worker",
+    "queued": "Queued for dispatch; the current hold is not reported",
+    "dispatch_pending": "Dispatch preparation or an existing hold is pending",
+    "foreign_writer": "Dispatch blocked by foreign or unconfirmed installation storage ownership",
+    "autonomy_disabled": "Autonomous work is disabled",
+    "budget_dispatch": "Waiting for spending capacity",
+    "depth_unconfirmed": "Task depth could not be confirmed",
+    "body_writer": "Core dispatch is closed for managed-update recovery or unconfirmed update state",
+    "continuation_held": "Saved work is held for its recorded release",
+    "actor_releasing": "Waiting for the earlier actor to release this task",
+    "cancellation_pending": "Cancellation is being settled",
+    "resume_unconfirmed": "Resume authority is not confirmed",
+    "tree_selection": "Waiting for this task to be selected after its tree resumes",
+    "evolution_budget": "Waiting for evolution's spending reserve",
+    "project_busy": "Waiting for another task in this project to finish or release its writer lane",
+    "subagent_capacity": "Waiting for capacity in this task's helper tree",
+    "restart_pending": "Waiting for the accepted restart",
+    "dispatch_ready": "Dispatch eligibility checked; waiting for assignment",
     "review_work_finishing": "Review work finishing",
     "external_runs_unconfirmed": ("1 external run may still be running", "{count} external runs may still be running"),
     # A preparing direct turn's start step (census ``turn_phase``, supervisor.active_activity.TURN_PHASES).
@@ -229,7 +245,14 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
         return state
     if phase == "queued":
         state["activity"] = "queued"
-        state["reasons"].append(reason("queued"))
+        observed = raw.get("dispatch_wait") or {}
+        code = str(observed.get("code") or "")
+        valid = observed.get("task_attempt") == int(row.get("task_attempt") or 1)
+        entry = reason(code if valid and code in REASON_TEXT else "queued",
+                       ids=observed.get("ids") or () if valid else ())
+        if valid and observed.get("observed_at"):
+            entry["observed_at"] = observed["observed_at"]
+        state["reasons"].append(entry)
         return state
     if phase == "finalizing":
         state.update(activity="working", transition="finalizing", live=True)
@@ -291,22 +314,8 @@ def _rank(activity: str) -> int:
     return ACTIVITY_ORDER.index(activity) if activity in ACTIVITY_ORDER else len(ACTIVITY_ORDER)
 
 
-def _outcome(row: Mapping[str, Any]) -> str:
-    axes = row.get("outcome_axes") if isinstance(row.get("outcome_axes"), dict) else {}
-    lifecycle = axes.get("lifecycle") if isinstance(axes.get("lifecycle"), dict) else {}
-    return str(lifecycle.get("status") or row.get("status") or "")
-
-
-def shown_outcome(row: Mapping[str, Any]) -> str:
-    """The settled word a work says beside ``Finalizing…``: its stored lifecycle, except a turn the owner
-    stopped, which reads ``cancelled`` wherever its card's status fold says Stopped (``outcome_phase``)."""
-    status = _outcome(row)
-    if status in {"completed", "failed"} and isinstance(row.get("cancel_origin"), dict):
-        from ouroboros.project_dialogue import outcome_phase
-
-        if outcome_phase({**row, "root_phase_checkpoint": {}}, {}) == "cancelled":
-            return "cancelled"
-    return status
+from ouroboros.task_status import recorded_outcome as _outcome
+from ouroboros.task_status import shown_outcome as shown_outcome  # noqa: F401 — public compatibility
 
 
 def mark_of(activity: str, confirmed: bool, *, live: bool = False, unknown: bool = False) -> str:
@@ -479,6 +488,9 @@ def roll_up_room(works: List[Mapping[str, Any]], *, complete: bool = True) -> Di
                 "mark": "none" if complete else "ring", "confirmed": complete, "works": []}
     known = [work["activity"] for work in works if work["activity"] != "unknown"]
     activity = min(known, key=_rank) if known else "unknown"
+    counts = {word: sum(work["activity"] == word for work in works) for word in ACTIVITY_ORDER}
+    running_services = sum(tail.get("kind") == "service" and tail.get("state") == "live"
+                           for work in works for tail in work.get("tails") or ())
     working = [work for work in works if work["activity"] == "working"]
     transition = "none"
     if working and all(work["transition"] == "finalizing" for work in working):
@@ -493,7 +505,8 @@ def roll_up_room(works: List[Mapping[str, Any]], *, complete: bool = True) -> Di
     unknown = any(tail.get("state") == "unknown" for work in works for tail in work.get("tails") or ())
     return {"activity": activity, "transition": transition, "call": calls.pop() if len(calls) == 1 else "",
             "turn": turn, "amber": bool(turn), "mark": mark_of(activity, confirmed, live=live, unknown=unknown),
-            "confirmed": confirmed, "works": [work["work_id"] for work in works]}
+            "confirmed": confirmed, "works": [work["work_id"] for work in works],
+            "counts": counts, "running_services": running_services}
 
 
 def roll_up_summary(rooms: Mapping[Any, Mapping[str, Any]], works: List[Mapping[str, Any]],

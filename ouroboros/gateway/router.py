@@ -57,11 +57,7 @@ def collect_routes(
     data_dir: pathlib.Path,
     settings_handlers: Mapping[str, Callable[..., Any]] | None = None,
 ) -> list[BaseRoute]:
-    """Return web-facing Starlette routes.
-
-    New endpoint families should live directly under ``ouroboros.gateway`` and
-    be imported here.
-    """
+    """Return web-facing routes, importing endpoint families from ``ouroboros.gateway``."""
     from ouroboros.gateway.extensions import (
         api_extension_dispatch,
         api_extension_manifest,
@@ -88,6 +84,7 @@ def collect_routes(
     )
     from ouroboros.gateway.history import make_chat_history_endpoint, make_cost_breakdown_endpoint
     from ouroboros.gateway.logs import api_logs_tail
+    from ouroboros.gateway.activity import api_room_activity
     from ouroboros.gateway.storage import storage_routes
     from ouroboros.gateway.marketplace import (
         api_hub_installed,
@@ -300,6 +297,7 @@ def collect_routes(
         *storage_routes(data_dir),
         Route("/api/evolution-data", endpoint=api_evolution_data),
         Route("/api/chat/history", endpoint=make_chat_history_endpoint(data_dir)),
+        Route("/api/rooms/{chat_id}/activity", endpoint=api_room_activity, methods=["GET"]),
         Route("/api/logs/{name}", endpoint=api_logs_tail, methods=["GET"]),
         Route("/api/chat/upload", endpoint=api_chat_upload, methods=["POST"]),
         Route("/api/chat/upload", endpoint=api_chat_upload_delete, methods=["DELETE"]),

@@ -40,7 +40,10 @@ def test_drawer_is_a_layer_with_one_close_control_where_the_menu_button_was():
     row = _read("web/modules/composer.js").split('<div class="chat-toolbar-row">', 1)[1]  # the room's composer markup
     assert row.lstrip().startswith("${renderMobileNavToggle({ inComposer: true })}"), "the composer row starts with ☰"
     assert "showMobileNav: false,  // a room's ☰ is its composer row's first control" in chat_js
-    assert "showMobileNav: false," in app_js.split("projectPanel?.insertAdjacentHTML('afterbegin', renderPageHeader({", 1)[1].split("}));", 1)[0]
+    pane_js = _read("web/modules/pane_workspace.js")
+    assert "projectPanel?.insertAdjacentHTML('afterbegin', renderPageHeader({" not in app_js
+    bar = pane_js.split("el.innerHTML = renderPageHeader({", 1)[1].split("});", 1)[0]
+    assert "showMobileNav: false," in bar and "panicButtonHtml()" in bar and "data-pane-close" in bar
     composer = css.split('html[data-layout="stack"] .chat-toolbar-row > .composer-menu {', 1)[1].split("}", 1)[0]
     assert "height: var(--composer-control-height);" in composer, "as tall as the capsules beside it"
     # The closed drawer is inert in the stack layout; the scrim stays live under the modal layer.

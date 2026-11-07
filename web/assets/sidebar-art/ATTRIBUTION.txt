@@ -1,0 +1,51 @@
+Sidebar artwork — Viper fork
+
+These owner-selected marks decorate Elias's Viper interface. They do not imply
+partnership or endorsement. Names, trademarks and artwork remain their respective
+owners' property; the LobeHub vector's MIT notice below is not a trademark grant
+or a blanket license for the other artwork.
+
+Source/preparation records (retrieved 2026-11-03/04) were retained in the external
+Viper-Interface project's assets/sidebar-art/ and new-logo-assets/ directories:
+- Viper and Gentoo: images supplied by Elias; the selected PNG and SVG are unchanged.
+- Ouroboros: complete https://ouroboros-agent.ai/assets/icon_1024.png, unchanged;
+  only the displayed outer corners are rounded by CSS.
+- OpenAI: native Blossom diagrams at https://openai.com/brand/; the first Blossom
+  path is extracted without altering its geometry, with native black/white fills.
+- Claude: https://assets-proxy.anthropic.com/claude-ai/v2/assets/v1/cd02a42d9-Vq_H3mgS.svg,
+  the unchanged icon referenced by https://claude.ai/.
+- Zed: https://zed.dev/brand; the exact monogram path is extracted from the
+  wordmark canvas with the brand's permitted black/white treatment.
+- Antigravity: https://antigravity.google/assets/image/brand/antigravity-icon__full-color.svg,
+  the unchanged full-color mark listed at https://antigravity.google/press.
+- Podman: https://podman.io/logos/optimized/podman-3-logo-266w-253h.webp,
+  the unchanged filled emblem used by podman.io's navbar. LF Projects trademark
+  terms remain separate from copying the image.
+- Gemini: unchanged packages/static-svg/icons/gemini-color.svg from LobeHub's
+  lobe-icons commit ea434b96e75813517b377825e01c0df61dee8836.
+
+The following notice was read from that exact LobeHub commit's LICENSE. Other
+marks have source/brand provenance above, not an asserted permissive copyright
+license. Downstream redistribution must respect their respective terms.
+
+MIT License
+
+Copyright (c) 2023 LobeHub
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

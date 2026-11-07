@@ -601,7 +601,13 @@ export function initEvolution({ ws, state, mount, stateSnapshots = null, dialog 
     // ---- Campaign ----
     function paintCampaign() {
         const facts = campaignView(runtime);
-        lines.replaceChildren();
+        const words = facts?.lines || [];
+        while (lines.children.length > words.length) lines.children[lines.children.length - 1].remove();
+        words.forEach((text, index) => {
+            let line = lines.children[index];
+            if (!line) { line = element('p', 'evo-meta'); lines.append(line); }
+            if (line.textContent !== text) line.textContent = text;
+        });
         freshness.hidden = !(facts && runtimeError);
         freshness.textContent = facts && runtimeError
             ? `Couldn’t read the runtime state again; this is the answer from ${whenLabel(runtimeAt)}.` : '';
@@ -617,11 +623,6 @@ export function initEvolution({ ws, state, mount, stateSnapshots = null, dialog 
             chip.textContent = facts.chip.text;
             chip.setAttribute('data-tone', facts.chip.tone);
             note.textContent = facts.note;
-            for (const text of facts.lines) {
-                const line = element('p', 'evo-meta');
-                line.textContent = text;
-                lines.append(line);
-            }
             mind.textContent = facts.consciousness.text;
             mind.setAttribute('data-tone', facts.consciousness.tone);
             mindDetail.textContent = facts.consciousness.detail;

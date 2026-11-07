@@ -383,6 +383,30 @@ test('owner-supplied names are left alone while the chrome around them is transl
     assert.equal(input.getAttribute('placeholder'), 'Поиск');
 });
 
+test('room-owned titles and project tabs protect authored names without disabling pane chrome', () => {
+    applyPayload(RU);
+    const paneSource = readFileSync(new URL('../modules/pane_workspace.js', import.meta.url), 'utf8');
+    assert.ok(paneSource.includes("el.querySelector('h2').setAttribute('data-i18n-authored', '')"));
+    assert.ok(paneSource.includes("if (id !== null) tab.setAttribute('data-i18n-authored', '')"));
+    assert.ok(paneSource.includes("el.setAttribute('aria-labelledby', `viper-title-${id}`)"));
+    const panes = ['Settings', 'Search'].map((name, i) => {
+        const title = el('h2', { id: `viper-title-p${i}`, class: 'app-page-title' }, name);
+        title.dataset.i18nAuthored = '';
+        const tab = el('button', { role: 'tab', 'aria-controls': `viper-pane-p${i}` }, name);
+        tab.dataset.i18nAuthored = '';
+        const chrome = el('button', {}, 'Settings');
+        const pane = el('section', { 'data-pane-project': `p${i}`, 'aria-labelledby': `viper-title-p${i}` }, title, chrome);
+        return { name, title, tab, chrome, pane };
+    });
+    const root = el('div', {}, ...panes.flatMap(p => [p.tab, p.pane]));
+    createTranslator().applyTo(root);
+    for (const p of panes) {
+        assert.equal(text(p.title), p.name);
+        assert.equal(text(p.tab), p.name);
+        assert.equal(text(p.chrome), 'Настройки');
+    }
+});
+
 test('authored content outside a transcript keeps every text and attribute and reports no miss', () => {
     applyPayload(RU);
     assert.ok(SKIP_ROOTS.includes('[data-i18n-authored]'));

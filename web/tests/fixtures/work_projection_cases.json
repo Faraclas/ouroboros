@@ -126,7 +126,15 @@
      "confirmed": true,
      "works": [
       "p"
-     ]
+     ],
+     "counts": {
+      "working": 1,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 0,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -218,7 +226,15 @@
      "confirmed": true,
      "works": [
       "w"
-     ]
+     ],
+     "counts": {
+      "working": 1,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 0,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -332,7 +348,15 @@
      "confirmed": true,
      "works": [
       "d"
-     ]
+     ],
+     "counts": {
+      "working": 0,
+      "queued": 0,
+      "waiting": 1,
+      "paused": 0,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -435,7 +459,15 @@
      "confirmed": true,
      "works": [
       "dp"
-     ]
+     ],
+     "counts": {
+      "working": 1,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 0,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -528,7 +560,15 @@
      "confirmed": true,
      "works": [
       "dr"
-     ]
+     ],
+     "counts": {
+      "working": 1,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 0,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -646,7 +686,15 @@
      "confirmed": true,
      "works": [
       "o"
-     ]
+     ],
+     "counts": {
+      "working": 0,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 1,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -763,7 +811,15 @@
      "confirmed": true,
      "works": [
       "m"
-     ]
+     ],
+     "counts": {
+      "working": 0,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 1,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -882,7 +938,15 @@
      "confirmed": true,
      "works": [
       "s"
-     ]
+     ],
+     "counts": {
+      "working": 0,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 1,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -1004,7 +1068,15 @@
      "confirmed": true,
      "works": [
       "a"
-     ]
+     ],
+     "counts": {
+      "working": 0,
+      "queued": 0,
+      "waiting": 1,
+      "paused": 0,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -1124,7 +1196,7 @@
      "because": [
       {
        "code": "queued",
-       "text": "Waiting for a free worker"
+       "text": "Queued for dispatch; the current hold is not reported"
       }
      ],
      "tails": [],
@@ -1149,7 +1221,7 @@
         "because": [
          {
           "code": "queued",
-          "text": "Waiting for a free worker"
+          "text": "Queued for dispatch; the current hold is not reported"
          }
         ],
         "tails": []
@@ -1186,7 +1258,15 @@
      "works": [
       "z",
       "q"
-     ]
+     ],
+     "counts": {
+      "working": 1,
+      "queued": 1,
+      "waiting": 0,
+      "paused": 0,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -1361,7 +1441,15 @@
      "confirmed": true,
      "works": [
       "pr"
-     ]
+     ],
+     "counts": {
+      "working": 1,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 0,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -1541,7 +1629,15 @@
      "works": [
       "wa",
       "wb"
-     ]
+     ],
+     "counts": {
+      "working": 2,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 0,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -1633,7 +1729,15 @@
      "confirmed": true,
      "works": [
       "wr"
-     ]
+     ],
+     "counts": {
+      "working": 1,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 0,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -1762,7 +1866,15 @@
      "confirmed": true,
      "works": [
       "so"
-     ]
+     ],
+     "counts": {
+      "working": 0,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 1,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -1855,7 +1967,15 @@
      "confirmed": true,
      "works": [
       "f"
-     ]
+     ],
+     "counts": {
+      "working": 1,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 0,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -1945,7 +2065,15 @@
      "confirmed": true,
      "works": [
       "sl"
-     ]
+     ],
+     "counts": {
+      "working": 0,
+      "queued": 0,
+      "waiting": 1,
+      "paused": 0,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -2025,7 +2153,15 @@
      "confirmed": false,
      "works": [
       "u"
-     ]
+     ],
+     "counts": {
+      "working": 0,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 0,
+      "unknown": 1
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -2102,7 +2238,15 @@
      "confirmed": true,
      "works": [
       "r"
-     ]
+     ],
+     "counts": {
+      "working": 1,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 0,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -2196,7 +2340,15 @@
      "confirmed": true,
      "works": [
       "p"
-     ]
+     ],
+     "counts": {
+      "working": 1,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 0,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -2324,7 +2476,15 @@
      "confirmed": true,
      "works": [
       "rv"
-     ]
+     ],
+     "counts": {
+      "working": 0,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 1,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -2400,7 +2560,15 @@
      "confirmed": true,
      "works": [
       "x"
-     ]
+     ],
+     "counts": {
+      "working": 0,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 0,
+      "unknown": 1
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -2504,7 +2672,15 @@
      "confirmed": true,
      "works": [
       "n"
-     ]
+     ],
+     "counts": {
+      "working": 0,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 1,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -2644,7 +2820,15 @@
      "confirmed": true,
      "works": [
       "mh"
-     ]
+     ],
+     "counts": {
+      "working": 0,
+      "queued": 0,
+      "waiting": 0,
+      "paused": 1,
+      "unknown": 0
+     },
+     "running_services": 0
     }
    },
    "work_summary": {
@@ -2734,7 +2918,55 @@
    "": "Waiting for Project verification"
   },
   "queued": {
-   "": "Waiting for a free worker"
+   "": "Queued for dispatch; the current hold is not reported"
+  },
+  "dispatch_pending": {
+   "": "Dispatch preparation or an existing hold is pending"
+  },
+  "foreign_writer": {
+   "": "Dispatch blocked by foreign or unconfirmed installation storage ownership"
+  },
+  "autonomy_disabled": {
+   "": "Autonomous work is disabled"
+  },
+  "budget_dispatch": {
+   "": "Waiting for spending capacity"
+  },
+  "depth_unconfirmed": {
+   "": "Task depth could not be confirmed"
+  },
+  "body_writer": {
+   "": "Core dispatch is closed for managed-update recovery or unconfirmed update state"
+  },
+  "continuation_held": {
+   "": "Saved work is held for its recorded release"
+  },
+  "actor_releasing": {
+   "": "Waiting for the earlier actor to release this task"
+  },
+  "cancellation_pending": {
+   "": "Cancellation is being settled"
+  },
+  "resume_unconfirmed": {
+   "": "Resume authority is not confirmed"
+  },
+  "tree_selection": {
+   "": "Waiting for this task to be selected after its tree resumes"
+  },
+  "evolution_budget": {
+   "": "Waiting for evolution's spending reserve"
+  },
+  "project_busy": {
+   "": "Waiting for another task in this project to finish or release its writer lane"
+  },
+  "subagent_capacity": {
+   "": "Waiting for capacity in this task's helper tree"
+  },
+  "restart_pending": {
+   "": "Waiting for the accepted restart"
+  },
+  "dispatch_ready": {
+   "": "Dispatch eligibility checked; waiting for assignment"
   },
   "review_work_finishing": {
    "": "Review work finishing"

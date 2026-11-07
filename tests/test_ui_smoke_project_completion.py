@@ -99,7 +99,7 @@ def test_ui_project_completion_pointer_keeps_project_history_scoped(direct_serve
 
                 reference.click()
                 page.wait_for_selector("#project-panel:not([hidden])", timeout=30_000)
-                assert page.locator("#project-panel-title").inner_text() == project["name"]
+                assert page.locator(f'[data-pane-project="{project["id"]}"] .app-page-title').inner_text() == project["name"]
                 panel = page.locator(f"#panel-pchat-{project['id']}")
                 panel.wait_for(state="visible", timeout=30_000)
                 task_card = panel.locator(f'.chat-live-card[data-task-id="{task_id}"]')
@@ -202,7 +202,7 @@ def test_ui_project_completion_mirror_is_an_ordinary_folded_message(direct_serve
                 assert project["name"] in (chip.get_attribute("title") or "")
                 chip.click()
                 page.wait_for_selector("#project-panel:not([hidden])", timeout=30_000)
-                assert page.locator("#project-panel-title").inner_text() == project["name"]
+                assert page.locator(f'[data-pane-project="{project["id"]}"] .app-page-title').inner_text() == project["name"]
             finally:
                 browser.close()
     except PlaywrightError as exc:
@@ -326,7 +326,7 @@ def test_ui_project_completion_mirror_has_one_project_door(direct_server_with_da
                     break
             expect(project_ref).to_be_focused()
             page.keyboard.press('Enter')
-            expect(page.locator('#project-panel-title')).to_have_text(project['name'])
+            expect(page.locator(f'[data-pane-project="{project["id"]}"] .app-page-title')).to_have_text(project['name'])
         finally:
             browser.close()
 
@@ -432,7 +432,7 @@ def test_ui_folded_completion_excludes_late_table_focus(direct_server_with_data,
             page.wait_for_function('(n) => n.scrollLeft > 0', arg=full_table.element_handle())
             assert full_table.evaluate('n => n.scrollLeft') > before
             panel.screenshot(path=str(evidence / 'project-table.png'))
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             expect(panel).not_to_be_visible()
             # Change only the fixture's fold height: table width/height stay fixed.
             # This isolates syncFold -> MutationObserver restoration from table resize.
@@ -587,7 +587,7 @@ def test_ui_no_answer_ending_keeps_codes_copy_and_project_context(
             assert reference.count() == 1
             reference.focus()
             page.keyboard.press('Enter')
-            expect(page.locator('#project-panel-title')).to_have_text(meta['project_name'])
+            expect(page.locator(f'[data-pane-project="{meta["project_id"]}"] .app-page-title')).to_have_text(meta['project_name'])
             (evidence / 'page-errors.json').write_text(json.dumps(list(errors)), encoding='utf-8')
             assert not errors.unexpected(), errors
         finally:

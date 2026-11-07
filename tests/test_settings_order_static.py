@@ -58,6 +58,6 @@ def test_dashboard_tabs_follow_expected_use_and_logs_stays_the_default() -> None
     tabs = DASHBOARD[DASHBOARD.index("const DASHBOARD_TABS = ["):]
     tabs = tabs[:tabs.index("];")]
     assert re.findall(r"value: '([a-z]+)'", tabs) == [
-        "logs", "activity", "consciousness", "costs", "updates", "storage", "evolution"]
+        "logs", "activity", "projects", "consciousness", "costs", "updates", "storage", "evolution"]
     app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     assert "dashboardActiveSubtab: 'logs'" in app

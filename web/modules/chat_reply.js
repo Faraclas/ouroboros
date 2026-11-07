@@ -4,6 +4,7 @@
 // message it quotes, and the owner's words a relay carries into a work's room (one Ouroboros bubble: his words in
 // a quote panel above the note). A reply is a reference the host resolves: this module sends only the quoted
 // row's address and never decides who reads the words.
+import { messageSelection } from './chat_selection.js';
 import { tr } from './i18n.js';
 import { showToast } from './toast.js';
 import { isStoreMigrating } from './api_client.js';
@@ -56,7 +57,7 @@ function failureText({ state, task_id: taskId, error }) {
  * for cancellation. Neither the quote's stored chat label nor its task chooses the destination.
  */
 export function createChatReplies({ chatId, feed, input, composerArea = null, key = '', reading, history = () => null,
-    navigate = null, present = () => true, onDomWrite = (write) => write(), actions = undefined }) {
+    navigate = null, present = () => true, appendSelected = () => {}, onDomWrite = (write) => write(), actions = undefined }) {
     // The strip is the field's first line: inside the field, right before its text row (composer.js); a bare field (a
     // test fixture) takes it itself.
     const textRow = input.closest('.chat-text-row') || input;
@@ -222,13 +223,19 @@ export function createChatReplies({ chatId, feed, input, composerArea = null, ke
      */
     function start(raw) {
         const ref = normalizeReplyRef(raw);
-        if (!ref?.address) return;
+        if (!ref?.address) return false;
         const door = rowOf(ref.address)?.querySelector('.chat-quiz-comment:not(:disabled):not([readonly])');
-        if (door) { door.focus(); return; }
+        if (door) { door.focus(); return false; }
         staged = ref;
         paint();
         remember();
         input.focus({ preventScroll: true });
+        return true;
+    }
+
+    // The host still resolves the canonical source row. Exact selected words travel as editable draft text.
+    function startSelection(ref, text) {
+        if (start(ref) && text) appendSelected(text);
     }
 
     /** Drops the strip and keeps whatever the owner already typed. */
@@ -280,7 +287,14 @@ export function createChatReplies({ chatId, feed, input, composerArea = null, ke
         button.title = tr('chat.reply.reply', 'Reply');
         button.setAttribute('aria-label', tr('chat.reply.reply', 'Reply'));
         button.dataset.rowReply = '1';
-        button.addEventListener('click', () => start(bubbleRef(bubble)));
+        let pressedSelection = null;
+        button.addEventListener('pointerdown', () => { pressedSelection = messageSelection(bubble); });
+        button.addEventListener('pointercancel', () => { pressedSelection = null; });
+        button.addEventListener('click', event => {
+            const text = event.detail ? (pressedSelection ?? messageSelection(bubble)) : messageSelection(bubble);
+            pressedSelection = null;
+            startSelection(bubbleRef(bubble), text);
+        });
         const copy = bubble.querySelector(':scope > .chat-message-copy');
         const row = document.createElement('div');
         row.className = 'chat-message-actions';
@@ -396,6 +410,7 @@ export function createChatReplies({ chatId, feed, input, composerArea = null, ke
         /** What the row menu's Reply on this root work card quotes, or null. */
         cardRef,
         start,
+        startSelection,
         syncCard,
         syncDerivedQuotes,
         reveal,

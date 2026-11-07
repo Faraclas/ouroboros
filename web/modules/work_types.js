@@ -9,6 +9,7 @@
  * @property {number=} count
  * @property {Array<string>=} ids
  * @property {*=} since
+ * @property {*=} observed_at  // chooser observation, not the beginning of a wait
  * @property {PauseAuthor=} by  // the declared author of a decided Pause
  * @property {WakeSources=} wake
  */
@@ -126,6 +127,8 @@
  * @property {string} mark  // moving | still | pause | ring | none
  * @property {boolean} confirmed
  * @property {Array<string>} works
+ * @property {Object<string, number>=} counts
+ * @property {number=} running_services
  */
 /**
  * @typedef {Object} WorkSummary

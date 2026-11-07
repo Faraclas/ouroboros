@@ -14,6 +14,9 @@
  *   reading     the instance's reading intent and timeline anchors (`Back to reading`); an unloaded row reads
  *               the page around its task through the instance's pager (`around`), Back its own page (`revisit`)
  */
+import { createProjectInfo } from './room_orientation.js';
+import { createActivityHistory, historyWork, paintActivityEntries, activityError, roomActivityComposition, reconcileActivityOrder } from './room_activity.js';
+import { createWorkVisibility, workExplanation } from './work_visibility.js';
 import { fetchTaskDetail, fetchTaskDetailStrict } from './api_client.js';
 import { bindContentButton } from './chat_activity.js';
 import { compareHistoryPosition } from './chat_history_replay.js';
@@ -24,7 +27,7 @@ import { desiredLiveCardPhase, replayTerminalPhase } from './task_phase_chip.js'
 import { createStatusMark, markView, paintStatusMark } from './status_mark.js';
 import { closeTaskControlMenu, createTaskResumeButton, requestStop, taskControlBusy } from './task_control_menu.js';
 import {
-    OUTCOME_TONES, amberNote, clock, openWorkControls, workControls, workMenuActions, workQuestion, workRowView,
+    OUTCOME_TONES, amberNote, clock, openWorkControls, workControls, workMenuActions, workQuestion,
 } from './work_status.js';
 import { showToast } from './toast.js';
 import { motionMs, reducedMotion } from './motion.js';
@@ -94,12 +97,12 @@ export function hangUnderCapsules(bar, anchor) {
 }
 
 export function createRoomWork({
-    page, asPanel = false, ws = null, statusBadge, messagesDiv, reading, stateSnapshots = null, revealQuestion = null,
+    page, asPanel = false, projectId = '', chatId = 1, ws = null, statusBadge, messagesDiv, reading, stateSnapshots = null, revealQuestion = null,
     works = () => null, liveCardRecords: records = new Map(),
     pendingSubmissions: pending = new Map(), pendingSuggestedNames: names = new Map(),
     cancelRunFromCard = null, refreshHeaderControlState = async () => {},
     captureVisibleTimelineAnchor = () => null, restoreVisibleTimelineAnchor = () => false, hostReady = () => true,
-    historyPager = null, showLatest = null,
+    historyPager = null, showLatest = null, withStableViewport = write => write(),
 } = {}) {
     if (!page || !statusBadge || !messagesDiv) return null;
     const doc = page.ownerDocument;
@@ -154,7 +157,16 @@ export function createRoomWork({
     note.hidden = true;
     // The commands a narrow bar keeps in its list (Main's Restart and budget: page_header.js); empty, it takes no room.
     const extras = element('div', 'rw-extras');
-    surface.append(list, note, extras);
+    const projectInfo = asPanel && projectId ? createProjectInfo({ projectId, doc }) : null;
+    if (projectInfo) surface.append(projectInfo.element);
+    const composition = element('p', 'rac-composition');
+    const historyNote = element('p', 'rac-history-note');
+    const historyActions = element('div', 'rac-history-actions');
+    const refreshHistory = element('button', 'btn btn-sm', tr('activity.refresh', 'Refresh history'));
+    const olderHistory = element('button', 'btn btn-sm', tr('activity.older', 'Older activity'));
+    refreshHistory.type = olderHistory.type = 'button';
+    historyActions.append(refreshHistory, olderHistory);
+    surface.append(composition, list, historyNote, historyActions, note, extras);
     // A zero-height anchor under the bar: the list follows the bar's real height at every width. Main's
     // header floats over the transcript, so its anchor is the header's own last child at its bottom edge.
     const shadeAnchor = element('div', 'rw-shade-anchor');
@@ -183,6 +195,12 @@ export function createRoomWork({
     (page.querySelector('.chat-input-wrap') || page).appendChild(back);
     page.appendChild(live);
 
+    const visibility = createWorkVisibility({ doc, bar, asPanel });
+    const activity = createActivityHistory({ chatId, changed: () => schedule() });
+    let activityView = '';
+    refreshHistory.addEventListener('click', () => { if (!activity.state().busy) void activity.refresh(); });
+    olderHistory.addEventListener('click', () => { if (!activity.state().busy) void activity.older(); });
+
     // ---- state
     let open = false;
     let destroyed = false;
@@ -193,7 +211,7 @@ export function createRoomWork({
     let backPlace = null;       // where Back returns when the passage was let go: its page, or the present
     let backTimer = 0;
     let focusTimer = 0;
-    let outsideClickTimer = 0;
+    let outsideClickTimer = 0, pressTimer = 0;
     let outsideClick = null;
     let scheduled = 0;
     let lastInside = false;
@@ -244,6 +262,8 @@ export function createRoomWork({
         if (own) return named(own, 'card');
         const coined = clean(names.get(item.episode) || names.get(item.id));
         if (coined) return named(coined, 'task_named');
+        const retained = item.history?.entries?.find(entry => entry.kind === 'task')?.name;
+        if (retained) return named(retained, 'retained');
         const read = clean(detailNames.get(item.id));
         if (read) return named(read, 'task_detail');
         const said = clean(bubble?.querySelector?.('.message')?.textContent);
@@ -269,14 +289,14 @@ export function createRoomWork({
             const id = String(work.work_id || '');
             if (!id) continue;
             const episode = String(work.episode?.task_id || id);
-            const shown = current ? work : { ...work, activity: 'unknown', because: [], tails: [], turn: [], confirmed: false,
-                mark: 'ring' };
-            const view = workRowView(shown, { stopping: records.get(episode)?.cancelPendingPolicy || '' });
+            const view = workExplanation({ ...work, tails: listOf(work.tails).filter(tail => tail.kind !== 'service') }, { connected: connected(), ready: hostReady(),
+                available: !stateSnapshots?.latest || Boolean(stateSnapshots.latest()),
+                stopping: records.get(episode)?.cancelPendingPolicy || '' });
             items.push({ id, kind: work.kind === 'task' ? 'task' : 'direct', work, record: workCard(work, records), view,
                 episode, attempt: state.attempts?.get?.(episode) ?? null, activity: current ? String(work.activity || '') : 'unknown',
                 online: current, confirmed: current && work.confirmed !== false,
                 cmid: String(work.client_message_id || ''),
-                startedAt: Number(work.since) || 0 });
+                startedAt: Number(work.since) || 0, history: activity.task(episode) || (episode === id ? activity.task(id) : null) });
         }
         for (const [cmid, sent] of pending) {
             items.push({ id: `pending:${cmid}`, kind: 'pending', work: null, record: null, confirmed: true, cmid,
@@ -285,6 +305,12 @@ export function createRoomWork({
                     outcome: '', focus: '' } });
         }
         // A Project with nothing else keeps its way to the latest represented root card.
+        const listedEpisodes = new Set(items.map(item => item.episode));
+        for (const task of activity.rows()) {
+            if (listedEpisodes.has(task.task_id)) continue;
+            const item = historyWork(task);
+            if (item) items.push({ ...item, key: `history:${task.task_id}`, record: records.get(task.task_id) });
+        }
         if (asPanel && !items.length) {
             const latest = latestRepresentedRoot([...records.values()]);
             if (latest) items.push({ id: latest.groupId, kind: 'task', work: null, record: latest, latest: true,
@@ -299,7 +325,7 @@ export function createRoomWork({
         const card = record?.root?.isConnected ? record.root : null;
         const bubble = item.cmid && !card ? bubbleFor(item.cmid) : null;
         const name = nameOf(item, bubble);
-        const finished = Boolean(item.latest && record?.finished);
+        const finished = Boolean(item.finished || item.latest && record?.finished);
         // The owner's turn first, then moving work, then work that waits; unconfirmed work last.
         const group = item.latest ? 'latest' : view.tone === 'unknown' ? 'unconfirmed'
             : view.owner ? 'needs' : view.tone === 'live' ? 'progress' : 'waiting';
@@ -308,14 +334,14 @@ export function createRoomWork({
         // from an incomplete body and every work over a closed socket has none.
         const controls = work && item.online ? workControls(work) : null;
         return {
-            key: item.id, id: item.id, kind: item.kind, name: name.text, fullName: name.full, nameSource: name.source,
+            key: item.key || item.id, id: item.id, kind: item.kind, name: name.text, fullName: name.full, nameSource: name.source,
             view, group, slot: group, rank: GROUP_RANK[group] * 10 + sub, confirmed: item.confirmed,
             latest: Boolean(item.latest), settled: finished, outcomeKnown: finished, episode: item.episode,
             attempt: item.attempt, activity: item.activity, work,
             card: Boolean(card), target: card || bubble, loaded: Boolean(card || bubble),
             startedAt: item.startedAt, cmid: item.cmid, controls,
             canMenu: Boolean(controls && workMenuActions(controls).length), resume: controls?.resume || '',
-            question: item.confirmed ? workQuestion(work) : null, tone: view.tone,
+            question: item.confirmed ? workQuestion(work) : null, tone: view.tone, history: item.history,
         };
     }
 
@@ -344,13 +370,15 @@ export function createRoomWork({
         };
         return { ...row, ...refreshedName, view, group: 'ended', settled: true, outcomeKnown: Boolean(outcome), canMenu: false,
             controls: null, resume: '', question: null, card: Boolean(card), target, loaded: Boolean(target),
-            tone: view.tone };
+            tone: view.tone, activity: '', confirmed: false,
+            work: row.work ? { ...row.work, confirmed: false, tails: listOf(row.work.tails).map(tail =>
+                tail.state === 'live' ? { ...tail, state: 'unknown' } : tail) } : null };
     }
 
-    const sorter = (a, b) => (a.rank - b.rank) || (b.startedAt - a.startedAt) || a.key.localeCompare(b.key);
+    const sorter = (a, b) => (b.startedAt - a.startedAt) || a.key.localeCompare(b.key);
 
-    // While open, order and each row's slot hold; words, verbs and motion update in place, so no existing
-    // node moves under the keyboard or the pointer. New rows append.
+    // Newest rows go above older ones; keyed nodes keep focus/selection. Defer
+    // reordering during a press so its target stays put until the click settles.
     function arrange(collected) {
         if (!open || !frozen) return [...collected].sort(sorter);
         const byKey = new Map(collected.map((row) => [row.key, row]));
@@ -358,18 +386,21 @@ export function createRoomWork({
         for (const key of [...order]) {
             const kept = frozen.get(key);
             let fresh = byKey.get(key);
-            if (!fresh && kept.row.kind === 'pending' && kept.row.cmid) {
+            if (!fresh) {
                 // The owner's send that the host turned into a turn takes the same place.
                 // A progress card may already own the turn's slot before its census arrives.
                 // In that case keep that view; the old send settles normally until close.
-                fresh = [...byKey.values()].find((row) => row.kind !== 'pending'
-                    && row.cmid === kept.row.cmid && !order.includes(row.key));
+                fresh = [...byKey.values()].find((row) => !order.includes(row.key) && (
+                    row.history && row.episode === kept.row.episode
+                    || kept.row.kind === 'pending' && kept.row.cmid && row.kind !== 'pending' && row.cmid === kept.row.cmid));
                 if (fresh) {
                     order[order.indexOf(key)] = fresh.key;
                     frozen.delete(key);
                     // Identity changes, not the reader's node: preserve selection and focus in this slot.
                     const view = views.get(key);
                     if (view) { views.delete(key); views.set(fresh.key, view); }
+                    if (expanded.delete(key)) expanded.add(fresh.key);
+                    if (lookups.has(key)) { lookups.set(fresh.key, lookups.get(key)); lookups.delete(key); }
                 }
             }
             if (fresh) {
@@ -383,7 +414,9 @@ export function createRoomWork({
             order.push(row.key);
             out.push(row);
         }
-        for (const row of out) if (!row.settled || !frozen.has(row.key)) frozen.set(row.key, { row, slot: row.slot });
+        if (!pressing) out.sort(sorter);  // never move the pressed target before its click settles
+        order = out.map(row => row.key);
+        for (const row of out) frozen.set(row.key, { row, slot: row.slot });
         return out;
     }
 
@@ -398,11 +431,14 @@ export function createRoomWork({
 
     function describe(row) {
         const lines = [];
+        if (row.assessmentText) lines.push([tr('activity.evaluated', 'Evaluated'), row.assessmentText]);
         if (row.settled && !row.latest) lines.push(row.outcomeKnown
             ? [tr('room_work.detail.finished', 'Finished'),
-                tr('room_work.detail.finished_text', 'Its recorded outcome is shown above. This row stays until the list closes.')]
+                tr('room_work.detail.finished_text', 'Its recorded outcome is shown above; retained activity can be read again after closing.')]
             : [tr('room_work.detail.activity', 'Activity'),
                 tr('room_work.detail.ended_text', 'No longer listed as active; its outcome is not known here. This row stays until the list closes.')]);
+        for (const reason of listOf(row.work?.because)) if (reason.observed_at)
+            lines.push([tr('activity.observed', 'Observed'), clock(reason.observed_at)]);
         const where = whereText(row);
         if (where) lines.push([tr('room_work.detail.where', 'Where'), where]);
         const uncontrolled = !row.confirmed && !row.canMenu && !row.resume && !row.settled && !row.latest;
@@ -436,16 +472,24 @@ export function createRoomWork({
         // The episode's own focus line, quieter, under the state (work_status.workRowView's `focus`).
         const focus = element('span', 'rw-focus');
         focus.hidden = true;
-        main.append(nameEl, state, focus);
+        const observations = element('span', 'rw-observations');
+        observations.hidden = true;
+        main.append(nameEl, state, observations, focus);
         const verb = element('span', 'rw-verb');
         const moreSlot = element('span', 'rw-more-slot');
         const detail = element('div', 'rw-detail');
+        const events = element('div', 'rac-events');
+        const activityGap = element('p', 'rac-gap');
+        const errorLabel = element('span', 'rac-error-label');
+        state.append(errorLabel);
         detail.id = `${uid}-detail-${(detailSequence += 1)}`;
+        observations.id = `${detail.id}-observations`;
+        main.setAttribute('aria-describedby', observations.id);
         detail.hidden = true;
-        el.append(main, verb, moreSlot, detail);
-        view = { el, main, nameEl, mark, word, secondary, focus, where, chev, verb, moreSlot,
+        el.append(main, verb, moreSlot, detail, activityGap, events);
+        view = { el, main, nameEl, mark, word, secondary, focus, observations, where, chev, verb, moreSlot,
             detail, question: null, resume: null, resumeTarget: '', more: null, row: null, full: null, detailKey: '',
-            episode: undefined };
+            episode: undefined, events, activityGap, errorLabel };
         // The name stays selectable text: a drag that selected it does not navigate.
         bindContentButton(main, () => activateRow(view.row), () => rowIsTarget(view.row));
         // Keyboard focus shows the whole name (CSS unclamps it), and only the row keyboard reads shows it. Not
@@ -495,6 +539,21 @@ export function createRoomWork({
             id: row.id,
             slot: row.slot, kind: row.kind, tone: row.tone, settled: row.settled ? '1' : '0', open: isOpen ? '1' : '0',
         });
+        el.dataset.activity = row.confirmed ? row.activity : '';
+        el.dataset.error = row.work && !row.settled ? '' : activityError(row.history);
+        view.errorLabel.textContent = el.dataset.error === 'assessed' ? tr('activity.assessed_error', 'Error — assessed') : '';
+        view.errorLabel.hidden = !view.errorLabel.textContent;
+        const judgment = el.dataset.error === 'assessed'
+            ? listOf(row.history?.entries).find(entry => entry.kind === 'task')?.assessment : null;
+        row.assessmentText = judgment ? fmt('By {who} at {at}: {reason}', {
+            who: judgment.by?.task_id || judgment.by?.kind, at: clock(judgment.at), reason: judgment.reason }) : '';
+        view.errorLabel.title = row.assessmentText;
+        const gapText = listOf(row.history?.gaps).join(' · ');
+        if (view.activityGap.textContent !== gapText) view.activityGap.textContent = gapText;
+        view.activityGap.hidden = !gapText;
+        const serviceWork = row.work ? { ...row.work, confirmed: row.confirmed,
+            tails: listOf(row.work.tails).map(tail => !row.confirmed && tail.state === 'live' ? { ...tail, state: 'unknown' } : tail) } : null;
+        paintActivityEntries(view.events, row.history ? [row.history] : [], serviceWork, doc);
         const full = row.fullName || row.name;
         // Every row says its state under its name (5A); where an unloaded row's message is, its press finds out.
         const state = [row.view.word, row.view.secondary].filter(Boolean).join(' · ');
@@ -522,14 +581,21 @@ export function createRoomWork({
         if (view.full !== full) { view.full = full; view.nameEl.textContent = full; }
         // The work's shape in its word's ink; something in it that waits for the owner is the amber dot in its place
         // (a pause is not the owner's move), and a known outcome is a dot in the outcome's tone beside its word.
-        paintStatusMark(view.mark, markView({ mark: row.view.mark, owner: row.view.owner, outcome: row.view.outcome }));
+        const rowMark = markView({ mark: el.dataset.error === 'assessed' ? 'none' : row.view.mark,
+            owner: row.view.owner, outcome: el.dataset.error === 'assessed' ? '' : row.view.outcome });
+        // History keeps its outcome word; green in this list means current execution.
+        if (el.dataset.activity !== 'working' && rowMark.hue === 'ok') rowMark.hue = 'neutral';
+        paintStatusMark(view.mark, rowMark);
         if (view.word.textContent !== row.view.word) view.word.textContent = row.view.word;
         const secondary = String(row.view.secondary || '');
         if (view.secondary.textContent !== secondary) view.secondary.textContent = secondary;
         view.secondary.hidden = !secondary;
-        const focus = row.settled ? '' : String(row.view.focus || '');
+        const focus = row.settled ? '' : String(row.view.focusLine || '');
         if (view.focus.textContent !== focus) view.focus.textContent = focus;
         view.focus.hidden = !focus;
+        const observations = row.settled ? '' : String(row.view.observationLine || '');
+        if (view.observations.textContent !== observations) view.observations.textContent = observations;
+        view.observations.hidden = !observations;
         view.chev.hidden = !detailable;
         view.where.hidden = !detailable;
         view.detail.hidden = !isOpen;
@@ -681,16 +747,45 @@ export function createRoomWork({
         const label = asPanel ? tr('room_work.scope.project', 'Work in this project')
             : tr('room_work.scope.main', 'Work in this chat');
         if (surface.getAttribute('aria-label') !== label) surface.setAttribute('aria-label', label);
+        visibility?.render(works(), { connected: connected(), ready: hostReady(),
+            available: !stateSnapshots?.latest || Boolean(stateSnapshots.latest()),
+            stopping: work => records.get(String(work.episode?.task_id || ''))?.cancelPendingPolicy || '',
+            present: !page.hidden && page.isConnected }, withStableViewport);
+        const pageState = activity.state();
+        if (activityView !== pageState.view) {
+            activityView = pageState.view;
+            if (frozen) {
+                frozen.clear(); order = [];
+            }
+        }
+        activity.sync(works()?.works, connected() && hostReady());
         rows = arrange(collect()).map((row) => Object.assign(row, { lookup: lookupOf(row) }));
         paintTrigger();
         paintNote();
         if (!open) return;
+        composition.textContent = connected() && hostReady() ? roomActivityComposition(works())
+            : tr('activity.composition_unknown', 'Current activity composition is unconfirmed.');
+        composition.hidden = !composition.textContent;
+        historyNote.textContent = pageState.busy ? tr('activity.refreshing', 'Refreshing history; retained values remain until the read finishes.')
+            : pageState.message || tr('activity.scope', 'Newest first · retained tasks, service starts and recorded failed checks. Process exit is not automatically an error.');
+        if (doc.activeElement === olderHistory && !pageState.next) refreshHistory.focus({ preventScroll: true });
+        // Keep the keyboard destination while a page loads; handlers ignore busy presses.
+        refreshHistory.setAttribute('aria-disabled', String(pageState.busy));
+        olderHistory.setAttribute('aria-disabled', String(pageState.busy || !pageState.next));
+        olderHistory.hidden = !pageState.next;
         placeSurface();
         const keys = new Set(rows.map((row) => row.key));
         for (const [key, view] of views) {
-            if (!keys.has(key)) { view.el.remove(); views.delete(key); expanded.delete(key); }
+            if (!keys.has(key)) {
+                if (view.el.contains(doc.activeElement)) refreshHistory.focus({ preventScroll: true });
+                view.el.remove(); views.delete(key); expanded.delete(key);
+            }
         }
         const children = [];
+        const firstVisible = [...list.children].find(node => node.getBoundingClientRect().bottom > surface.getBoundingClientRect().top);
+        const visibleOffset = firstVisible?.getBoundingClientRect().top;
+        const keepPosition = surface.scrollTop > 0 || Boolean(doc.activeElement?.closest?.('.rw-row'))
+            || Boolean(doc.getSelection?.()?.anchorNode && list.contains(doc.getSelection().anchorNode));
         rows.forEach((row, index) => {
             prefetchName(row);
             paintRow(row);
@@ -706,10 +801,9 @@ export function createRoomWork({
             children.push(el);
         });
         if (latestLabel && !children.includes(latestLabel)) latestLabel.remove();
-        // Nodes move only where the sequence differs, so a focused row is never detached.
-        children.forEach((node, index) => {
-            if (list.children[index] !== node) list.insertBefore(node, list.children[index] || null);
-        });
+        reconcileActivityOrder(list, children, doc);
+        if (keepPosition && firstVisible?.isConnected && Number.isFinite(visibleOffset))
+            surface.scrollTop += firstVisible.getBoundingClientRect().top - visibleOffset;
     }
 
     // The word goes whole or not at all (DESIGN "Shell"): shown, measured, dropped when the row would cut it, in one
@@ -730,7 +824,7 @@ export function createRoomWork({
 
     function paintTrigger() {
         const text = [clean(statusBadge.textContent), clean(statusBadge.dataset.step)].filter(Boolean).join(' · ');
-        const listed = rows.length > 0 || extras.children.length > 0;
+        const listed = true; // Idle rooms still have a retained-history reader.
         // Word, tone, mark and what waits for the owner come together from the chat's producer
         // (work_status.roomStatusView via setStatus); the control paints them and never ranks row tones or reads a
         // class name for a second opinion. Before the producer's first answer the room is not online yet: an unknown
@@ -792,6 +886,8 @@ export function createRoomWork({
         order = [];
         if (folding) { const fold = folding; folding = null; surface.inert = false; fold.cancel(); }
         surface.hidden = false;
+        projectInfo?.open();
+        activity.open();
         openHost?.setAttribute('data-rw-open', '');
         render();
         // A pointer open lands on the (ring-less) list; a keyboard open enters its first real control.
@@ -803,6 +899,8 @@ export function createRoomWork({
         menuIntent += 1;
         if (!open) return;
         open = false;
+        projectInfo?.close();
+        activity.close();
         closeTaskControlMenu();
         foldAway();
         openHost?.removeAttribute('data-rw-open');
@@ -986,11 +1084,14 @@ export function createRoomWork({
             }, 600);
         }
     }, true);
-    // A press that makes no click (a cancelled touch, a release outside the window) ends at the next key or
-    // press, so keyboard reading never waits on it.
-    const endPress = () => { pressing = false; };
+    // Let the release's click settle before moving its target; no-click releases also end the press.
+    const endPress = () => { clearTimeout(pressTimer); pressTimer = 0; const held = pressing; pressing = false; if (held) schedule(); };
+    listen(doc, 'pointerup', () => { clearTimeout(pressTimer); pressTimer = setTimeout(endPress, 0); }, true);
     listen(doc, 'click', endPress, true);
     listen(doc, 'pointercancel', endPress, true);
+    listen(doc, 'contextmenu', endPress, true);
+    listen(doc, 'auxclick', endPress, true);
+    listen(doc.defaultView, 'blur', endPress);
     listen(doc, 'keydown', endPress, true);
     listen(doc, 'focusin', (event) => {
         if (!event.target?.closest?.('.task-control-menu')) lastInside = surface.contains(event.target) || trigger.contains(event.target);
@@ -1031,10 +1132,11 @@ export function createRoomWork({
     });
     listen(surface, 'keydown', (event) => {
         if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+        if (event.target?.closest?.('.rac-entry')) return;
         const stops = [...surface.querySelectorAll('.rw-main[tabindex="0"]')];
         if (!stops.length) return;
         event.preventDefault();
-        const index = stops.indexOf(event.target?.closest?.('.rw-main'));
+        const index = stops.indexOf(event.target?.closest?.('.rw-row')?.querySelector('.rw-main'));
         const step = event.key === 'ArrowDown' ? 1 : -1;
         const next = stops[index < 0 ? (step > 0 ? 0 : stops.length - 1) : Math.max(0, Math.min(stops.length - 1, index + step))];
         next?.focus?.({ preventScroll: true });
@@ -1042,7 +1144,7 @@ export function createRoomWork({
     });
     // The Project panel's own close dismisses a list that lives outside the room's page.
     listen(doc, 'click', (event) => {
-        if (open && event.target?.closest?.('#project-panel-close')) close({ restoreFocus: false });
+        if (open && event.target?.closest?.('#project-panel-close, [data-pane-close]')) close({ restoreFocus: false });
     }, true);
 
     // A room hidden without being destroyed (a Project kept for its pending files) takes its control along.
@@ -1051,6 +1153,7 @@ export function createRoomWork({
         const away = Boolean(page.hidden) || !page.isConnected;
         if (away) { navigationIntent += 1; close({ restoreFocus: false }); showBack(null); }
         trigger.hidden = away;
+        if (away) visibility?.hide(); else schedule();
         if (!away) fitWord();
     }) : null;
     watcher?.observe(page, { attributes: true, attributeFilter: ['hidden'] });
@@ -1076,6 +1179,7 @@ export function createRoomWork({
     render();
     return {
         update: schedule,
+        explanation: visibility?.element,
         extras,
         close: () => close({ restoreFocus: false }),
         // The room leaves the screen: the list closes and the saved passage no longer applies.
@@ -1092,12 +1196,16 @@ export function createRoomWork({
             if (destroyed) return;
             if (open) closeTaskControlMenu();
             destroyed = true;
+            projectInfo?.destroy();
+            activity.destroy();
+            visibility?.destroy();
             menuIntent += 1;
             navigationIntent += 1;
             if (scheduled > 0) globalThis.cancelAnimationFrame?.(scheduled);
             clearTimeout(backTimer);
             clearTimeout(focusTimer);
             clearTimeout(outsideClickTimer);
+            clearTimeout(pressTimer);
             if (outsideClick) doc.removeEventListener('click', outsideClick, true);
             watcher?.disconnect();
             sizer?.disconnect();

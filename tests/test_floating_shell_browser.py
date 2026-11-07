@@ -159,7 +159,7 @@ def test_hidden_main_does_not_take_visible_projects_notice(shell_ui):
     assert page.locator("#page-chat .toast").count() == 0
     page.click("#project-panel .toast-dismiss")
     page.wait_for_selector("#project-panel .toast", state="detached")
-    page.click("#project-panel-close")
+    page.click(f'[data-pane-project="{PROJECT["id"]}"] [data-pane-close]')
     page.wait_for_function("!document.body.classList.contains('project-panel-open')")
     assert page.locator(".toast-stack--room .toast").count() == 0
 
@@ -304,10 +304,10 @@ def test_floating_headers_gap_notice_and_immediate_selection(shell_ui, tmp_path,
         assert page.locator(".toast-stack--room .toast").count() == 0, "room switch does not repeat the notice"
         page.wait_for_function("""() => [...document.getAnimations()].every(a =>
             a.effect?.getTiming().iterations === Infinity || a.playState !== 'running')""")
-        geometry = page.locator("#project-panel").evaluate("""panel => {
+        geometry = page.locator(f'[data-pane-project="{project["id"]}"]').evaluate("""panel => {
             const rect = s => panel.querySelector(s).getBoundingClientRect();
             return {capsule: rect('.app-page-title-row'), caret: rect('.rw-caret'),
-                mark: rect('.status-mark'), trigger: rect('.rw-trigger'), close: rect('#project-panel-close')};
+                mark: rect('.status-mark'), trigger: rect('.rw-trigger'), close: rect('[data-pane-close]')};
         }""")
         assert geometry["capsule"]["right"] - geometry["caret"]["right"] >= 10
         assert geometry["caret"]["left"] - geometry["mark"]["right"] >= 4

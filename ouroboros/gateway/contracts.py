@@ -20,6 +20,9 @@ from ouroboros.gateway.claudexor_contracts import (  # noqa: F401 -- public re-e
     ClaudexorStatusResponse,
 )
 from ouroboros.gateway.work_contracts import WorkStateFields
+from ouroboros.gateway.activity_contracts import (  # noqa: F401 -- public re-exports
+    ActivityAssessment, ActivityEntry, ActivityTask, ActivityCoverage, ActivityPageResponse,
+)
 from ouroboros.gateway.history_contracts import ChatHistoryResponse, PresenceContact  # noqa: F401 -- public re-exports
 from ouroboros.gateway.health_contracts import BootDocument, BootJob, BootStep, HealthResponse  # noqa: F401 -- public re-exports
 from ouroboros.gateway.attachment_contracts import (  # noqa: F401 -- public re-exports
@@ -1561,6 +1564,7 @@ __all__ = [
     "ClaudexorCredentialProfileDeleteResponse",
     "TaskEvent", "TaskEventCursor",
     "TaskEventsRequest", "TaskReviewHistoryResponse",
+    "ActivityAssessment", "ActivityEntry", "ActivityTask", "ActivityCoverage", "ActivityPageResponse",
     "TaskCancelResponse", "TaskCancelRequest",
     "TaskPauseRequest", "TaskPauseResponse",
     "TaskContinueRequest", "TaskContinueResponse", "ContinuationOffer",

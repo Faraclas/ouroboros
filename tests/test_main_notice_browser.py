@@ -110,7 +110,7 @@ def _open_drawer(page):
     """At phone width the sidebar is a drawer behind the page header toggle."""
     if not _mobile(page):
         return
-    close = page.locator("#project-panel-close")
+    close = page.locator('.viper-room-pane.viper-pane-focused:not([hidden]):not([data-leaving]) [data-pane-close]')
     if close.is_visible():
         close.click()
     toggle = page.locator(".page.active [data-mobile-nav-toggle]")

@@ -390,7 +390,7 @@ def test_the_interface_and_the_core_keep_their_own_lifetimes(stack, browser_name
             room_history = session.api("GET", f"/api/chat/history?chat_id={project['chat_id']}", None)["json"]
             assert any(m.get("client_message_id") == room_id for m in room_history["messages"]), room_history
             session.shot("1-project-room")
-            page.locator("#project-panel-close").click()
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             page.locator("#project-panel.open").wait_for(state="detached", timeout=10_000)
 
             # Main chat: the owner message and the task the core started for it are one correlation.

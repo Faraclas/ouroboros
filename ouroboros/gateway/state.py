@@ -540,7 +540,7 @@ def _raw_work_facts(row: dict) -> dict:
     continuation = metadata.get("continuation") if isinstance(metadata.get("continuation"), dict) else {}
     facts = {key: row[key] for key in ("_budget_pause_hold", "_budget_pause", "title", "suggested_name", "focus",
                                         "root_task_id", "parent_task_id", "original_task_id", "budget_drive_root", "owner_wait",
-                                        "service_observations")
+                                        "service_observations", "dispatch_wait")
              if row.get(key)}
     edges = {key: continuation[key] for key in ("predecessor_task_id", "work_id", "work_name") if continuation.get(key)}
     return {**facts, **({"continuation": edges} if edges else {})}
@@ -606,11 +606,12 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
     from ouroboros.store_hot_facts import snapshot
     from supervisor import queue as queue_mod
     from supervisor.owner_pause_control import warm_paused_member
+    from supervisor.worker_assignment import pending_assignment_view
 
     direct_rows = direct_turns if direct_turns is not None else _direct_turns_snapshot_safe(availability=availability)
     try:
         with queue_mod._queue_lock:
-            pending_rows = [dict(task) for task in queue_mod.PENDING]
+            pending_rows = [pending_assignment_view(task) for task in queue_mod.PENDING]
             fence_rows = {str(key): dict(value) for key, value in queue_mod.BUDGET_ROOT_FENCES.items()
                           if isinstance(value, dict)}
             running_rows = [

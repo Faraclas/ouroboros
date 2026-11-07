@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "status": "stale",
+  "source": "github.copilot_internal.user",
+  "observed_at": "2030-01-02T03:00:00Z",
+  "last_attempt_at": "2030-01-02T03:05:00Z",
+  "next_refresh_after": "2030-01-02T03:06:00Z",
+  "error": {
+    "code": "timeout",
+    "message": "The usage read timed out.",
+    "http_status": null,
+    "retry_after_s": null
+  },
+  "account": {
+    "login": "sample-user",
+    "plan": "business"
+  },
+  "premium": {
+    "used_percentage": 75.8,
+    "percent_remaining": 24.2,
+    "entitlement": 10000,
+    "quota_remaining": 2500.5,
+    "credits_used": 3100,
+    "unlimited": false,
+    "overage_permitted": true,
+    "token_based_billing": true
+  },
+  "reset_at": "2030-02-01T00:00:00Z",
+  "nominal_usd": {
+    "basis": "1 credit = $0.01 consumption value; not an invoice",
+    "entitlement": 100.0,
+    "quota_remaining": 25.005
+  }
+}

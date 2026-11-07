@@ -37,6 +37,9 @@ def _pool():
 
 log = logging.getLogger(__name__)
 
+# Actual chooser observations, owned under Q; never fields on an admission row.
+_ASSIGNMENT_WAITS: Dict[str, Any] = {}
+
 
 def _direct_actor_still_registered(task_id: str) -> bool:
     """Whether the in-process direct actor that paused ``task_id`` still holds its
@@ -234,6 +237,7 @@ def _mirror_assigned_running_status(task: Dict[str, Any]) -> None:
 def _settled_running_task(task: Dict[str, Any], resume: Dict[str, Any]) -> Dict[str, Any]:
     """#939: choose the clock carry on a copy, before the physical handoff."""
     running = dict(task)
+    running.pop("dispatch_wait", None)  # dated chooser observations belong only to PENDING
     settle_execution_carry(running, origin_preserved=bool(resume.get("started_at")))
     return running
 
@@ -399,6 +403,7 @@ def _claim_worker_launch(queue, candidate, worker, *, deferred: Optional[set] = 
         return False  # a stopping generation starts nothing more
     token = uuid.uuid4().hex
     candidate[_LAUNCH_CLAIM] = {"token": token, "wid": worker.wid}
+    _ASSIGNMENT_WAITS.pop(str(candidate.get("id") or ""), None)
     worker.busy_task_id = str(candidate.get("id") or "")
     if not generation.submit(functools.partial(_launch_job, queue, candidate, worker, token, generation),
                              workspace_preparation.ADMISSION_LANE):
@@ -458,6 +463,7 @@ def _release_launch(queue, candidate, worker, token: str) -> None:
         if (candidate.get(_LAUNCH_CLAIM) or {}).get("token") != token:
             return
         candidate.pop(_LAUNCH_CLAIM, None)
+        _ASSIGNMENT_WAITS.pop(str(candidate.get("id") or ""), None)
         if worker.busy_task_id == str(candidate.get("id") or "") and not getattr(worker, "reaping", False):
             worker.busy_task_id = None
 
@@ -642,8 +648,8 @@ def _foreign_roots_refused(candidate) -> bool:
     return True
 
 
-def _candidate_ineligible(queue, candidate, remaining, running, *, selected=(), refused=(), cold_holders=None,
-                          leased=None, unresolved_invalid_id_set=(), own_claim: str = "") -> bool:
+def _candidate_blocker(queue, candidate, remaining, running, *, selected=(), refused=(), cold_holders=None,
+                       leased=None, unresolved_invalid_id_set=(), own_claim: str = "") -> str:
     """The chooser's gates over one queued row; also the launch's revalidation under Q (``own_claim``:
     the revalidating launch's own token, the one claim that does not exclude the row). Side-effect
     free except that a foreign-root refusal is named once, by a job on the admission lane."""
@@ -660,52 +666,77 @@ def _candidate_ineligible(queue, candidate, remaining, running, *, selected=(), 
     claim = candidate.get(_LAUNCH_CLAIM) or {}
     if (task_id in set(refused) | set(selected) or candidate.get("_owner_hold")
             or candidate.get("_project_admission_restore_hold") or claim and claim.get("token") != own_claim):
-        return True
+        return "dispatch_pending"
     if _foreign_roots_refused(candidate):
-        return True
+        return "foreign_writer"
     if not autonomous_work_enabled(candidate, _pool().DRIVE_ROOT):
-        return True
+        return "autonomy_disabled"
     if remaining <= 0 and not candidate.get("_owner_wait_resume"):
-        return True
+        return "budget_dispatch"
     if _pool()._invalid_depth_deferred(candidate, set(unresolved_invalid_id_set)):
-        return True
+        return "depth_unconfirmed"
     if not _pool().repo_writer_task_allowed(candidate):
-        return True
+        return "body_writer"
     if (isinstance(candidate.get("_budget_pause"), dict) or budget_hold_fact(candidate) is not None
             or continuation_refusal(candidate)):
         # Durable #1196 hold: sibling unselected after root release, unrestorable
         # continuation or failed grant revocation. Selection must be recorded before assignment.
-        return True
+        return "continuation_held"
     if _direct_actor_still_registered(task_id):
         # The direct actor that parked this id has not released its registry entry yet:
         # no second live actor for one id.
-        return True
+        return "actor_releasing"
     if root_cancellation_fenced(candidate, root_task_id or task_id):
-        return True
+        return "cancellation_pending"
     if budget_resume_dispatch_allowed(queue, candidate) is not True:
-        return True  # unknown holds; a stale selection is the chooser's to repair
+        return "resume_unconfirmed"  # unknown holds; a stale selection is the chooser's to repair
     if (root_task_id in queue.BUDGET_ROOT_FENCES
             and not candidate.get("_owner_wait_resume")
             and not candidate.get("_budget_pause_resume")
             # One member explicitly selected against THIS fence is admitted; the latch stays up for the rest (Q9).
             and not budget_fence_selected(candidate, queue.BUDGET_ROOT_FENCES.get(root_task_id))):
-        return True
+        return "tree_selection"
     if str(candidate.get("type") or "") == "evolution" and remaining < EVOLUTION_BUDGET_RESERVE:
-        return True
+        return "evolution_budget"
     if not refresh_pending_placement(_pool().DRIVE_ROOT, candidate):
-        return True
+        return "project_admission"
     cold = cold_holders if cold_holders is not None else cold_project_holders(_pool().PENDING)
     if not candidate_is_leasable(candidate, leased if leased is not None else running_project_ids(running),
                                  cold_holders=cold):
-        return True
+        return "project_busy"
     if str(candidate.get("delegation_role") or "") == "subagent":
         if (_pool()._running_subagent_count(root_task_id, running) >= get_max_active_subagents_per_root()
                 and not _pool()._assignment_depth_reservation_admits(candidate, running)):
-            return True
-    return False
+            return "subagent_capacity"
+    return ""
 
 
-def _choose_candidate(queue, remaining, unresolved_invalid_id_set, refused_this_pass, running, selected):
+def _candidate_ineligible(*args, **kwargs) -> bool:
+    """Compatibility predicate; only the real chooser publishes a wait observation."""
+    return bool(_candidate_blocker(*args, **kwargs))
+
+
+def _record_assignment_wait(candidate, code: str, *, ids=()) -> None:
+    """Last actual dispatch check, never a forecast or authority to launch."""
+    _ASSIGNMENT_WAITS[str(candidate.get("id") or "")] = (candidate, {
+        "code": code, "observed_at": _pool().utc_now_iso(),
+        "task_attempt": int(candidate.get("_attempt") or 1),
+        **({"ids": list(ids)} if ids else {})})
+
+
+def pending_assignment_view(candidate) -> Dict[str, Any]:
+    """Q-held snapshot copy: attach only this queued object/attempt's observation."""
+    shown = dict(candidate)
+    shown.pop("dispatch_wait", None)
+    observed = _ASSIGNMENT_WAITS.get(str(candidate.get("id") or ""))
+    if (observed and observed[0] is candidate
+            and observed[1]["task_attempt"] == int(candidate.get("_attempt") or 1)):
+        shown["dispatch_wait"] = dict(observed[1])
+    return shown
+
+
+def _choose_candidate(queue, remaining, unresolved_invalid_id_set, refused_this_pass, running, selected,
+                      *, observe_wait=True):
     """One side-effecting chooser, including stale grant repair with no idle worker.
 
     `running` is either current custody or a local projection for a bounded batch.
@@ -724,6 +755,8 @@ def _choose_candidate(queue, remaining, unresolved_invalid_id_set, refused_this_
             from supervisor.events_budget import budget_resume_dispatch_allowed
 
             if _unsent(candidate) is None and agent_restart_holds(candidate):
+                if observe_wait:
+                    _record_assignment_wait(candidate, "restart_pending")
                 continue
 
             resume_allowed = budget_resume_dispatch_allowed(queue, candidate)
@@ -754,9 +787,14 @@ def _choose_candidate(queue, remaining, unresolved_invalid_id_set, refused_this_
                             result_root=pathlib.Path(candidate.get("budget_drive_root") or _pool().DRIVE_ROOT))
                 queue.persist_queue_snapshot(reason="stale_child_resume_held")
                 continue
-            if _candidate_ineligible(queue, candidate, remaining, running, selected=selected,
-                                     refused=refused_this_pass, cold_holders=cold_holders, leased=leased,
-                                     unresolved_invalid_id_set=unresolved_invalid_id_set):
+            blocker = _candidate_blocker(queue, candidate, remaining, running, selected=selected,
+                                        refused=refused_this_pass, cold_holders=cold_holders, leased=leased,
+                                        unresolved_invalid_id_set=unresolved_invalid_id_set)
+            if observe_wait:
+                from ouroboros.project_lease import blocking_project_tasks
+                ids = blocking_project_tasks(candidate, running, cold_holders) if blocker == "project_busy" else ()
+                _record_assignment_wait(candidate, blocker or "dispatch_ready", ids=ids)
+            if blocker:
                 continue
             chosen_idx = i
             break
@@ -809,6 +847,7 @@ def assign_tasks() -> None:
         _WORKER_LIFECYCLE_LOCK.release()
     _tick_parked_work(queue)  # custody observation may wait on a remote operation
     with _queue_lock:
+        _ASSIGNMENT_WAITS.clear()  # a pass with no check reports no cause
         st = _pool().load_state()
         # Custody wins; quarantine malformed depth before budget/lease filters. This queue
         # hygiene runs under a fenced pool too: only assignment and growth wait for Restart.
@@ -989,7 +1028,8 @@ def assign_tasks() -> None:
         running, selected = _started_projection(), set()
         for _ in range(max(1, _pool().MAX_WORKERS)):
             idx, blocked = _choose_candidate(queue, remaining, unresolved_invalid_id_set,
-                                             refused_this_pass - deferred_this_pass, running, selected)
+                                             refused_this_pass - deferred_this_pass, running, selected,
+                                             observe_wait=not selected)
             if blocked:
                 return None
             if idx is None:

@@ -1,3 +1,4 @@
+import { copilotDetailsHtml, bindCopilotCosts } from './copilot_usage.js';
 import { formatUsd2 } from './utils.js';
 import { apiFetch } from './api_client.js';
 
@@ -102,9 +103,13 @@ export function initCosts({ state, mount }) {
     page.className = 'settings-embedded-content settings-costs-panel';
     page.innerHTML = `
         <div class="costs-scroll">
+            ${copilotDetailsHtml()}
+            <h3 class="copilot-app-accounting">Viper call accounting</h3>
+            <details class="copilot-app-budget"><summary>App safety budget</summary>
+            <p class="copilot-app-budget-note">These application dispatch limits are separate from Copilot account credits.</p>
             <div class="costs-budget-card">
                 <div class="costs-budget-head">
-                    <h3 class="costs-budget-title">Budget</h3>
+                    <h3 class="costs-budget-title">Application limits</h3>
                     <button class="btn btn-default btn-sm costs-budget-refresh" id="btn-refresh-costs">Refresh</button>
                 </div>
                 <div class="costs-budget-fields">
@@ -121,6 +126,7 @@ export function initCosts({ state, mount }) {
                 <button class="btn btn-save costs-budget-save" id="btn-save-budget">Save Budget</button>
                 <div id="budget-save-status" class="settings-inline-status"></div>
             </div>
+            </details>
             <div class="costs-stats-grid">
                 <div class="stat-card"><div class="label">Known spend / Limit</div><div class="value" id="cost-known-limit">Loading…</div></div>
                 <div class="stat-card"><div class="label">Confirmed</div><div class="value" id="cost-confirmed">—</div></div>
@@ -153,6 +159,7 @@ export function initCosts({ state, mount }) {
         </div>
     `;
     mount.appendChild(page);
+    bindCopilotCosts(page, { state });
 
     function renderBreakdownTable(tableId, data, totalCost, emptyLabel = 'No data') {
         const tbody = document.querySelector('#' + tableId + ' tbody');

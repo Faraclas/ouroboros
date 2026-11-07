@@ -428,7 +428,7 @@ def test_ui_results_and_required_question_journey(wait_clone, tmp_path, monkeypa
                         page.screenshot(animations="disabled", path=str(screenshots / f"{live_engine}-project-question.png"), full_page=True)
                         # One touch in Main answers it: the Main copy shows the recorded answer, then
                         # leaves; the Project card keeps the record (replayed below, in a fresh browser).
-                        page.locator('#project-panel-close').click()
+                        page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
                         # Qualify ACK-before-census here; the inverse ordering is the unselected
                         # #1993 qualification. Gate only transport, keeping every real response body.
                         page.evaluate("""tid => { window.__answerShown = false; window.__answerPaint = [];

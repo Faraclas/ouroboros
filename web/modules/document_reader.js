@@ -9,14 +9,14 @@
  *
  * The body is streamed to that byte bound; a read or an image load stops after
  * the read timeout, and a transport failure offers Retry. Every close path
- * (`close`, `chat_media.release`, `closeTransient`, `destroy`) aborts the
- * in-flight read or load and disposes Markdown enhancements, so a late answer
- * or image event paints nothing.
+ * (`close`, supersession, `destroy`) aborts the in-flight read or load and
+ * disposes Markdown enhancements, so a late answer or image event paints
+ * nothing. Message eviction and room changes retain the captured document.
  */
 
+import { bindReaderCollaboration } from './reader_collaboration.js';
 import { apiFetch } from './api_client.js';
 import { fmtInto } from './i18n.js';
-import { bindDialogFocus } from './ui_interactions.js';
 import { destroyChatMarkdown, enhanceChatMarkdown, mountChatMarkdown } from './chat_markdown.js';
 
 // A long report is far below this. Decoding and rendering it run on the main
@@ -316,14 +316,15 @@ const DIALOG_HTML = `
 
 /**
  * One reader per chat instance. `open(file, {owner, returnFocus, pointer})`
- * shows a modal over the conversation with the reading region focused, so keys
- * scroll it at once; opened by a pointer, its focus ring waits for the first key.
+ * shows a modeless reader with its reading region focused, so keys scroll it
+ * at once; opened by a pointer, its focus ring waits for the first key.
  * A document `file` carries its message's copy as `reader`; an `image` one, the
  * `src` its tile shows (and `title` when its header names more than the file).
- * `release(root)` closes it when the message that opened it leaves; `destroy()`
- * with the chat. Closing aborts the read, disposes Markdown enhancements and
- * returns focus to the card when it is still there, without scrolling, so the
- * conversation keeps its place. `actions.open/download` are the card's existing
+ * `release(root)` detaches an evicted opener but retains the captured file;
+ * `destroy()` closes with the chat. Escape dismisses an open selection menu
+ * first, otherwise closes the reader. Tab stays modeless. Closing aborts the
+ * read and returns focus only when the reader still owns it and the opener is
+ * still visible, without scrolling. `actions.open/download` are the card's existing
  * file actions, and `actions.copy` the photo menu's, offered for an image.
  */
 export function createDocumentReader({ actions = {}, formatSize = (bytes) => `${bytes} B`, doc = globalThis.document } = {}) {
@@ -445,17 +446,22 @@ export function createDocumentReader({ actions = {}, formatSize = (bytes) => `${
     function close({ restoreFocus = true } = {}) {
         const current = session;
         if (!current) return;
+        const ownedFocus = current.dialog.contains(doc.activeElement) || doc.activeElement === doc.body;
         session = null;
         current.controller?.abort();
         destroyChatMarkdown(current.body);
         for (const dispose of current.disposers) {
             try { dispose(); } catch {}
         }
-        // Closed before focus returns: the card behind a modal dialog is inert.
         if (typeof current.dialog.close === 'function' && current.dialog.open) current.dialog.close();
         else current.dialog.removeAttribute('open');
-        current.disposeFocus?.({ restoreFocus });
         current.dialog.remove();
+        const opener = current.returnFocus;
+        if (restoreFocus && ownedFocus && opener?.isConnected && !opener.disabled
+            && !opener.closest('[hidden], [inert]') && opener.getClientRects().length) {
+            opener.focus({ preventScroll: true });
+        }
+        queueMicrotask(() => doc.defaultView.dispatchEvent(new CustomEvent('viper:reader-closed')));
     }
 
     function open(file, { owner = null, returnFocus = doc.activeElement, pointer = false } = {}) {
@@ -463,7 +469,7 @@ export function createDocumentReader({ actions = {}, formatSize = (bytes) => `${
         close({ restoreFocus: false });
         const dialog = doc.createElement('dialog');
         dialog.className = 'document-reader';
-        dialog.setAttribute('aria-modal', 'true');
+        dialog.setAttribute('aria-modal', 'false');
         dialog.innerHTML = DIALOG_HTML;
         const title = dialog.querySelector('.document-reader-title');
         readerCount += 1;
@@ -476,7 +482,7 @@ export function createDocumentReader({ actions = {}, formatSize = (bytes) => `${
         dialog.querySelector('[data-reader-action="download"]').hidden = !actions.download;
         const current = {
             dialog, file, owner, kind: file.kind, view: 'formatted', text: '', image: null, loaded: false, controller: null,
-            disposers: [], body: dialog.querySelector('.document-reader-body'), disposeFocus: null,
+            disposers: [], body: dialog.querySelector('.document-reader-body'), returnFocus,
         };
         if (file.kind === 'image') {
             dialog.querySelectorAll('[data-reader-view]').forEach((button, index) => {
@@ -492,7 +498,7 @@ export function createDocumentReader({ actions = {}, formatSize = (bytes) => `${
         listen(dialog, 'click', (event) => {
             if (session !== current) return;
             // The panel fills the dialog box, so the dialog itself is only hit through its backdrop.
-            if (event.target === dialog) { close(); return; }
+            if (event.target === dialog) return;
             const action = event.target.closest?.('[data-reader-action]')?.dataset.readerAction;
             const view = event.target.closest?.('[data-reader-view]')?.dataset.readerView;
             if (action === 'close') close();
@@ -507,18 +513,25 @@ export function createDocumentReader({ actions = {}, formatSize = (bytes) => `${
                 showContent(current);
             }
         });
-        listen(dialog, 'cancel', (event) => { event.preventDefault(); close(); });
+        listen(dialog, 'cancel', event => { event.preventDefault(); close(); });
         current.body.classList.toggle('is-quiet-focus', pointer);
         listen(dialog, 'keydown', () => current.body.classList.remove('is-quiet-focus'));
         listen(dialog, 'close', () => { if (session === current) close({ restoreFocus: false }); });
         doc.body.appendChild(dialog);
         session = current;
-        // The engine refocuses what was focused at showModal when the dialog closes; WebKit does
-        // not focus a pressed button, so the opener takes focus first, in place.
+        // WebKit does not focus a pressed button; preserve its explicit opener in place.
         if (returnFocus && returnFocus !== doc.activeElement) returnFocus.focus?.({ preventScroll: true });
-        if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open', '');
-        current.disposeFocus = bindDialogFocus(dialog, {
-            initialFocus: current.body, returnFocus, onEscape: () => close(), preventScroll: true,
+        if (typeof dialog.show === 'function') dialog.show(); else dialog.setAttribute('open', '');
+        current.body.focus({ preventScroll: true });
+        current.disposers.push(bindReaderCollaboration(dialog, {
+            send: actions.sendToChat ? text => actions.sendToChat(text) : undefined, doc,
+        }));
+        // Registered after collaboration: its open menu owns the first Escape.
+        listen(dialog, 'keydown', event => {
+            if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+            event.preventDefault();
+            event.stopPropagation();
+            close();
         });
         void load(current);
         return true;
@@ -526,7 +539,7 @@ export function createDocumentReader({ actions = {}, formatSize = (bytes) => `${
 
     function release(root) {
         const owner = session?.owner;
-        if (owner && (owner === root || root?.contains?.(owner))) close({ restoreFocus: false });
+        if (owner && (owner === root || root?.contains?.(owner))) session.owner = null; // retained reader owns its captured file
     }
 
     function destroy() {

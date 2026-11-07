@@ -14,7 +14,7 @@ const question = (id, state = 'open') => ({ task_id: 'task-1', quiz_id: id, proj
     project_chat_id: 12, project_name: 'Build', quiz_state: state, question: 'Choose?', options: ['Yes', 'No'],
     materials: [{ task_id: 'task-1', name: 'brief.txt', label: 'brief.txt', sha256: 'a'.repeat(64) }] });
 
-test('replacing an unknown mirror releases its material listeners and reader while retaining fresh materials and drafts', async t => {
+test('replacing an unknown mirror releases material listeners while retaining captured reading and drafts', async t => {
     const fx = mediaFixture();
     const changes = {
         focus() { document.activeElement = this; },
@@ -62,7 +62,7 @@ test('replacing an unknown mirror releases its material listeners and reader whi
     decision.syncCurrentQuestions([question('recover'), rows[1]], true);
     assert.deepEqual(released, [old]);
     assert.equal(markdownDisposed.length, 1);
-    assert.equal(reader.attributes.has('open'), false, 'the released material cannot keep its reader open');
+    assert.equal(reader.attributes.has('open'), true, 'the captured document is independent of the replaced mirror');
     assert.equal(oldFile.listeners.get('click').size, 0, 'the detached material has no live listener');
     assert.ok([...oldFile.listeners.values()].every(listeners => listeners.size === 0));
     assert.equal(document.activeElement, draft);
@@ -72,12 +72,13 @@ test('replacing an unknown mirror releases its material listeners and reader whi
     assert.notEqual(fresh, old);
     assert.ok(fresh.querySelector('.chat-quiz-comment'));
     await oldFile.click(); await turn();
-    assert.equal(reader.attributes.has('open'), false);
+    assert.equal(reader.attributes.has('open'), true, 'the removed card cannot replace or close the captured reader');
     await fresh.querySelector('.chat-file-card').click(); await turn();
     const freshReader = document.body.querySelector('.document-reader');
     assert.ok(freshReader?.attributes.has('open'), 'the replacement owns usable fresh listeners');
+    assert.equal(reader.attributes.has('open'), false, 'opening fresh material supersedes the captured old reader');
     fx.controller.release(fresh);
-    assert.equal(freshReader.attributes.has('open'), false);
+    assert.equal(freshReader.attributes.has('open'), true, 'the replacement reader also retains its exact file');
     decision.appendQuestionPointer(question('focused', 'unknown'));
     const focusedOld = column.children[2];
     focusedOld.querySelector('.chat-file-card').focus();

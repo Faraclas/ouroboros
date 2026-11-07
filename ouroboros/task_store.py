@@ -378,6 +378,39 @@ def project_result_counts(root: Any, project_id: str) -> Tuple[int, int]:
     return int(roots), int(results) - int(roots)
 
 
+def root_ids_page(root: Any, limit: int, *, before=None) -> list:
+    """Bounded root-index window, including NULL dates, for exact-room activity filtering.
+
+    Project scope is not room membership (conversion and hidden headless roots
+    differ). The room reader applies the canonical resolver to this candidate window.
+    """
+    # Separate NULL and dated windows. An OR between them makes SQLite walk
+    # every newer root before LIMIT; tuple comparison seeks the existing index.
+    found = []
+    limit = int(limit)
+    columns = ("task_id", "ts", "presence_authority_recorded")
+    with open_store(root, write=False) as txn:
+        if before is None or before[0] is not None:
+            where, params = ROOT_RESULT_WHERE + " AND ts IS NOT NULL", []
+            if before is not None:
+                where += " AND (ts, task_id) < (?, ?)"
+                params.extend(before)
+            dated = capture(txn.conn, "SELECT task_id, ts, presence_authority_recorded FROM tasks "
+                            f"INDEXED BY tasks_root_ts WHERE {where} {_NEWEST_ORDER} LIMIT ?",
+                            (*params, limit), columns)
+            found.extend(dated.rows(key=_newest("ts"), reverse=True))
+        if len(found) < limit:
+            where, params = ROOT_RESULT_WHERE + " AND ts IS NULL", []
+            if before is not None and before[0] is None:
+                where += " AND task_id < ?"
+                params.append(before[1])
+            undated = capture(txn.conn, "SELECT task_id, ts, presence_authority_recorded FROM tasks "
+                              f"INDEXED BY tasks_root_ts WHERE {where} {_NEWEST_ORDER} LIMIT ?",
+                              (*params, limit - len(found)), columns)
+            found.extend(undated.rows(key=_newest("ts"), reverse=True))
+    return found
+
+
 def documents_by_ids(root: Any, task_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
     ids = [str(task_id) for task_id in task_ids]
     if not ids:

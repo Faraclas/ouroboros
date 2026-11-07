@@ -15,6 +15,13 @@ Shared values and control recipes live in `web/ui.css`, loaded before page
 styles by both the SPA and the served onboarding document. Page styles own
 composition, not a second shared palette. This file names roles, not an inventory.
 
+This fork's default chat shell carries Elias's approved jade/violet/olive-earth
+palette and retained sidebar artwork (owner decisions 2–6 November 2026), now
+canonical `web/` rather than a production interface-directory fork. The named
+hues and seed below describe the shared base; `viper-palette.css` maps those same
+roles to the chosen shell colours. Panic and actual failures retain danger red;
+setup/login and independently authored widgets keep their existing palettes.
+
 ## Design bible: "Airy dopamine"
 
 This distils the interface Ouroboros already has into rules, so every agent extends
@@ -333,13 +340,16 @@ a grep in the light theme. The dark theme's crimson roles (the tones, the crimso
 focus border and ring) are values of its own seed rather than rungs of the ladder, so a new
 accent rewrites those few tokens there too.
 
-The app and first-run wizard consume the same palette source. A shared accent
-change updates its named roles and alpha ladder there; neither page shadows
-those roles with its own values. `tests/test_web_typography_static.py` checks
+The app and first-run wizard consume `ui.css`. A shared accent change updates
+its named roles and alpha ladder there. The owner-authorized canonical main
+client additionally loads `viper-palette.css`: its jade/violet/olive-earth
+roles deliberately preserve the remodeled SPA while setup and login keep the
+shared default palette. This is the explicit main-client exception, not a
+recipe for other pages to shadow shared roles. `tests/test_web_typography_static.py` checks
 the actual stylesheet links, nonempty shared roles and per-document variable
 resolution. The SM1 browser oracle also checks both rendered documents after
 restart, so a missing link or a page-local override cannot pass as consistency.
-A wizard-only layout token is fine; a second value for a shared role is not.
+A wizard-only layout token is fine; other page-local shared-role overrides are not.
 
 ### Focus
 
@@ -865,7 +875,7 @@ status sentence's or a composer chip's dot is its tone, §4).
   in the dark one), a voice, not a status; (4) a few data categories that are not statuses (Logs and Storage
   categories, the fourth default chart series). What goes on by itself or what someone chose — queued, waiting,
   paused, pausing, stopped, unconfirmed, work in flight, a mode, a level, a setting
-  value — is never amber.
+  value — is never amber outside the explicitly owner-approved on-demand activity-list treatment below. Its wait words/trigger are a separate activity meaning, not owner-action marks or warnings; no other automatic-state paint is authorized by that exception.
 
 In a Project row the mark owns one reserved trailing column, so it sits at one x
 across rows whatever the name length and, with a fine pointer, while the ⋯ is
@@ -1235,10 +1245,13 @@ Markdown and plain-text chat files, Ouroboros's or the owner's, open with
 `Read` over the conversation (a full sheet on a phone). Photos (also `View`
 in their `•••`), owner pictures and delivered PNG, JPEG, GIF, WebP or AVIF
 files (`View`) open there too. Other files, SVG included, keep the Open /
-Download dialog; the reader keeps both, plus image Copy. Close, Escape or the
-backdrop return focus to the opener at the same place. Leaving that chat's
-screen (another page, a Project room over Main, a notification) closes the
-reader; composer files stay.
+Download dialog; the reader keeps both, plus image Copy. Readers are modeless:
+chatting, changing rooms and message eviction retain their captured document.
+Close or Escape closes a focused reader; Escape first dismisses an open text
+selection menu. Tab is not trapped. Closing restores a visible opener only
+while the reader still owns focus, without scrolling or stealing another
+composer's focus. Chat destruction closes reading; file-action dialogs still
+close on navigation or card eviction, and composer files stay.
 
 - Text uses inline bytes, a delivered artifact or current stored owner-upload
   bytes; uploads are not rehashed per read. Images use their tile's source.
@@ -1385,11 +1398,23 @@ first), `Stop earlier attempt` only what earlier attempts left running, and
 Pause, Resume, Hurry and Wrap up act on the current episode. A control its door
 would refuse is never offered, so a Continue waiting for its earlier attempt
 offers no Resume. While
-open, order and focus hold, and work that ends keeps its row and outcome, without
-controls, until close. Escape, an outside press or leaving closes it; `Back to
+open, keyed rows preserve focus and text selection as newer occurrences arrive.
+Work that ends retains its recorded outcome, without live controls. Escape, an
+outside press or leaving closes it; `Back to
 reading` returns to the passage left, reading its page again if it was let go, or
 to the present the reader was following. Navigation never changes the next message's
 recipient, opens another pane or manufactures activity.
+
+The on-demand list includes retained root-task activity, its own failed checks
+and exact-start service occurrences, newest recorded starts first, with explicit
+older/retry and coverage gaps (owner 5 November 17:57). Live observed work is
+green; queued, waiting and paused work amber. An unassessed failure colours its
+row red; an explicit source-bound assessment returns the row to normal ink with
+a red error label. A read, Continue, exit code or new investigation does not
+manufacture that assessment. A retained occurrence grants neither liveness nor
+controls, and assessment is not repair or review PASS. Mixed-room counts and
+recorded dispatch/sleep/release facts explain the separate work without
+timer-derived health or hang claims. CLIENT_CONTRACT §5 owns the read contract.
 
 ### List editors
 
@@ -2839,9 +2864,9 @@ own row. Files' location and actions return above the list, folder names fit and
 
 **A room's bar is the law of places** (owner 24.10): it holds what has a state and the emergency exit, and a
 command lives under the capsule of the state it changes; there is no ⋯ and no More. Main's bar holds its status,
-the consciousness chip, Restart, Panic and the budget; whenever the bar itself is narrow, on a phone or in a
-narrow window, Restart and the budget are the work list's last rows `Restart` and `Budget` — the same controls,
-placed by the bar's width. A Project's bar holds its name and status, the same chip and Panic
+the consciousness chip, Restart, Panic and Copilot account usage (owner 04.11); unavailable usage stays neutral,
+not an app-budget substitute. The usage pill opens Costs, where App safety budget retains its controls.
+A narrow bar moves Restart and usage into the work list, keeping their nodes and handlers. A Project's bar holds its name and status, the same chip and Panic
 (`web/modules/chat_header.js`); the chip leads the end group, so a status word never moves it. The chip is
 the brain and the next wake's time; `Evolving` while an evolution campaign runs, even with consciousness off;
 grey with `Off` while it is off. Awake it shows the moving dots,

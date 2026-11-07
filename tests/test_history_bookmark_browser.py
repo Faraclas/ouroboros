@@ -53,7 +53,7 @@ def test_a_deep_place_with_an_open_review_and_line_reopens_at_the_newest_message
             assert line.get_attribute('data-expanded') == '1' and len(line.inner_text()) > 150
             _bookmark_place(page, detail)
             _screenshot(page, tmp_path, f'reopen-deep-before-{browser_engine}')
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             before = page.evaluate('() => window.__historyReads.length')
             _click_project(page, project)
             _idle(page, feed)
@@ -327,7 +327,7 @@ def test_a_card_line_arrives_with_its_source_page_and_a_reopen_reads_only_the_ne
                 assert line.get_attribute('data-expanded') == '1'
             _bookmark_place(page, line, 1)
             _screenshot(page, tmp_path, f'source-page-{line_kind}-before-{browser_engine}')
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             before = page.evaluate('() => window.__historyReads.length')
             _click_project(page, project)
             _idle(page, feed)
@@ -386,7 +386,7 @@ def test_a_moved_newest_window_leaves_a_reader_in_history_in_place_and_reopen_la
             for kept in ('rebase-0', 'rebase-149', 'rebase-449'):
                 assert page.locator(f'{feed} [data-client-message-id="{kept}"]').count() == 1, kept
             _screenshot(page, tmp_path, f'composed-rebase-before-{browser_engine}')
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             before = page.evaluate('() => window.__historyReads.length')
             _click_project(page, project)
             _idle(page, feed)
@@ -465,7 +465,7 @@ def test_a_live_line_keeps_its_node_through_history_adoption_and_reopens_from_it
             }''', feed)
             assert anchor['lineKey'] == live_key and anchor['lineExpanded'] is True, anchor
             _screenshot(page, tmp_path, f'composed-{line_kind}-before-{browser_engine}')
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             # A reopen during the exit keeps the same room. Exercise cold replay after it leaves.
             page.locator(feed).wait_for(state='detached')
             _click_project(page, project)
@@ -548,7 +548,7 @@ def test_a_live_receipt_survives_equal_replay_and_a_reopened_one_takes_only_newe
             assert card.get_attribute('data-expanded') == '1'
             _bookmark_place(page, line, 1)
             _screenshot(page, tmp_path, f'receipt-bookmark-before-{browser_engine}')
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             page.locator(feed).wait_for(state='detached')  # cold replay, after the room's exit
             _click_project(page, project)
             _idle(page, feed)
@@ -673,7 +673,7 @@ def test_a_room_kept_for_a_staged_file_reopens_at_the_newest_message_and_follows
                 _step(page, feed, automatic=True)
             _bookmark_place(page, page.locator(f'{feed} [data-client-message-id="kept-room-650"]'), 80)
             _stage_file(page)
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             page.locator('.chat-instance-panel[data-pending-work="1"]').wait_for(state='attached')
             assert page.locator('.chat-instance-panel[data-pending-work="1"]').count() == 1
             before = page.evaluate('() => window.__historyReads.length')
@@ -716,11 +716,11 @@ def test_plain_reopen_voids_a_hidden_rooms_held_question_reveal(direct_server_wi
             ids = page.locator(f'{feed} [data-client-message-id]').evaluate_all('ns => ns.map(n => n.dataset.clientMessageId)')
             target = page.locator(f'{feed} [data-client-message-id="{ids[len(ids) // 2]}"]')
             _bookmark_place(page, target, 80)
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             page.evaluate('() => { window.__holdQuestion = true; }')
             page.evaluate(ask, project)
             page.wait_for_function('() => Boolean(window.__releaseQuestion)')
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             page.locator('.chat-instance-panel[data-pending-work="1"]').wait_for(state='attached')
             assert page.locator('.chat-instance-panel[data-pending-work="1"]').count() == 1
             _click_project(page, project)

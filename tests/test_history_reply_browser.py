@@ -195,7 +195,7 @@ def test_exact_cross_room_quote_and_return_preserve_drafts_unread_and_history(di
             _quote(page, source).click()
             facts["triage"] = _landed(page, source, feed)
             _evidence(page, tmp_path, f"triage-target-{browser_engine}", fixture, facts)
-            assert page.locator('#project-panel-title').inner_text() == "Triage source"
+            assert page.locator(f'[data-pane-project="{fixture["a"]["id"]}"] .app-page-title').inner_text() == "Triage source"
             assert not page.evaluate("() => window.__quoteAcks.some(x => x.project_seen_revision?.['quote-triage'])")
             reads = page.evaluate("() => window.__quoteReads")
             assert any(r["lookup"] and str(fixture["a"]["chat_id"]) in r["url"] for r in reads)
@@ -248,7 +248,7 @@ def test_exact_nested_line_and_post_quote_conversion(direct_server_with_data, br
             _quote(page, address).click()
             facts["converted"] = _landed(page, address, '#pchat-quote-converted-messages')
             _evidence(page, tmp_path, f"converted-target-{browser_engine}", fixture, facts)
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{fixture["x"]["id"]}"] [data-pane-close]').click()
             _idle(page, '#chat-messages')
             address = fixture["sources"]["line"]["address"]
             _quote(page, address).click()
@@ -276,7 +276,7 @@ def test_exact_nested_line_and_post_quote_conversion(direct_server_with_data, br
             assert abs(target.evaluate(timeline_top) - after) <= 2, facts["after_resize"]
             assert not facts["after_resize"]["focused"], 'late layout stole focus from the composer'
             _evidence(page, tmp_path, f"line-after-gesture-{browser_engine}", fixture, facts)
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{fixture["a"]["id"]}"] [data-pane-close]').click()
             _idle(page, '#chat-messages')
             # Ordinary reopening still reads the present; source navigation adds no global Back.
             page.locator('.nav-project-row[data-project-id="quote-triage"]').click()
@@ -357,4 +357,95 @@ def test_cancelled_failed_and_overlapping_quotes_keep_newer_intent(direct_server
             facts['retry'] = _landed(page, a, '#pchat-quote-triage-messages')
         finally:
             _evidence(page, tmp_path, f"races-{browser_engine}", fixture, facts)
+            browser.close()
+
+
+# New full-app consumers; board reads/document delivery are explicitly local fixtures.
+@pytest.mark.parametrize('browser_engine', ['chromium', 'webkit'])
+def test_work_item_source_in_already_active_project(direct_server_with_data, browser_engine, tmp_path):
+    from playwright.sync_api import sync_playwright
+    root = direct_server_with_data['data_dir']
+    fixture = seed_reply_history(root)
+    project = fixture['a']
+    address = fixture['sources']['a']['address']
+    item = {'id': 'source-item', 'project_id': project['id'], 'title': 'Exact saved source',
+            'description': '', 'outcome': '', 'disposition': 'idea', 'revision': 1,
+            'references': [{'kind': 'row', 'value': address}], 'prerequisites': [], 'archived': False}
+    with sync_playwright() as pw:
+        browser = getattr(pw, browser_engine).launch(headless=True)
+        page = browser.new_page(viewport={'width': 1280, 'height': 850})
+        page.add_init_script(f'({_OBSERVE_QUOTES})()')
+        def board(route):
+            assert route.request.method == 'GET'  # this flow captures/submits nothing
+            route.fulfill(json={'ok': True, 'item': item, 'items': [item], 'comments': [],
+                                'needed_by': [], 'total': 1, 'limit': 100, 'offset': 0, 'has_more': False, 'counts': {'idea': 1}})
+        page.route('**/api/extensions/project-boards/**', board)
+        try:
+            _open(page, direct_server_with_data['url'])
+            page.locator(f'.nav-project-row[data-project-id="{project["id"]}"]').click()
+            feed = '#pchat-quote-triage-messages'
+            _idle(page, feed)
+            page.locator('#pchat-quote-triage-input').fill('Keep the project draft')
+            remembered = page.locator(f'[data-pane-project="{project["id"]}"]').element_handle()
+            page.locator(f'.wi-room-entry[data-wi-room="{project["id"]}"]').click()
+            page.locator('.wi-row').filter(has_text=item['title']).click()
+            page.get_by_role('button', name='Open source row', exact=True).click()
+            page.locator('.work-items').wait_for(state='hidden')
+            facts = _landed(page, address, feed)
+            assert page.locator(f'[data-pane-project="{project["id"]}"]').evaluate('(n, old) => n === old', remembered)
+            assert page.locator('#pchat-quote-triage-input').input_value() == 'Keep the project draft'
+            assert not page.evaluate('window.__quoteSends.some(x => JSON.parse(x).type === "chat")')
+            _evidence(page, tmp_path, f'work-item-same-room-{browser_engine}', fixture, facts)
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('browser_engine', ['chromium', 'webkit'])
+def test_main_reader_transfer_restores_then_exposes_compact_main(direct_server_with_data, browser_engine, tmp_path):
+    import base64
+    from playwright.sync_api import sync_playwright
+    from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET
+    fixture = seed_reply_history(direct_server_with_data['data_dir'])
+    project = fixture['b']
+    text = 'Exact Main document passage'
+    with sync_playwright() as pw:
+        browser = getattr(pw, browser_engine).launch(headless=True)
+        page = browser.new_page(viewport={'width': 900, 'height': 900})
+        page.add_init_script(f'({_CAPTURE_TEST_SOCKET})()')
+        try:
+            _open(page, direct_server_with_data['url'])
+            page.locator('#chat-input').fill('Main draft')
+            _emit_ws_frame(page, {'type': 'document', 'role': 'assistant', 'chat_id': 1,
+                'filename': 'main-transfer.txt', 'mime': 'text/plain', 'ts': '2026-09-01T01:00:00Z',
+                'file_base64': base64.b64encode(text.encode()).decode(), 'size_bytes': len(text)})
+            page.locator('#chat-messages .chat-file-card').filter(has_text='main-transfer.txt').click()
+            reader = page.locator('dialog.document-reader[open]')
+            reader.locator('.document-reader-source').wait_for()
+            remembered = reader.element_handle()
+            page.locator(f'.nav-project-row[data-project-id="{project["id"]}"]').focus()
+            page.keyboard.press('Shift+F10')
+            page.get_by_role('menuitem', name='Open beside', exact=True).click()
+            project_input = page.locator('#pchat-quote-s1-input')
+            project_input.fill('Project B draft')
+            project_tab = page.get_by_role('tab', name=project['name'], exact=True)
+            project_tab.focus()
+            page.keyboard.press('Enter')
+            assert project_tab.get_attribute('aria-selected') == 'true'
+            assert not page.locator('#chat-input').is_visible()
+            page.locator('[data-nav-page="dashboard"]').focus()
+            page.keyboard.press('Enter')
+            page.locator('#page-dashboard.active').wait_for()
+            page.wait_for_function('document.querySelectorAll(".viper-room-pane").length === 0')
+            passage = reader.locator('.document-reader-source')
+            passage.evaluate('n => { const r=document.createRange(); r.selectNodeContents(n); const s=getSelection(); s.removeAllRanges(); s.addRange(r); }')
+            passage.click(button='right')
+            reader.get_by_role('button', name='Send to chat', exact=True).click()
+            page.wait_for_function('document.querySelector(".viper-pane-tabs [aria-selected=true]")?.textContent === "Main Chat"')
+            assert page.locator('#chat-input').is_visible()
+            assert page.locator('#chat-input').evaluate('n => document.activeElement === n')
+            assert page.locator('#chat-input').input_value() == 'Main draft\n' + text + ' :: '
+            assert page.locator('#pchat-quote-s1-input').input_value() == 'Project B draft'
+            assert reader.evaluate('(n, old) => n === old', remembered)
+            page.screenshot(path=str(producer_evidence_dir(tmp_path, 'reader-origin') / f'main-transfer-{browser_engine}.png'))
+        finally:
             browser.close()

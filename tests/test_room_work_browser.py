@@ -204,6 +204,12 @@ class Transport:
         page.route("**/api/state*", self._state)
         page.route("**/api/projects*", lambda route: route.fulfill(json={"projects": self.projects}))
         page.route("**/api/chat/history*", self._history)
+        # These census/control scenarios have no persisted task roots. Retained-history
+        # behavior is exercised by the real activity consumers, not an accidental 404.
+        page.route("**/api/rooms/*/activity*", lambda route: route.fulfill(json={
+            "room": int(urlparse(route.request.url).path.split('/')[3]),
+            "view": "empty-control-fixture", "tasks": [], "next_cursor": None,
+            "gaps": [], "coverage": {"scanned": 0, "reached_start": True}}))
         page.route("**/api/tasks/**", self._tasks)
         page.route("**/api/decisions*", self._decision)
 
@@ -420,15 +426,15 @@ def test_main_rows_say_each_census_state_with_its_own_tone_and_controls(room_ui)
     transport = Transport(room_ui["page"], history=history, details={
         "rw-unknown": {"task_id": "rw-unknown", "status": "running", "suggested_name": "Reconcile the import ledger"}},
         activities=[
-            activity("rw-live"),
-            activity("rw-access", model_waits={"w-access": wait}),
-            activity("rw-pausing", "budget_pausing", pause_cause="owner"),
-            activity("rw-failfin", "finalizing", status="failed",
+            activity("rw-live", started_at=1792000018),
+            activity("rw-access", started_at=1792000016, model_waits={"w-access": wait}),
+            activity("rw-pausing", "budget_pausing", started_at=1792000017, pause_cause="owner"),
+            activity("rw-failfin", "finalizing", started_at=1792000015, status="failed",
                      root_phase_checkpoint={"post_task_synthesis": "running"},
                      outcome_axes={"lifecycle": {"status": "failed"}, "execution": {"status": "infra_failed"}}),
-            activity("rw-unknown", "unknown"),
-            activity("rw-queued", "queued"),
-            activity("rw-ask", kind="direct_chat", client_message_id="cm-ask", **waited("q-main")),
+            activity("rw-unknown", "unknown", started_at=1792000014),
+            activity("rw-queued", "queued", started_at=1792000020),
+            activity("rw-ask", started_at=1792000019, kind="direct_chat", client_message_id="cm-ask", **waited("q-main")),
         ])
     # The live work's own focus line (update_focus), which the row shows quieter under its state.
     focus_text = "Cited pages · 3 of 5 compared · two left"
@@ -445,8 +451,8 @@ def test_main_rows_say_each_census_state_with_its_own_tone_and_controls(room_ui)
     evidence("main-states", opened)
     capture(page, "main-states-open")
     ids = [item["id"] for item in opened["rows"]]
-    assert ids[:2] == ["rw-ask", "rw-live"], "the owner's turn first, then moving work"
-    assert ids[-1] == "rw-unknown", "unknown work goes last"
+    assert ids == ["rw-queued", "rw-ask", "rw-live", "rw-pausing", "rw-access", "rw-failfin", "rw-unknown"], (
+        "newest first; waiting/owner/error classifications do not override the recorded start")
     by = {item["id"]: item for item in opened["rows"]}
     # Each row says its work's word and the reason beside it, from the server's projection of these rows.
     expect = {
@@ -457,15 +463,16 @@ def test_main_rows_say_each_census_state_with_its_own_tone_and_controls(room_ui)
         # line names nobody either; the word never carries a who.
         "rw-pausing": ("Pausing…", "", "held"),
         "rw-failfin": ("Failed", "Finalizing…", "failed"),
-        "rw-unknown": ("Activity unconfirmed", "", "unknown"),
-        "rw-queued": ("Queued", "Waiting for a free worker", "queued"),
+        "rw-unknown": ("Activity unconfirmed", "Current work state is not confirmed.", "unknown"),
+        "rw-queued": ("Queued", "Queued for dispatch; the current hold is not reported", "queued"),
         "rw-ask": ("Waiting for your answer", "", "wait"),
     }
     for task_id, (word, secondary, tone) in expect.items():
         assert (by[task_id]["word"], by[task_id]["secondary"], by[task_id]["tone"]) == (word, secondary, tone), by[task_id]
     focus_lines = page.evaluate("""() => Object.fromEntries([...document.querySelectorAll('#page-chat .rw-row')]
         .map(r => [r.dataset.id, (r.querySelector('.rw-focus:not([hidden])')?.textContent || '').trim()]))""")
-    assert focus_lines["rw-live"] == focus_text and focus_lines["rw-queued"] == "", focus_lines
+    assert focus_lines["rw-live"].startswith("Viper update · ") and "2026" in focus_lines["rw-live"], focus_lines
+    assert focus_lines["rw-live"].split(" — ", 1)[1] == focus_text and focus_lines["rw-queued"] == "", focus_lines
     # An access wait is not an answer wait: only the waited question offers View question.
     assert [item["id"] for item in opened["rows"] if item["question"]] == ["rw-ask"]
     assert by["rw-ask"]["name"].startswith("Reply to “Please check which evidence"), by["rw-ask"]
@@ -646,10 +653,10 @@ def test_controls_follow_the_exact_attempt_partial_census_disconnect_and_finish(
     assert other["name"] == "Index the archived notes" and other["word"] == "No longer listed as active", other
     assert other["open"] and "no longer listed as active; its outcome is not known here" in other["detail"].lower(), other
     assert not any(item["more"] or item["resume"] or item["question"] for item in done["rows"]), done
-    # Closed by Escape from inside, Main keeps no finished list, and the keyboard reader keeps a focus.
+    # Escape closes the list, but idle Main retains its on-demand history door and keyboard focus.
     row_main(page, "rw-live").focus()
     page.keyboard.press("Escape")
-    gone = wait_facts(page, "main", lambda f: f["surfaceHidden"] and f["disabled"], "no finished list in Main")
+    gone = wait_facts(page, "main", lambda f: f["surfaceHidden"] and not f["disabled"], "closed, still-openable history in Main")
     assert gone["rows"] == [] or all(item["settled"] for item in gone["rows"])
     assert transport.decision_posts() == []
     focus = page.evaluate("() => document.activeElement === document.body || !document.activeElement ? 'body'"
@@ -955,7 +962,7 @@ def test_late_question_read_never_steals_reading_or_offers_back(room_ui, interru
     else:
         open_project(page, PROJECT)
         if interrupt == "project-and-back":
-            page.locator("#project-panel-close").click()
+            page.locator(f'[data-pane-project="{PROJECT["id"]}"] [data-pane-close]').click()
             page.wait_for_function("() => document.getElementById('project-panel').hidden")
             page.wait_for_timeout(300)
     position = feed.evaluate("el => el.scrollTop")
@@ -997,7 +1004,7 @@ def test_project_shade_hold_outside_press_switch_and_latest_root(room_ui):
                              project_admission_hold={"label": "Waiting for Project access"})])
     page = open_app(room_ui, transport, viewport={"width": 1100, "height": 722})
     main = wait_facts(page, "main", lambda f: f["exists"], "Main's control")
-    assert main["disabled"] and main["rows"] == [], "Main never lists a Project's work"
+    assert not main["disabled"] and main["rows"] == [], "Main's history door never borrows a Project's work"
     open_project(page, PROJECT)
     closed = wait_facts(page, "project", lambda f: f["tone"] == "held" and not f["disabled"], "the Project's control")
     capture(page, "project-closed")
@@ -1024,7 +1031,7 @@ def test_project_shade_hold_outside_press_switch_and_latest_root(room_ui):
         trigger(page, "project").click()
         wait_facts(page, "project", lambda f: not f["surfaceHidden"], "the Shade again")
     # The panel's own close takes the Shade along.
-    page.locator("#project-panel-close").click()
+    page.locator(f'[data-pane-project="{PROJECT["id"]}"] [data-pane-close]').click()
     page.wait_for_function("() => document.getElementById('project-panel').hidden")
     assert page.locator("#project-panel .rw-shade:not([hidden])").count() == 0
     # Its latest represented root stays reachable when nothing else is listed.
@@ -1043,12 +1050,12 @@ def test_project_shade_hold_outside_press_switch_and_latest_root(room_ui):
     # Switching rooms takes the control along; the new room shows only its own.
     open_project(page, OTHER_PROJECT)
     switched = wait_facts(page, "project", lambda f: f["exists"], "the other Project's control")
-    assert switched["disabled"] and switched["rows"] == [], switched
+    assert not switched["disabled"] and switched["rows"] == [], switched
     assert page.locator("#panel-pchat-rw-proj").count() == 0
     assert page.locator("#project-panel .rw-trigger").count() == 1
-    page.locator("#project-panel-close").click()
+    page.locator(f'[data-pane-project="{OTHER_PROJECT["id"]}"] [data-pane-close]').click()
     main = wait_facts(page, "main", lambda f: f["exists"], "Main's control")
-    assert main["disabled"], "Main keeps no finished list"
+    assert not main["disabled"], "idle Main retains its own history door"
     assert transport.decision_posts() == [] and transport.posts == []
 
 

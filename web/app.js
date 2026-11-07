@@ -32,12 +32,18 @@ import { initConsciousnessDashboard } from './modules/consciousness_dashboard.js
 import { initUpdateStatus } from './modules/update_status.js';
 import { getInterfaceSize } from './modules/interface_size.js';
 import { initDashboard } from './modules/dashboard.js';
+import { initProjectsManager } from './modules/projects_manager.js';
+import { createWorkItems } from './modules/work_items.js';
+import { appendSelection } from './modules/chat_selection.js';
 import { initStorage } from './modules/storage.js';
 import { SHELL_ICONS } from './modules/page_icons.js';
 import { renderNavRows, renderProjectsHeader } from './modules/pages.js';
+import { hierarchyRows, hierarchyVisible, parentId, parentCaption } from './modules/project_hierarchy.js';
+const collapsedProjectBranches = new Set();
+import { descendantUnread, unreadVisible, paintUnread, activeUnreadPath } from './modules/project_unread.js';
 import { renderPageHeader } from './modules/page_header.js';
 import { createRoomHeader, panicButtonHtml } from './modules/chat_header.js';
-import { isStackLayout, measurePinnedBars, onLayoutChange, pinchMagnified } from './modules/layout.js';
+import { isStackLayout, measurePinnedBars, onLayoutChange, installPanelSizing, installMobileKeyboard } from './modules/layout.js';
 import { createLayerStack } from './modules/layers.js';
 import { afterMotion, reducedMotion } from './modules/motion.js';
 import { createShellMotion } from './modules/shell_motion.js';
@@ -45,6 +51,7 @@ import { createRoomRetirement } from './modules/room_retire.js';
 import { createTelegramHost } from './modules/host_telegram.js';
 import { DRAWER_DRAG, bindDrawerDrag } from './modules/drawer_drag.js';
 import { haptic } from './modules/haptics.js';
+import { createPaneWorkspace } from './modules/pane_workspace.js';
 
 import { fmt, markBootRead, pendingBootRead, refreshDictionary, setLanguage, storedLanguage, tr } from './modules/i18n.js';
 import { initOnboardingOverlay } from './modules/onboarding_overlay.js';
@@ -100,7 +107,7 @@ const shellMotion = createShellMotion({ content: document.getElementById('conten
 // The places come from the one registry (pages.js): Main into the pinned head, the tools into the foot that
 // follows the Projects, before the version. Nothing below looks a row up before this.
 primarySidebar?.querySelector('.sidebar-head')?.insertAdjacentHTML('beforeend', renderNavRows('head'));
-primarySidebar?.querySelector('.sidebar-foot-meta')?.insertAdjacentHTML('beforebegin', renderNavRows('foot'));
+primarySidebar?.querySelector('.viper-sidebar-art')?.insertAdjacentHTML('beforebegin', renderNavRows('foot'));
 measurePinnedBars(primarySidebar);  // a short window's row scroll margin under its pinned head and foot
 const navProjectsHeader = primarySidebar?.querySelector('.nav-projects-header');
 if (navProjectsHeader) navProjectsHeader.innerHTML = renderProjectsHeader();
@@ -108,19 +115,7 @@ const navProjectsFacts = navProjectsHeader?.querySelector('.nav-projects-facts')
 const navDrawerBackdrop = document.getElementById('nav-drawer-backdrop');
 const projectPanelBackdrop = document.getElementById('project-panel-backdrop');
 const projectPanel = document.getElementById('project-panel');
-// The Project panel's bar is the page header (DESIGN "Page header"): name · status, consciousness chip … Panic ×.
-projectPanel?.insertAdjacentHTML('afterbegin', renderPageHeader({
-    title: '',
-    titleId: 'project-panel-title',
-    named: false,
-    showMobileNav: false,
-    variant: 'project',
-    className: 'project-panel-bar project-inspector-header',
-    trailingHtml: `${panicButtonHtml()}<button id="project-panel-close" class="shell-icon-control project-panel-close" type="button" title="Close project thread" aria-label="Close project thread">${SHELL_ICONS.close}</button>`,
-}));
-const projectHeader = createRoomHeader({ bar: projectPanel?.querySelector('.project-panel-bar'), ws, openDashboardTab, refreshState: refreshProjectsNav });
 const projectPanelBody = document.getElementById('project-panel-body');
-const projectPanelTitle = document.getElementById('project-panel-title');
 const navProjects = document.getElementById('nav-projects');
 const navProjectsToggle = document.getElementById('nav-projects-toggle');
 const navProjectsCount = document.getElementById('nav-projects-count');
@@ -143,6 +138,12 @@ let shownProjectId = null;  // the Project the last navigation sync showed, so a
 let lastScene = { page: 'chat', project: null };
 let panelExits = 0;  // the latest close of the Project panel; a reopen voids an older one's put-away
 let releaseMobileKeyboardForDrawer = () => {};
+let disposeMobileKeyboard = () => {};
+const panes = createPaneWorkspace({ panel: projectPanel, body: projectPanelBody, ws,
+    active: () => navState.activeProjectId,
+    focus: (id) => { navState.activeProjectId = id; syncNavigationState(); if (!id) void acknowledgeMainAfterPaint(); },
+    retire: (id) => { projectNavigationGeneration += 1; projectReveals.delete(id); rooms.retire(id); },
+    refreshState: refreshProjectsNav, openDashboardTab });
 
 function setMobileDrawerOpen(open, { sync = true } = {}) {
     const nextOpen = Boolean(open);
@@ -162,27 +163,40 @@ function pageFromHash() {
     return name && document.getElementById(`page-${name}`) ? name : '';
 }
 
+let pageNavigationGeneration = 0;
 async function showPage(name, options = {}) {
+    const navigation = ++pageNavigationGeneration;
     const pageName = String(name || '').trim();
     if (!pageName) return false;
     const changingPage = state.activePage !== pageName;
     if (changingPage) {
         for (const handler of beforePageLeaveHandlers) {
             const canLeave = await handler({ from: state.activePage, to: pageName });
-            if (canLeave === false) return false;
+            if (canLeave === false || navigation !== pageNavigationGeneration) return false;
         }
-        if (state.activePage === 'chat') mainChat?.closeTransient?.();
+        if (state.activePage === 'chat') {
+            suspendedPaneLayout = panes.snapshot();
+            mainChat?.closeTransient?.();
+        }
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
         document.getElementById(`page-${pageName}`)?.classList.add('active');
         state.activePage = pageName;
-        window.dispatchEvent(new CustomEvent('ouro:page-shown', { detail: { page: pageName } }));
+        // Publish exposure only after the final room layout is restored below.
         // Main's number shows only away from Main; showing it offers its read decision.
         updateUnreadBadge();
+        // Main read exposure follows restored compact selection, never an intermediate empty layout.
+    }
+    const restoredLayout = pageName === 'chat' && restorePaneLayout({ mount: options.closeProject !== false });
+    if (options.closeProject !== false && !restoredLayout) {
+        if (pageName === 'chat' && panes.collaborating()) { panes.focusMain(); void acknowledgeMainAfterPaint(); }
+        else closeProjectPanel({ sync: false, preserveLayout: pageName !== 'chat' });
+    }
+    if (options.closeDrawer !== false) navState.mobileDrawerOpen = false;
+    if (options.sync !== false) {
+        syncNavigationState();
+        if (changingPage) window.dispatchEvent(new CustomEvent('ouro:page-shown', { detail: { page: pageName } }));
         if (pageName === 'chat') void acknowledgeMainAfterPaint();
     }
-    if (options.closeProject !== false) closeProjectPanel({ sync: false });
-    if (options.closeDrawer !== false) navState.mobileDrawerOpen = false;
-    if (options.sync !== false) syncNavigationState();
     return true;
 }
 
@@ -268,7 +282,7 @@ async function markMainViewed(revision) {
 let mainPaintRequest = null;
 async function acknowledgeMainAfterPaint() {
     const revision = state.mainVisibleRevision;
-    if (state.activePage !== 'chat' || !mainChat?.refreshHistory || !Number.isSafeInteger(revision)
+    if (!panes.mainVisible() || document.getElementById('content').inert || state.activePage !== 'chat' || !mainChat?.refreshHistory || !Number.isSafeInteger(revision)
         || !Number.isSafeInteger(state.mainSeenRevision) || revision <= state.mainSeenRevision) return;
     if (mainPaintRequest && mainPaintRequest.revision >= revision) return mainPaintRequest.promise;
     const promise = (async () => {
@@ -276,7 +290,7 @@ async function acknowledgeMainAfterPaint() {
         try { paint = await mainChat.refreshHistory({ revision }); } catch (err) {
             console.error('Main history paint failed:', err);
         }
-        if (paint?.read && Number(paint.revision) === revision && state.activePage === 'chat') await markMainViewed(revision);
+        if (paint?.read && Number(paint.revision) === revision && state.activePage === 'chat' && panes.mainVisible() && !document.getElementById('content').inert) await markMainViewed(revision);
     })().finally(() => { if (mainPaintRequest?.promise === promise) mainPaintRequest = null; });
     mainPaintRequest = { revision, promise };
     return promise;
@@ -297,8 +311,12 @@ function syncDrawerScrim(painted, settled) {
 // What a place picked in the open drawer hands over inside the room card (shell_motion.js): the leaving and arriving
 // rooms (a page, the Project panel, a Project room in it) and what of it takes the breath.
 function handoverBetween(from, to) {
+    const projectRoom = id => {
+        const page = (rooms.retiring.get(id) || projectInstances.get(id))?.page;
+        return page?.closest?.('.viper-room-pane') || page;
+    };
     const room = (scene, other) => (scene.project
-        ? (other.project ? (rooms.retiring.get(scene.project) || projectInstances.get(scene.project))?.page : projectPanel)
+        ? (other.project ? projectRoom(scene.project) : projectPanel)
         : document.getElementById(`page-${scene.page}`));
     const arriving = room(to, from);
     const breathe = arriving === projectPanel ? [...projectPanel.children].filter((el) => !el.classList.contains('room-veil')) : [arriving];
@@ -307,6 +325,7 @@ function handoverBetween(from, to) {
 
 function syncNavigationState() {
     const activeProjectId = navState.activeProjectId;
+    const workspaceOpen = Boolean(activeProjectId) || panes.collaborating();
     const drawerOpen = Boolean(navState.mobileDrawerOpen);
     // A place chosen in the open drawer changes inside the room card as the drawer closes (owner 20.10, 4A; 21.10).
     const scene = { page: state.activePage, project: activeProjectId || null };
@@ -349,7 +368,7 @@ function syncNavigationState() {
     });
     let exit = Promise.resolve();
     if (projectPanel) {
-        if (activeProjectId) {
+        if (workspaceOpen) {
             panelExits += 1;
             projectPanel.hidden = false;
             if (projectPanelBackdrop) projectPanelBackdrop.hidden = false;
@@ -362,16 +381,19 @@ function syncNavigationState() {
             projectPanel.classList.remove('open');
             projectPanelBackdrop?.classList.remove('open');
             exit = Promise.all(['transform', 'opacity'].map((property) => afterMotion(projectPanel, { property }).done)).then(() => {
-                if (closing !== panelExits || navState.activeProjectId) return;
+                if (closing !== panelExits || navState.activeProjectId || panes.collaborating()) return;
                 projectPanel.hidden = true;
                 if (projectPanelBackdrop) projectPanelBackdrop.hidden = true;
             });
         }
-        document.body.classList.toggle('project-panel-open', Boolean(activeProjectId));
+        document.body.classList.toggle('project-panel-open', workspaceOpen);
     }
     // A Project room that was left is put away once the motion that shows it leaving has run.
     const leftNow = rooms.exits();
-    if (leftNow.length) Promise.all([settled, exit]).then(() => leftNow.forEach(([pid, inst, at]) => rooms.settle(pid, inst, true, at)));
+    if (leftNow.length) Promise.all([settled, exit]).then(() => {
+        leftNow.forEach(([pid, inst, at]) => rooms.settle(pid, inst, true, at));
+        panes.sync(); // Pending owners survive retirement; hide their now-settled wrapper too.
+    });
     // One commit for both layers (layers.js), after the panel's unhide so focus can go into it: the drawer, and the
     // Project panel's layer, modal only where it covers the room; on a phone only the covered room's inert (the whole
     // room restyles) waits for the card's motion.
@@ -380,8 +402,8 @@ function syncNavigationState() {
             layers.push({ id: 'drawer', el: primarySidebar, modal: true, live: [navDrawerBackdrop].filter(Boolean),
                 onClose: () => setMobileDrawerOpen(false) });
         } else layers.remove('drawer');
-        if (activeProjectId) {
-            layers.push({ id: 'project', el: projectPanel, modal: isStackLayout(), live: [projectPanelBackdrop].filter(Boolean),
+        if (workspaceOpen) {
+            layers.push({ id: 'project', el: panes.collaborating() ? document.getElementById('viper-workspace') : projectPanel, modal: isStackLayout(), live: [projectPanelBackdrop].filter(Boolean),
                 onClose: () => closeProjectPanel(), focus: focusProjectRoom });
         } else layers.remove('project');
     }, { inertAfter: isStackLayout() ? settled : null });
@@ -401,7 +423,8 @@ function syncNavigationState() {
         navProjectsToggle?.focus({ preventScroll: true });
     }
     shownProjectId = activeProjectId;
-    paintNavToggles();  // a room's composer mounted since the last paint carries its ☰ too
+    panes.sync();
+    paintNavToggles();  // every room keeps its composer navigation
 }
 
 // Docked, the panel comes in from the window's edge with its room in it (owner 20.10, Q2 A): it starts once the room
@@ -419,6 +442,22 @@ function arrivePanel(pid, since) {
 // Keys scroll what is being read: an opened Project gives the focus to its room's feed (focusable, out of the tab
 // order), so End, PageDown and the arrows move the messages, and a press on their text keeps the focus there. With
 // the panel itself focused they moved nothing (#1998). The panel takes it only before its room has mounted.
+function focusRoomComposer(instance) {
+    const input = instance?.composer?.input;
+    const navigation = projectNavigationGeneration, pageNavigation = pageNavigationGeneration;
+    const selected = navState.activeProjectId, previous = document.activeElement;
+    // Closing the drawer may restore its opener before this deferred composer focus.
+    // Only the destination composer's own navigation button is that expected return.
+    const drawerOpener = input?.closest('.chat-input-wrap')?.querySelector('[data-mobile-nav-toggle]');
+    const apply = () => {
+        if (navigation !== projectNavigationGeneration || pageNavigation !== pageNavigationGeneration || state.activePage !== 'chat' || selected !== navState.activeProjectId || navState.mobileDrawerOpen) return;
+        if (![previous, document.body, input, drawerOpener].includes(document.activeElement)) return;
+        if (input?.isConnected && !input.disabled && !input.readOnly && !input.closest('[inert], [hidden]')) input.focus({ preventScroll: true });
+    };
+    apply();
+    if (document.activeElement !== input) void shellMotion.settled().then(apply);
+}
+
 function focusProjectRoom() {
     const feed = projectInstances.get(navState.activeProjectId)?.page?.querySelector('.chat-messages') || projectPanel;
     if (!feed.hasAttribute('tabindex')) feed.tabIndex = -1;
@@ -434,7 +473,11 @@ onLayoutChange((layout) => {
 
 document.querySelectorAll('[data-nav-page]').forEach(btn => {
     btn.addEventListener('click', () => {
-        showPage(btn.dataset.navPage);
+        const showing = showPage(btn.dataset.navPage);
+        const navigation = pageNavigationGeneration;
+        void showing.then(shown => {
+            if (shown && navigation === pageNavigationGeneration && btn.dataset.navPage === 'chat' && state.activePage === 'chat' && !navState.activeProjectId) focusRoomComposer(mainChat);
+        });
     });
 });
 document.addEventListener('click', (event) => {
@@ -454,7 +497,7 @@ const roomVeils = new Map([roomEl, projectPanel].filter(Boolean).map((room) => {
     room.append(veil);
     return [room, veil];
 }));
-const movingRooms = () => [roomEl, projectPanel?.classList.contains('open') ? projectPanel : null]
+const movingRooms = () => panes.collaborating() ? [document.getElementById('viper-workspace')] : [roomEl, projectPanel?.classList.contains('open') ? projectPanel : null]
     .filter(Boolean).flatMap((room) => [room, roomVeils.get(room)]);
 // The drawer follows a finger (drawer_drag.js; DRAWER_DRAG switches it off); ☰ and × remain its controls.
 const disposeDrawerDrag = DRAWER_DRAG ? bindDrawerDrag({
@@ -486,7 +529,7 @@ const stateSnapshots = createStateSnapshotSequencer((data, requestedAt, generati
     if (data.task_bindings) applyTaskBindings(data.task_bindings);  // null: unchanged, never filled here
     hydrateOpenChatsFromState(data, requestedAt, generation);
     evolution?.hydrateStateSnapshot(data);
-    projectHeader?.update(data);
+    panes.update(data);
     observeMainRevision(data.main_visible_revision);
 }, undefined, (requestedAt) => {
     markProjectActivityUnknown();
@@ -549,6 +592,37 @@ function closeNotificationReaders() {
     for (const inst of projectInstances.values()) inst.closeTransient?.();
 }
 
+const workItems = createWorkItems({
+    onCaptured: project => showToast(`Work Item saved as Idea in ${project.name || project.id}.`),
+    async sendToChat(projectId, text, { current, signal }) {
+        if (!current()) return;
+        const originFocus = document.activeElement;
+        const project = (await fetchJson(`/api/projects/${encodeURIComponent(projectId)}/detail`, { signal, cache: 'no-store' }))?.project;
+        if (!current()) return;
+        if (!project || String(project.lifecycle || 'active') !== 'active') throw Error('This room is closed or unavailable. Reopen it explicitly before bringing text to chat.');
+        if (document.activeElement !== originFocus && document.activeElement !== document.body) throw Error('Focus changed before the room opened. Nothing was added.');
+        const opening = openProjectPanel(project, { openOnly: true, besideSource: panes.collaborating(), composerFocus: false, navigationCurrent: current });
+        const navigation = projectNavigationGeneration;
+        await opening;
+        if (!current()) return;
+        const instance = projectInstances.get(projectId);
+        if (!instance || navigation !== projectNavigationGeneration || state.activePage !== 'chat' || navState.activeProjectId !== projectId) throw Error('The room changed before text was added. Nothing was added.');
+        if (document.activeElement !== originFocus && document.activeElement !== document.body && !instance.page.contains(document.activeElement)) throw Error('Focus changed while the room opened. Nothing was added.');
+        appendSelection(instance.composer, text);
+        return true;
+    },
+    async openReference(address, current) {
+        const match = /^row:([0-9]+)@/.exec(address);
+        if (!match) throw Error('This source-row address is not supported. The exact reference remains available to copy.');
+        if (Number(match[1]) === 1 && state.activePage !== 'chat') {
+            if (!await showPage('chat') || !current()) return false;
+        }
+        const result = await revealQuotedSource(address, Number(match[1]), current);
+        if (!current()) return false;
+        if (result?.state !== 'found') throw Error('The original source row is unavailable.');
+        return true;
+    },
+});
 mainChat = initChat(ctx);
 initFiles(ctx);
 
@@ -593,6 +667,7 @@ function cancelProjectPaint(pid, inst) {
 function destroyProjectInstance(pid) {
     const inst = projectInstances.get(pid);
     if (!inst) return;
+    projectDrafts.set(pid, inst.composer.getDraft());
     if (inst.hasPendingWork?.()) {
         // Kept for its staged files; a reader it opened does not stay over the next view.
         inst.closeTransient?.();
@@ -601,21 +676,49 @@ function destroyProjectInstance(pid) {
         cancelProjectPaint(pid, inst);
         return;
     }
+    workItems.detachRoom(pid);
     inst.destroy?.();
     projectInstances.delete(pid);
     projectPaintRequests.delete(pid);
+    panes.remove(pid);
 }
 
 // A Project room that is left keeps its content while it leaves (room_retire.js); app.js says when it has left.
 const rooms = createRoomRetirement({ instances: projectInstances, cancelPaint: cancelProjectPaint, destroy: destroyProjectInstance });
 
+// This page's layout and plain text drafts only. Never browser storage or a hidden chat cache.
+let suspendedPaneLayout = null;
+const projectDrafts = new Map();
+function restorePaneLayout({ mount = true } = {}) {
+    if (!suspendedPaneLayout) return false;
+    const saved = suspendedPaneLayout;
+    suspendedPaneLayout = null;
+    navState.activeProjectId = panes.restore(saved, lastProjectRows);
+    if (!mount) return true; // explicit sidebar navigation selects its destination before mounting or reading
+    const reopened = saved.ids.map(id => lastProjectRows.find(p => p.id === id)).filter(p => p && panes.keeps(p.id));
+    for (const project of reopened) mountProjectRoom(project);
+    syncNavigationState();
+    for (const project of reopened) {
+        const inst = projectInstances.get(project.id);
+        if (panes.visible(project.id)) {
+            void inst.showLatest?.();
+            void acknowledgeProjectAfterPaint(project, inst, { forcePaint: !inst.hasPaintedHistory?.() });
+        }
+    }
+    return true;
+}
+
 let projectNavigationGeneration = 0;
-function closeProjectPanel({ sync = true, reveal = false } = {}) {
+function closeProjectPanel({ sync = true, reveal = false, preserveLayout = false } = {}) {
+    if (!preserveLayout) suspendedPaneLayout = null;
     projectNavigationGeneration += 1;
     projectReveals.clear();
     const activeId = navState.activeProjectId;
+    const wasCollaborating = panes.collaborating();
+    // Visible rooms leave whole; hidden unsendable owners retain their existing custody.
+    for (const pid of [...projectInstances.keys()]) rooms.retire(pid);
+    panes.clear();
     navState.activeProjectId = null;
-    if (activeId) rooms.retire(activeId);
     // Anything left is a hidden pending-work survivor; keep it hidden.
     for (const [pid, inst] of projectInstances) {
         inst.closeTransient?.();
@@ -625,16 +728,62 @@ function closeProjectPanel({ sync = true, reveal = false } = {}) {
     if (sync) syncNavigationState();
     // Leaving a Project for Main is a return to Main: its newest message (owner
     // decision 2026-10-05). Another page shows Main later through `ouro:page-shown`.
-    if (activeId && state.activePage === 'chat' && !reveal) void mainChat?.showLatest?.();
+    if (activeId && state.activePage === 'chat' && !reveal && !wasCollaborating) void mainChat?.showLatest?.();
 }
 
-async function openProjectPanel(project, { closeDrawer = true, openOnly = false, taskId = '', quizId = '', sourceReveal = null } = {}) {
-    if (sourceReveal && !sourceReveal.current()) return null;
+function mountProjectRoom(project) {
+    const paneMount = panes.ensure(project);
+    let inst = projectInstances.get(project.id);
+    if (!inst) {
+        inst = createChatInstance({
+            ...ctx,
+            chatId: Number(project.chat_id) || 1,
+            projectId: project.id,
+            idPrefix: `pchat-${project.id}`,
+            mountEl: paneMount,
+            asPanel: true,
+            title: project.name || project.id,
+            // Retry reads, paints and acknowledges the newest revision.
+            onHistoryRetry: () => acknowledgeProjectAfterPaint(freshProjectRow(project), null, { forcePaint: true }),
+            // Arriving at the newest messages retries a withheld acknowledgement.
+            onReadingLatest: () => acknowledgeProjectAfterPaint(freshProjectRow(project)),
+        });
+        projectInstances.set(project.id, inst);
+        workItems.attachRoom(project, paneMount.parentElement.querySelector('.project-panel-bar .app-page-trailing'));
+        if (projectDrafts.has(project.id)) inst.composer.setDraft(projectDrafts.get(project.id));
+    }
+    delete inst.page.dataset.pendingWork;
+    inst.page.hidden = false;
+    return inst;
+}
+
+async function revealMountedProjectSource(project, inst, sourceReveal, navigation) {
+    if (!inst) return { state: 'unknown' };
+    const reveal = {};
+    projectReveals.set(project.id, reveal);
+    cancelProjectPaint(project.id, inst);
+    try {
+        return await inst.revealSource(sourceReveal.address,
+            () => navigation === projectNavigationGeneration && sourceReveal.current(), sourceReveal.page);
+    } finally {
+        if (projectReveals.get(project.id) === reveal) projectReveals.delete(project.id);
+    }
+}
+
+async function openProjectPanel(project, { closeDrawer = true, openOnly = false, taskId = '', quizId = '', sourceReveal = null, besideSource = null, composerFocus = false, navigationCurrent = () => true } = {}) {
+    if (!navigationCurrent() || sourceReveal && !sourceReveal.current()) return null;
     if (!project?.id || String(project.lifecycle || 'active') !== 'active') return;
     const navigation = ++projectNavigationGeneration;
+    if (besideSource && panes.keeps(project.id)) panes.select(project.id, true);
+    if (panes.keeps(project.id) && navState.activeProjectId !== project.id && !sourceReveal && !taskId && projectInstances.has(project.id)) {
+        navState.activeProjectId = project.id; if (closeDrawer) navState.mobileDrawerOpen = false; syncNavigationState(); if (composerFocus) focusRoomComposer(projectInstances.get(project.id)); else focusProjectRoom(); return;
+    }
     if (navState.activeProjectId === project.id) {
-        if (!openOnly) closeProjectPanel();
+        if (closeDrawer) { navState.mobileDrawerOpen = false; syncNavigationState(); }
+        if (sourceReveal) return revealMountedProjectSource(project, projectInstances.get(project.id), sourceReveal, navigation);
+        if (!openOnly && !panes.collaborating()) closeProjectPanel();
         else if (taskId && quizId) await revealProjectQuestion(project, projectInstances.get(project.id), taskId, quizId);
+        if (composerFocus && !sourceReveal && !taskId) focusRoomComposer(projectInstances.get(project.id));
         return;
     }
     projectReveals.clear();
@@ -643,59 +792,38 @@ async function openProjectPanel(project, { closeDrawer = true, openOnly = false,
     projectPanelOpeningSince = Date.now();
     try {
         // One paint for the whole step (the sync below): a handover leaves the room that was on screen.
+        const fromUtilityPage = state.activePage !== 'chat';
         const movedToChat = await showPage('chat', { closeProject: false, closeDrawer: false, sync: false });
-        if (movedToChat === false || navigation !== projectNavigationGeneration || sourceReveal && !sourceReveal.current()) return;
+        if (movedToChat === false || !navigationCurrent() || navigation !== projectNavigationGeneration || sourceReveal && !sourceReveal.current()) return;
         // The room covers Main: a document Main had open closes rather than sit over it.
         mainChat?.closeTransient?.();
+        panes.select(project.id, Boolean(besideSource));
         navState.activeProjectId = project.id;
-        projectPanelTitle.textContent = project.name || project.id;
+        panes.ensure(project);
         // One live panel: every OTHER project instance is destroyed (or hidden and
         // marked when it holds pending work) before the target is created/shown; the one
         // on screen, left from the open phone drawer, is retired to fade out inside the card.
         rooms.settle(project.id, undefined, false);
         const handingOver = isStackLayout() && navState.mobileDrawerOpen && closeDrawer;
         for (const pid of [...projectInstances.keys()]) {
-            if (pid !== project.id) (handingOver ? rooms.retire : destroyProjectInstance)(pid);
+            if (pid !== project.id && !panes.keeps(pid)) (handingOver ? rooms.retire : destroyProjectInstance)(pid);
         }
-        let inst = projectInstances.get(project.id);
-        if (!inst) {
-            inst = createChatInstance({
-                ...ctx,
-                chatId: Number(project.chat_id) || 1,
-                projectId: project.id,
-                idPrefix: `pchat-${project.id}`,
-                mountEl: projectPanelBody,
-                asPanel: true,
-                title: project.name || project.id,
-                // Retry reads, paints and acknowledges the newest revision.
-                onHistoryRetry: () => acknowledgeProjectAfterPaint(freshProjectRow(project), null, { forcePaint: true }),
-                // Arriving at the newest messages retries a withheld acknowledgement.
-                onReadingLatest: () => acknowledgeProjectAfterPaint(freshProjectRow(project)),
-            });
-            projectInstances.set(project.id, inst);
-        }
+        for (const row of lastProjectRows) if (panes.keeps(row.id)) mountProjectRoom(row);
+        const inst = mountProjectRoom(project);
         // A reopened pending-work survivor is live again.
         delete inst.page.dataset.pendingWork;
         for (const [pid, other] of projectInstances) {
-            other.page.hidden = pid !== project.id;
-            if (pid !== project.id) {
+            other.page.hidden = !panes.keeps(pid);
+            if (!panes.keeps(pid)) {
                 other.closeTransient?.();
                 cancelProjectPaint(pid, other);
             }
         }
         if (closeDrawer) navState.mobileDrawerOpen = false;
         syncNavigationState();
-        if (sourceReveal) {
-            const reveal = {};
-            projectReveals.set(project.id, reveal);
-            cancelProjectPaint(project.id, inst);
-            try {
-                return await inst.revealSource(sourceReveal.address,
-                    () => navigation === projectNavigationGeneration, sourceReveal.page);
-            } finally {
-                if (projectReveals.get(project.id) === reveal) projectReveals.delete(project.id);
-            }
-        }
+        if (fromUtilityPage) window.dispatchEvent(new CustomEvent('ouro:page-shown', { detail: { page: 'chat' } }));
+        if (composerFocus && !sourceReveal && !taskId) focusRoomComposer(inst);
+        if (sourceReveal) return revealMountedProjectSource(project, inst, sourceReveal, navigation);
         // Once visible, an unread room lands on its newest message (DESIGN "Unread").
         const unread = Math.max(0, Number(freshProjectRow(project).visible_revision) || 0)
             > Math.max(0, Number(state.projectSeenRevision?.[project.id]) || 0);
@@ -774,7 +902,7 @@ async function revealProjectQuestion(project, inst, taskId, quizId) {
 // until a history read covering it has been painted while the reader is at the
 // newest messages (DESIGN "Unread"); `paintOnly` paints without that decision.
 async function acknowledgeProjectAfterPaint(project, instance = null, { forcePaint = false, paintOnly = false } = {}) {
-    if (!project?.id || navState.activeProjectId !== project.id) return;
+    if (!project?.id || !panes.visible(project.id)) return;
     const inst = instance || projectInstances.get(project.id);
     if (!inst || inst.page.hidden) return;
     const revision = Math.max(0, Number(project.visible_revision) || 0);
@@ -799,7 +927,7 @@ async function acknowledgeProjectAfterPaint(project, instance = null, { forcePai
         if (
             !paintOnly && !revealing && !projectReveals.has(project.id) && paint?.read
             && Number(paint.revision) === revision
-            && navState.activeProjectId === project.id
+            && panes.visible(project.id)
             && projectInstances.get(project.id) === inst
             && !inst.page.hidden
             // A destroyed instance's page reports hidden===false but is detached;
@@ -817,7 +945,6 @@ async function acknowledgeProjectAfterPaint(project, instance = null, { forcePai
     return promise;
 }
 
-document.getElementById('project-panel-close')?.addEventListener('click', () => closeProjectPanel());
 projectPanelBackdrop?.addEventListener('click', () => closeProjectPanel());
 navProjectsToggle?.addEventListener('click', () => {
     navState.projectsExpanded = !navState.projectsExpanded;
@@ -836,13 +963,15 @@ navProjectsFacts?.addEventListener('click', () => navProjectsToggle?.click());
 function syncProjectsCollapse() {
     if (!navProjectsList) return;
     const collapsed = !navState.projectsExpanded;
+    const descendants = descendantUnread(lastProjectRows, state.projectSeenRevision);
+    const activePath = activeUnreadPath(lastProjectRows, navState.activeProjectId);
     navProjects?.toggleAttribute('data-collapsed', collapsed);
     let shown = 0;
     let pinsShown = false;
     let afterPins = null;
     for (const item of navProjectsList.children) {
         if (!item.classList.contains('nav-project-item')) continue;
-        const keep = !collapsed || item.hasAttribute('data-pinned');
+        const keep = item.hierarchy ? unreadVisible(item.hierarchy, collapsedProjectBranches, !collapsed, descendants, state.projectSeenRevision, hierarchyVisible(item.hierarchy, collapsedProjectBranches, !collapsed), activePath) : !collapsed;
         if (!keep && item.contains(document.activeElement)) navProjectsToggle?.focus({ preventScroll: true });
         item.hidden = !keep;
         if (keep) shown += 1;
@@ -886,12 +1015,10 @@ function renderProjectsNav(projects, projectChatIds, activityIndex = projectActi
             if (a._unread !== b._unread) return a._unread ? -1 : 1;  // unread to the top
             return recency(b).localeCompare(recency(a));
         });
-    if (rows.some(p => p.id === navState.activeProjectId && p.lifecycle === 'deleting')) {
-        closeProjectPanel();
-    }
+    for (const row of rows) if (row.lifecycle === 'deleting' && panes.keeps(row.id)) panes.closeOne(row.id);
     if (rows.some(p => p._unread)) refreshSharedProjectSeen();
     const json = JSON.stringify(rows.map(p => [
-        p.id, p.name, p.chat_id, p.lifecycle, p.visible_revision, p._unread, p.delete_error, p.pinned === true,
+        p.id, p.name, p.chat_id, p.lifecycle, p.visible_revision, p._unread, p.delete_error, p.pinned === true, p.parent_id,
     ]));
     // Activity is a projection over the existing census and must not rebuild
     // the keyed menu: replacing rows here would steal focus from an open menu,
@@ -907,9 +1034,9 @@ function renderProjectsNav(projects, projectChatIds, activityIndex = projectActi
     // Every snapshot that still shows the open room unread offers the read decision
     // again, so an acknowledgement whose POST failed is retried by the next poll
     // while its reader stays at the newest message; the receipt still decides.
-    const active = rows.find((project) => project.id === navState.activeProjectId);
-    if (active?._unread && active.lifecycle === 'active') {
-        acknowledgeProjectAfterPaint(active);
+    for (const row of rows) {
+        if (row._unread && row.lifecycle === 'active' && panes.visible(row.id)) acknowledgeProjectAfterPaint(row);
+        if (row.lifecycle === 'deleting' && panes.keeps(row.id)) panes.closeOne(row.id);
     }
 }
 
@@ -934,27 +1061,36 @@ function setActivityOwnerName(owner, baseName, words) {
 // unread fact, the Projects header's from all Project rooms (the owner's move, else the strongest work; unread is its
 // count), Main's row and the ☰ (paintMainRow, paintNavToggles). Nodes are painted in place, so focus and menus stay.
 function patchProjectActivityMarkers(activityIndex = projectActivityIndex) {
+    const descendants = descendantUnread(lastProjectRows, state.projectSeenRevision);
     const aggregate = activityIndex.aggregate;
     paintStatusMark(navProjectsFacts?.querySelector('.nav-mark'), markView({ mark: aggregate.mark, owner: aggregate.owner }));
     const unread = navProjectsCount?.title;
     setActivityOwnerName(navProjectsToggle, unread ? `Projects · ${unread}` : 'Projects', aggregate.label);
-    const buttons = new Map(
-        [...(navProjectsList?.querySelectorAll('[data-project-id]') || [])]
-            .map((button) => [String(button.dataset.projectId || ''), button]),
-    );
+    const buttons = new Map();
+    for (const button of navProjectsList?.querySelectorAll('[data-project-id]') || []) {
+        const id = String(button.dataset.projectId || '');
+        if (!buttons.has(id)) buttons.set(id, []);
+        buttons.get(id).push(button);
+    }
     for (const row of lastProjectRows) {
-        const button = buttons.get(String(row.id));
+        for (const button of buttons.get(String(row.id)) || []) {
         const summary = activityIndex.byChat.get(String(row.chat_id)) || IDLE_SUMMARY;
         const deleting = String(row.lifecycle || 'active') === 'deleting';
         const unreadRow = Boolean(row._unread) && !deleting;
         button?.toggleAttribute('data-unread', unreadRow);
         // A deleting row draws only `Deleting…`; its census fact stays in its name.
         paintStatusMark(button?.querySelector('.nav-mark'),
-            deleting ? markView() : markView({ mark: summary.mark, owner: summary.owner, unread: unreadRow }));
+            deleting ? markView() : markView({ mark: summary.mark, owner: summary.owner }));
         // The pin is said in the row's full name (its tooltip and accessible name), never drawn in the row.
         const name = `${row.name || row.id}${row.pinned === true ? ' · Pinned' : ''}`;
-        setActivityOwnerName(button, deleting ? `${name} — Deleting…${row.delete_error ? ` ${row.delete_error}` : ''}` : name,
-            markWords(summary, unreadRow));
+        setActivityOwnerName(button, deleting ? `${name} — Closing…${row.delete_error ? ` ${row.delete_error}` : ''}` : name,
+            markWords(summary, false));
+        const context = `${parentCaption(row, lastProjectRows)}${button.closest('[data-pin-shortcut]') ? ' · Pinned shortcut' : ''}`;
+        const unreadWords = paintUnread(button, row, state.projectSeenRevision, descendants);
+        const details = [context, unreadWords].filter(Boolean).join(' · ');
+        button.title += ` · ${details}`;
+        button.setAttribute('aria-label', `${button.getAttribute('aria-label')} · ${details}`);
+        }
     }
     paintMainRow();
     paintNavToggles();
@@ -1058,20 +1194,22 @@ function paintProjectsCount() {
 
 // Keep keyed controls (and menu anchors) when pinning reorders the list.
 function paintProjectsNav() {
-    const rows = lastProjectRows;
-    const keyed = new Map([...navProjectsList.children].map(item => [item.dataset.navProjectId, item]));
+    const rows = hierarchyRows(lastProjectRows);
+    const keyed = new Map([...navProjectsList.children].map(item => [item.dataset.navHierarchyKey || item.dataset.navProjectId, item]));
     const focused = document.activeElement;
     navProjects.hidden = false;
     paintProjectsCount();
-    for (const [index, project] of rows.entries()) {
+    for (const [index, hierarchy] of rows.entries()) {
+        const project = hierarchy.project;
         const deleting = String(project.lifecycle || 'active') === 'deleting';
-        let item = keyed.get(project.id);
-        keyed.delete(project.id);
+        let item = keyed.get(hierarchy.key);
+        keyed.delete(hierarchy.key);
         if (item && item.classList.contains('is-deleting') !== deleting) { item.remove(); item = null; }
         if (!item) {
             item = document.createElement('div');
             item.dataset.navProjectId = project.id;
-            item.className = `nav-project-item${deleting ? ' is-deleting' : ''}`;
+            item.dataset.navHierarchyKey = hierarchy.key;
+            item.className = `nav-project-item nav-project-tree${deleting ? ' is-deleting' : ''}`;
             const btn = document.createElement('button');
             btn.className = 'nav-row nav-project-row';
             btn.type = 'button';
@@ -1080,14 +1218,33 @@ function paintProjectsNav() {
             label.className = 'nav-row-label';
             btn.append(label, createStatusMark(document, 'nav-mark'));
             item.appendChild(btn);
+            const branch = document.createElement('button');
+            branch.type = 'button'; branch.className = 'nav-project-branch';
+            branch.addEventListener('click', () => {
+                const id = item.project.id;
+                if (collapsedProjectBranches.has(id)) collapsedProjectBranches.delete(id); else collapsedProjectBranches.add(id);
+                paintProjectsNav();
+            });
+            item.prepend(branch);
+            btn.addEventListener('keydown', event => {
+                if (event.key === 'ArrowRight' && item.hierarchy.hasChildren) {
+                    event.preventDefault();
+                    if (collapsedProjectBranches.has(item.project.id)) { collapsedProjectBranches.delete(item.project.id); paintProjectsNav(); }
+                    else [...navProjectsList.children].find(n => !n.hidden && !n.hierarchy?.shortcut && parentId(n.project) === item.project.id)?.querySelector('.nav-project-row')?.focus();
+                } else if (event.key === 'ArrowLeft' && !item.hierarchy.shortcut) {
+                    event.preventDefault();
+                    if (item.hierarchy.hasChildren && !collapsedProjectBranches.has(item.project.id)) { collapsedProjectBranches.add(item.project.id); paintProjectsNav(); }
+                    else [...navProjectsList.children].find(n => !n.hierarchy?.shortcut && n.project?.id === parentId(item.project))?.querySelector('.nav-project-row')?.focus();
+                }
+            });
             if (deleting) {
                 const status = document.createElement('span');
                 status.className = 'nav-project-deleting-status';
-                status.textContent = 'Deleting…';
+                status.textContent = 'Closing…';
                 item.appendChild(status);
             } else {
                 // Pressing a row opens its Project; pressing the open one again keeps it open (like every reference).
-                btn.addEventListener('click', () => openProjectPanel(item.project, { openOnly: true }));
+                btn.addEventListener('click', () => openProjectPanel(item.project, { openOnly: true, composerFocus: true }));
                 // The action control is a sibling button, never nested interactive UI.
                 const kebab = document.createElement('button');
                 kebab.type = 'button';
@@ -1101,15 +1258,29 @@ function paintProjectsNav() {
                 item.appendChild(kebab);
             }
         }
-        item.project = project;
-        item.toggleAttribute('data-pinned', project.pinned === true);
+        item.project = project; item.hierarchy = hierarchy;
+        item.toggleAttribute('data-pin-shortcut', Boolean(hierarchy.shortcut));
+        item.toggleAttribute('data-pinned', Boolean(hierarchy.shortcut || (project.pinned === true && !parentId(project))));
+        item.style.setProperty('--project-depth', Math.min(3, hierarchy.depth));
+        const branch = item.querySelector('.nav-project-branch');
+        branch.hidden = !hierarchy.hasChildren;
+        branch.textContent = ''; 
+        branch.setAttribute('aria-expanded', String(!collapsedProjectBranches.has(project.id)));
+        branch.setAttribute('aria-label', `${collapsedProjectBranches.has(project.id) ? 'Expand' : 'Collapse'} children of ${project.name || project.id}`);
+        branch.title = branch.getAttribute('aria-label');
         const btn = item.querySelector('.nav-project-row');
         btn.disabled = deleting;
-        btn.querySelector('.nav-row-label').textContent = project.name || project.id;
+        const label = btn.querySelector('.nav-row-label');
+        label.textContent = `${hierarchy.depth > 3 ? `[${hierarchy.depth}] ` : ''}${project.name || project.id}`;
+        if (hierarchy.shortcut || hierarchy.missingParent) {
+            const context = document.createElement('span'); context.className = 'nav-project-context';
+            context.textContent = hierarchy.shortcut ? `Shortcut · ${parentCaption(project, lastProjectRows)}` : `Parent not shown: ${parentId(project)}`;
+            label.append(context);
+        }
         btn.classList.toggle('active', project.id === navState.activeProjectId);
         const kebab = item.querySelector('.nav-project-kebab');
         if (kebab) kebab.setAttribute('aria-label', fmt('Actions for {name}', { name: project.name || project.id }));
-        else item.querySelector('.nav-project-deleting-status').title = project.delete_error || 'Cancellation and cleanup are in progress';
+        else item.querySelector('.nav-project-deleting-status').title = project.delete_error || 'Project closure is in progress; unfinished work is being stopped';
         if (navProjectsList.children[index] !== item) navProjectsList.insertBefore(item, navProjectsList.children[index] || null);
     }
     for (const item of keyed.values()) item.remove();
@@ -1126,6 +1297,7 @@ function openProjectMenu(item, { anchor = null, point = null } = {}) {
     if (!project || String(project.lifecycle || 'active') !== 'active') return false;
     const summary = projectActivityIndex.byChat.get(String(project.chat_id)) || IDLE_SUMMARY;
     const kebab = item.querySelector('.nav-project-kebab');
+    const workItemProject = { id: project.id, name: project.name };
     return openProjectRowMenu(project, {
         apiClient, anchorEl: anchor || item.querySelector('.nav-project-row'), point,
         menuButton: anchor === kebab ? kebab : null, fallbackFocus: navProjectsToggle,
@@ -1133,11 +1305,14 @@ function openProjectMenu(item, { anchor = null, point = null } = {}) {
             word: summary.word, text: markWords(summary, project._unread) },
         isPinPending: () => pendingProjectPins.has(project.id),
         onPin: (pinned) => setProjectPin(project, pinned),
+        onOpenBeside: () => openProjectPanel(project, { openOnly: true, besideSource: true }),
+        onAddWorkItem: () => workItems.openCapture(workItemProject),
+        onGoToWorkItems: () => goToProjectWorkItems(workItemProject),
         onChanged: (change = {}) => {
             if (change.optimistic && change.projectId) {
                 const row = lastProjectRows.find(p => p.id === change.projectId);
                 if (row) { row.lifecycle = 'deleting'; row._unread = false; }
-                if (navState.activeProjectId === change.projectId) closeProjectPanel();
+                if (panes.keeps(change.projectId)) panes.closeOne(change.projectId);
                 paintProjectsNav();
             } else refreshProjectsNav();
             knownProjectsJson = '';
@@ -1152,6 +1327,15 @@ const disposeProjectRowGesture = navProjectsList ? bindRowMenuGesture({
     },
     open: openProjectMenu,
 }) : () => {};
+
+let workItemsNavigation = 0;
+async function goToProjectWorkItems(project) {
+    const request = ++workItemsNavigation;
+    if (!await showPage('dashboard') || request !== workItemsNavigation || state.activePage !== 'dashboard') return;
+    dashboardControls.activateTab('projects');
+    void projectsManager.select(project.id);
+    workItems.open(project, '', { listOnly: true });
+}
 
 // The ⋯ menu's Pin or Unpin asks for the state its label named, so a menu opened before
 // another window changed the pin never flips it back. The row moves only once saved.
@@ -1189,8 +1373,7 @@ async function setProjectPin(project, pinned) {
     }
 }
 
-document.getElementById('nav-projects-add')?.addEventListener('click', async (event) => {
-    event.stopPropagation();
+async function createProjectFromClient() {
     const project = await openNewProjectDialog({
         apiClient,
         onCreated: () => { knownProjectsJson = ''; refreshProjectsNav(); },
@@ -1201,7 +1384,8 @@ document.getElementById('nav-projects-add')?.addEventListener('click', async (ev
         await refreshProjectsNav();
         openProjectPanel(project);
     }
-});
+}
+document.getElementById('nav-projects-add')?.addEventListener('click', event => { event.stopPropagation(); void createProjectFromClient(); });
 
 // Callers that must observe a read taken AFTER their own change (or after a
 // socket open) force one, coalesced behind an in-flight read; the boot prefetch
@@ -1265,74 +1449,10 @@ window.addEventListener('ouro:open-widgets', async (event) => {
     setTimeout(() => observer.disconnect(), 10000);  // a card that never comes leaves the page as it is
 });
 
-// Resizable side sections: edge drag-handles resize the sidebar and the Project panel, whose widths live in
-// --sidebar-width / --project-panel-width on :root, persisted (debounced) to /api/ui/preferences.
-// Disabled in the stack layout (layout.js). Width 0 = keep the CSS default.
-// While a handle is dragged, each frame writes the measured width into the dragged box's own --drag-width, which no
-// element inherits (style.css), and everything that lines up with the box follows it by layout: one element
-// restyles. The stored width on :root is inherited by every element, so writing it per frame restyled the whole
-// document, about half of a drag frame on the owner's Main in WebKit; it is written once, when the drag ends.
-// CW10 note: the DEVELOPMENT.md "no inline styles in JS" rule targets static styling
-// that belongs in a stylesheet — the drag's transient `userSelect:none` was that, and
-// is now the `.resizing-panels` class. A measured width in a narrowly named custom property is the exception
-// DEVELOPMENT "Design System" names.
+let disposePanelSizing = () => {};
 function setupResizablePanels(prefs) {
-    const root = document.documentElement;
-    let persistTimer = 0;
-    const persist = (patch) => {
-        clearTimeout(persistTimer);
-        persistTimer = setTimeout(() => {
-            apiFetch('/api/ui/preferences', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
-            }).catch(() => {});
-        }, 400);
-    };
-    if (Number(prefs?.sidebar_width) > 0) root.style.setProperty('--sidebar-width', `${prefs.sidebar_width}px`);
-    if (Number(prefs?.project_panel_width) > 0) root.style.setProperty('--project-panel-width', `${prefs.project_panel_width}px`);
-    const makeHandle = (target, cssVar, dir, prefKey, min, max) => {
-        if (!target) return;
-        const handle = document.createElement('div');
-        handle.className = `resize-handle resize-handle-${dir}`;
-        handle.title = 'Drag to resize';
-        target.appendChild(handle);
-        let startX = 0, startW = 0, dragging = false, frame = 0, wanted = 0;
-        // One write per displayed frame (a mouse reports more often than the screen draws), on the dragged box only.
-        const apply = () => {
-            frame = 0;
-            target.style.setProperty('--drag-width', `${wanted}px`);
-        };
-        handle.addEventListener('pointerdown', (e) => {
-            if (isStackLayout()) return;  // the stack layout has a drawer, not a resizable column
-            dragging = true; startX = e.clientX; startW = target.getBoundingClientRect().width;
-            try { handle.setPointerCapture(e.pointerId); } catch {}
-            document.body.classList.add('resizing-panels');  // CW10: class, not inline style
-            e.preventDefault();
-        });
-        handle.addEventListener('pointermove', (e) => {
-            if (!dragging) return;
-            const delta = dir === 'right' ? (e.clientX - startX) : (startX - e.clientX);
-            wanted = Math.max(min, Math.min(max, Math.round(startW + delta)));
-            if (!frame) frame = requestAnimationFrame(apply);
-        });
-        const end = (e) => {
-            if (!dragging) return;
-            if (frame) { cancelAnimationFrame(frame); apply(); }
-            dragging = false; document.body.classList.remove('resizing-panels');  // CW10
-            try { handle.releasePointerCapture(e.pointerId); } catch {}
-            // Keep the width that is shown: a Project panel dragged past the content area's edge stops at it. A box
-            // hidden mid-drag (Escape closed the Project) shows no width, and the stored one stays.
-            const shown = Math.round(target.getBoundingClientRect().width) || 0;
-            if (shown) {
-                root.style.setProperty(cssVar, `${shown}px`);
-                persist({ [prefKey]: shown });
-            }
-            target.style.removeProperty('--drag-width');
-        };
-        handle.addEventListener('pointerup', end);
-        handle.addEventListener('pointercancel', end);
-    };
-    makeHandle(document.getElementById('primary-sidebar'), '--sidebar-width', 'right', 'sidebar_width', 180, 560);
-    makeHandle(document.getElementById('project-panel'), '--project-panel-width', 'left', 'project_panel_width', 320, 1100);
+    disposePanelSizing();
+    disposePanelSizing = installPanelSizing(prefs, apiFetch);
 }
 
 apiFetch('/api/ui/preferences', { cache: 'no-store' })
@@ -1383,6 +1503,13 @@ ws.on('projects_changed', (msg) => {
 setInterval(() => refreshProjectsNav(false), 20000);
 settingsControls = initSettings(ctx);
 dashboardControls = initDashboard(ctx);
+const projectsManager = initProjectsManager({ mount: document.getElementById('dashboard-panel-projects'), state,
+    onCreate: createProjectFromClient,
+    onWorkItems: project => workItems.open(project),
+    onOpen: (project, beside) => openProjectPanel(project, { openOnly: true, besideSource: beside, composerFocus: !beside }),
+    onChanged: () => { knownProjectsJson = ''; return refreshProjectsNav(); },
+    onPin: (project, pinned) => setProjectPin(project, pinned),
+});
 initLogs({ ...ctx, mount: document.getElementById('dashboard-panel-logs') });
 evolution = initEvolution({ ...ctx, mount: document.getElementById('dashboard-panel-evolution') });
 initUpdates({ ...ctx, mount: document.getElementById('dashboard-panel-updates') });
@@ -1407,182 +1534,25 @@ window.addEventListener('pagehide', (event) => {
     evolution.dispose();
     updateStatus.dispose();
     disposeStorage?.destroy();
+    projectsManager.destroy();
+    workItems.destroy();
     disposeScrollFades.forEach((dispose) => dispose());
     telegramHost.dispose();
     disposeDrawerDrag();
     disposeProjectRowGesture();
+    panes.destroy();
+    disposePanelSizing();
+    disposeMobileKeyboard();
+    for (const inst of projectInstances.values()) inst.destroy();
 });
 loadVersion();
 syncNavigationState();
 const hashPage = pageFromHash();
 if (hashPage && hashPage !== state.activePage) showPage(hashPage);
 
-// Mobile soft-keyboard handling: viewport shrink counts only while an editable
-// owns focus. Drawer opening clears that state explicitly before navigation is
-// rendered, so stale WebView geometry cannot hide an otherwise-open sidebar.
-(function () {
-    const vvhStyle = document.createElement('style');
-    vvhStyle.id = 'runtime-vvh';
-    document.head.appendChild(vvhStyle);
-
-    const keyboardEditableSelector = [
-        'textarea',
-        'select',
-        'input:not([type])',
-        'input[type="text"]',
-        'input[type="search"]',
-        'input[type="email"]',
-        'input[type="url"]',
-        'input[type="tel"]',
-        'input[type="password"]',
-        'input[type="number"]',
-        '[contenteditable]:not([contenteditable="false"])',
-    ].join(',');
-
-    let keyboardOpen = false;
-    let keyboardTouchStartY = 0;
-    let stableViewportHeight = 0;
-    let focusBaselineHeight = 0;
-    let focusRevision = 0;
-    let baselineFrame = 0;
-
-    function keyboardEditable(node) {
-        if (!(node instanceof Element)) return null;
-        const editable = node.closest(keyboardEditableSelector);
-        if (!editable) return null;
-        if (editable.matches('input, textarea, select') && (editable.disabled || editable.readOnly)) {
-            return null;
-        }
-        return editable;
-    }
-
-    function focusedKeyboardEditable() {
-        return keyboardEditable(document.activeElement);
-    }
-
-    function viewportHeight() {
-        const candidates = [
-            window.visualViewport?.height,
-            window.innerHeight,
-            document.documentElement.clientHeight,
-        ];
-        return Number(candidates.find((value) => Number.isFinite(value) && value > 0) || 0);
-    }
-
-    function findScrollableKeyboardNode(target) {
-        let el = target;
-        while (el && el !== document.body) {
-            const overflow = getComputedStyle(el).overflowY;
-            if (['auto', 'scroll'].includes(overflow) && el.scrollHeight > el.clientHeight) return el;
-            el = el.parentElement;
-        }
-        return null;
-    }
-
-    function lockTouchStart(e) {
-        if (e.touches && e.touches.length) keyboardTouchStartY = e.touches[0].clientY;
-    }
-
-    function lockBoundaryTouch(e) {
-        const touch = e.touches && e.touches.length ? e.touches[0] : null;
-        const scrollable = findScrollableKeyboardNode(e.target);
-        if (scrollable && touch) {
-            const dy = touch.clientY - keyboardTouchStartY;
-            const atTop = scrollable.scrollTop <= 0;
-            const atBottom = Math.ceil(scrollable.scrollTop + scrollable.clientHeight) >= scrollable.scrollHeight;
-            if ((!atTop && dy > 0) || (!atBottom && dy < 0)) return;
-        }
-        e.preventDefault();
-    }
-
-    function applyKeyboardState(visible) {
-        const nextVisible = Boolean(visible);
-        if (nextVisible && !keyboardOpen) {
-            window.scrollTo(0, 0);
-            document.addEventListener('touchstart', lockTouchStart, { passive: true });
-            document.addEventListener('touchmove', lockBoundaryTouch, { passive: false });
-        } else if (!nextVisible && keyboardOpen) {
-            document.removeEventListener('touchstart', lockTouchStart);
-            document.removeEventListener('touchmove', lockBoundaryTouch);
-        }
-        document.documentElement.classList.toggle('keyboard-open', nextVisible);
-        document.body.classList.toggle('keyboard-open', nextVisible);
-        keyboardOpen = nextVisible;
-    }
-
-    function cancelBaselineFrame() {
-        if (!baselineFrame) return;
-        cancelAnimationFrame(baselineFrame);
-        baselineFrame = 0;
-    }
-
-    function rememberStableViewport(height) {
-        cancelBaselineFrame();
-        const revision = focusRevision;
-        baselineFrame = requestAnimationFrame(() => {
-            baselineFrame = 0;
-            if (revision !== focusRevision || focusedKeyboardEditable()) return;
-            stableViewportHeight = height;
-        });
-    }
-
-    const updateVvh = () => {
-        const h = viewportHeight();
-        if (isStackLayout()) {
-            // A pinch only magnifies: the room keeps the height it had, or it would shrink with the visual viewport.
-            if (pinchMagnified()) return;
-            vvhStyle.textContent = ':root{--vvh:' + Math.max(320, Math.ceil(h)) + 'px}';
-            if (!focusedKeyboardEditable()) {
-                applyKeyboardState(false);
-                rememberStableViewport(h);
-                return;
-            }
-            cancelBaselineFrame();
-            if (!focusBaselineHeight) focusBaselineHeight = stableViewportHeight || h;
-            const shrink = focusBaselineHeight - h;
-            applyKeyboardState(shrink > Math.max(120, focusBaselineHeight * 0.25));
-            return;
-        }
-        cancelBaselineFrame();
-        applyKeyboardState(false);
-        stableViewportHeight = h;
-        focusBaselineHeight = 0;
-        vvhStyle.textContent = ':root{--vvh:100dvh}';
-    };
-
-    document.addEventListener('focusin', (event) => {
-        if (!keyboardEditable(event.target)) return;
-        focusRevision += 1;
-        cancelBaselineFrame();
-        focusBaselineHeight = stableViewportHeight || viewportHeight();
-        updateVvh();
-    });
-    document.addEventListener('focusout', (event) => {
-        if (!keyboardEditable(event.target)) return;
-        focusRevision += 1;
-        const revision = focusRevision;
-        cancelBaselineFrame();
-        requestAnimationFrame(() => {
-            if (revision !== focusRevision || focusedKeyboardEditable()) return;
-            applyKeyboardState(false);
-            focusBaselineHeight = 0;
-        });
-    });
-
-    releaseMobileKeyboardForDrawer = () => {
-        const editable = focusedKeyboardEditable();
-        if (editable && typeof editable.blur === 'function') editable.blur();
-        applyKeyboardState(false);
-    };
-
-    if (window.visualViewport) {
-        window.visualViewport.addEventListener('resize', updateVvh);
-        window.visualViewport.addEventListener('scroll', updateVvh);
-    }
-    window.addEventListener('resize', updateVvh);
-    stableViewportHeight = viewportHeight();
-    updateVvh();
-}());
+const mobileKeyboard = installMobileKeyboard();
+releaseMobileKeyboardForDrawer = mobileKeyboard.releaseForDrawer;
+disposeMobileKeyboard = mobileKeyboard.dispose;
 
 // Windows Alt / Layout Switch Menu-lock suppression (shared installer — the
 // onboarding wizard document installs the same guard on its own iframe window).
@@ -1598,3 +1568,11 @@ installDesktopShellLinkInterceptor();
 // startup (chat.js::isMyThread relies on state.projectChatIds). Connect even if
 // the prefetch fails, then ws.on('open') keeps it fresh.
 refreshProjectsNav(false).finally(() => ws.connect());
+
+window.addEventListener('viper:focus-document-room', async event => {
+ const id = event.detail.projectId;
+ if (id) { const row = lastProjectRows.find(p => p.id === id); if (row) await openProjectPanel(row, { openOnly: true, besideSource: !panes.keeps(id) && panes.collaborating() }); }
+ else { if (!await showPage('chat')) return; panes.focusMain(); }
+ (projectInstances.get(id) || mainChat)?.composer?.focus();
+});
+window.addEventListener('viper:reader-closed', () => { for (const [id, inst] of projectInstances) if (!panes.keeps(id) && !inst.hasPendingWork()) destroyProjectInstance(id); });

@@ -1,0 +1,10 @@
+/* Message numbers and known-descendant cues are separate from work/status marks. */
+.nav-project-row:not(:disabled) { grid-template-columns: minmax(0,1fr) 18px; }
+.nav-project-row > .nav-project-unread { grid-column:2; grid-row:1; display:inline-flex; align-items:center; gap:4px; }
+.nav-project-row > .nav-mark { grid-column:2; grid-row:1; }
+/* A hidden unread region must not reserve a second physical column gap. */
+.nav-project-row:not(:disabled):has(> .nav-project-unread:not([hidden])) { grid-template-columns: minmax(0,1fr) auto 18px; }
+.nav-project-row > .nav-mark:has(~ .nav-project-unread:not([hidden])) { grid-column:3; }
+.nav-project-unread[hidden],.nav-project-unread > [hidden] { display:none; }
+.nav-project-unread-own { min-width:18px; padding:0 5px; box-sizing:border-box; border-radius:var(--pill-radius); background:var(--tone-crimson); color:var(--tone-crimson-ink); font-size:var(--type-meta); line-height:18px; font-weight:700; font-variant-numeric:tabular-nums; }
+.nav-project-unread-descendants { color:var(--accent-light); font-weight:700; }

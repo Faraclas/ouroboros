@@ -351,6 +351,8 @@
 
 :root[data-theme="light"] {
     --native-color-scheme: light;
+    /* Approved owner-message inset highlight; palette overlays reference this role. */
+    --user-glow-light: rgba(255, 255, 255, .04);
     --neutral-rgb: 32, 35, 43;
     --shell-rgb: 255, 255, 255;
     --composer-rgb: 244, 245, 248;

@@ -337,12 +337,19 @@ class FakeElement {
         return event;
     }
     click() { return this.dispatch('click'); }
+    show() { this.open = true; }
     showModal() { this.open = true; }
     close() { this.open = false; this.dispatch('close'); }
 }
 
 function fakeDocument() {
-    const doc = { activeElement: null, defaultView: { getComputedStyle: () => ({ visibility: 'visible' }) } };
+    const events = new EventTarget();
+    const view = new EventTarget();
+    view.getComputedStyle = () => ({ visibility: 'visible' });
+    const doc = { activeElement: null, defaultView: view,
+        addEventListener: events.addEventListener.bind(events),
+        removeEventListener: events.removeEventListener.bind(events),
+        dispatchEvent: events.dispatchEvent.bind(events) };
     doc.createElement = (tag) => new FakeElement(doc, tag);
     doc.root = doc.createElement('html');
     doc.body = doc.createElement('body');
@@ -363,7 +370,7 @@ function heldFetch() {
 
 async function settle() { for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); }
 
-function readerFixture() {
+function readerFixture({ sendToChat } = {}) {
     const doc = fakeDocument();
     const held = heldFetch();
     const priorFetch = globalThis.fetch;
@@ -378,7 +385,7 @@ function readerFixture() {
         return { node, card, file: { filename: name, meta: 'TXT · 5 B', kind: 'text', size: 5, canOpen: true,
             reader: { url: `/api/tasks/task-1/artifacts/${name}` } } };
     };
-    const reader = createDocumentReader({ doc, actions: { open() {}, download() {} } });
+    const reader = createDocumentReader({ doc, actions: { open() {}, download() {}, sendToChat } });
     const dialog = () => doc.body.querySelector('.document-reader');
     const view = () => ({
         title: dialog()?.querySelector('.document-reader-title').textContent ?? null,
@@ -394,7 +401,7 @@ test('the reader paints only its current file and a closed or superseded read pa
         const a = fx.item('a.txt');
         const b = fx.item('b.txt');
         assert.equal(fx.reader.open(a.file, { owner: a.node, returnFocus: a.card }), true);
-        assert.equal(fx.dialog().getAttribute('aria-modal'), 'true', 'the shared focus helper handles keys inside it');
+        assert.equal(fx.dialog().getAttribute('aria-modal'), 'false', 'reading does not trap the conversation');
         assert.equal(fx.doc.activeElement, fx.dialog().querySelector('.document-reader-body'));
         assert.equal(fx.view().status, 'Loading the document…');
         // Opening another file replaces the dialog and aborts the first read.
@@ -424,7 +431,34 @@ test('the reader paints only its current file and a closed or superseded read pa
     }
 });
 
-test('the reader closes with the message that opened it and with its chat', async () => {
+test('modeless Escape dismisses its selection menu first and close never steals another composer focus', () => {
+    const fx = readerFixture({ sendToChat() {} });
+    try {
+        const a = fx.item('a.txt');
+        fx.reader.open(a.file, { owner: a.node, returnFocus: a.card });
+        const dialog = fx.dialog();
+        const menu = dialog.querySelector('.viper-selection-menu');
+        menu.hidden = false;
+        menu.focus();
+        const first = menu.dispatch('keydown', { key: 'Escape' });
+        assert.equal(first.defaultPrevented, true);
+        assert.equal(menu.hidden, true);
+        assert.equal(fx.dialog(), dialog, 'only the open selection menu closes on first Escape');
+        assert.equal(fx.doc.activeElement, dialog.querySelector('.document-reader-body'));
+        const tab = dialog.dispatch('keydown', { key: 'Tab' });
+        assert.equal(tab.defaultPrevented, false, 'Tab is not trapped in a modeless reader');
+        dialog.dispatch('keydown', { key: 'Escape' });
+        assert.equal(fx.dialog(), null);
+        assert.equal(fx.held.pending[0].signal.aborted, true);
+        assert.equal(fx.doc.activeElement, a.card);
+        fx.reader.open(a.file, { owner: a.node, returnFocus: a.card });
+        const sibling = fx.doc.createElement('textarea'); fx.doc.body.append(sibling); sibling.focus();
+        fx.reader.close();
+        assert.equal(fx.doc.activeElement, sibling, 'closing after focus moved to another composer leaves it there');
+    } finally { fx.restore(); }
+});
+
+test('the captured reader survives message release but closes explicitly and with its chat', async () => {
     const fx = readerFixture();
     try {
         const a = fx.item('a.txt');
@@ -433,13 +467,15 @@ test('the reader closes with the message that opened it and with its chat', asyn
         fx.reader.release(other.node);
         assert.ok(fx.dialog(), 'releasing another message keeps the reader');
         fx.reader.release(fx.chat);
-        assert.equal(fx.dialog(), null, 'releasing an ancestor of the opening message closes it');
-        assert.equal(fx.held.pending[0].signal.aborted, true);
-        assert.notEqual(fx.doc.activeElement, a.card, 'a released message is not refocused');
-
-        fx.reader.open(a.file, { owner: a.node, returnFocus: a.card });
-        fx.dialog().click(); // the backdrop is the dialog box itself
-        assert.equal(fx.dialog(), null, 'a backdrop click closes');
+        assert.ok(fx.dialog(), 'the reader owns its captured file independently of its message');
+        assert.equal(fx.held.pending[0].signal.aborted, false);
+        fx.held.pending[0].answer('hello', { headers: { 'content-length': '5' } });
+        await settle();
+        assert.equal(fx.view().source, 'hello');
+        fx.dialog().click();
+        assert.ok(fx.dialog(), 'modeless outside clicks do not discard reading');
+        fx.dialog().querySelector('[data-reader-action="close"]').click();
+        assert.equal(fx.dialog(), null);
         fx.reader.open(a.file, { owner: a.node, returnFocus: a.card });
         fx.reader.destroy();
         assert.equal(fx.dialog(), null);
@@ -524,7 +560,7 @@ function mediaFixture() {
     return { doc, held, feed, media, delivered, reader: () => doc.body.querySelector('.document-reader'), restore };
 }
 
-test('a grouped file evicted with the earlier bubble that holds it closes its reader', async () => {
+test('a grouped file reader retains its captured source after the holding bubble is evicted', async () => {
     const { doc, held, feed, media, delivered, restore } = mediaFixture();
     try {
         const bubbles = [delivered('a.txt', 1), delivered('b.txt', 2)].map((msg) => {
@@ -541,14 +577,19 @@ test('a grouped file evicted with the earlier bubble that holds it closes its re
         media.release(bubbles[1]);
         assert.ok(reader(), 'the emptied bubble that never reached the feed owns nothing');
         media.release(wrapper);
-        assert.equal(reader(), null, 'evicting the wrapper that holds the file closes its reader');
-        assert.equal(held.pending[0].signal.aborted, true);
+        assert.ok(reader(), 'eviction retains reading, not message listeners');
+        assert.equal(held.pending[0].signal.aborted, false);
+        held.pending[0].answer('hello', { headers: { 'content-length': '5' } });
+        await settle();
+        assert.equal(reader().querySelector('.document-reader-source').textContent, 'hello');
+        media.destroy();
+        assert.equal(reader(), null, 'actual chat destruction closes the retained reader');
     } finally {
         restore();
     }
 });
 
-test('closeTransient closes the reader and the file dialog and keeps the chat as it was', async () => {
+test('closeTransient keeps captured reading but closes the file action dialog', async () => {
     const fx = mediaFixture();
     try {
         const notes = fx.media.buildDocumentBubble(fx.delivered('notes.txt', 1, 'task-n'));
@@ -557,8 +598,8 @@ test('closeTransient closes the reader and the file dialog and keeps the chat as
         notes.querySelector('.chat-file-card').click();
         assert.ok(fx.reader(), 'the reader is open with its read pending');
         fx.media.closeTransient();
-        assert.equal(fx.reader(), null, 'the reader is gone');
-        assert.equal(fx.held.pending[0].signal.aborted, true, 'and its read stopped');
+        assert.ok(fx.reader(), 'the modeless reader remains available while chatting');
+        assert.equal(fx.held.pending[0].signal.aborted, false, 'the captured read continues');
         archive.querySelector('.chat-file-card').click();
         const dialog = fx.doc.body.querySelector('.chat-file-dialog');
         assert.equal(dialog.open, true);
@@ -578,8 +619,8 @@ test('closeTransient closes the reader and the file dialog and keeps the chat as
 
 // The owner's attachments and Ouroboros's deliveries share one media controller: an uploaded
 // Markdown or text file reads from its own upload like a delivered one, a PDF keeps the file
-// dialog, and each modal ends with the message that holds its card, a grouped card's earlier bubble too.
-test("owner uploads read beside the delivered reader, other files keep the dialog, and each modal ends with its own card", () => {
+// action dialog. Eviction removes card listeners and action dialogs, not captured reading.
+test("owner uploads retain captured reading while file action dialogs end with their own card", () => {
     const fx = mediaFixture();
     try {
         const owner = (caption, views) => {
@@ -628,10 +669,11 @@ test("owner uploads read beside the delivered reader, other files keep the dialo
         fx.media.release(own);
         assert.ok(fx.reader(), "another message's release leaves this reader open");
         fx.media.release(later);
-        assert.equal(fx.reader(), null, "releasing the owner's message closes the reader its card opened");
-        assert.equal(fx.held.pending.at(-1).signal.aborted, true, 'and stops its read');
+        const retainedDraft = fx.reader();
+        assert.ok(retainedDraft, "the owner's captured upload remains readable");
+        assert.equal(fx.held.pending.at(-1).signal.aborted, false, 'its exact read is independent of the card');
         card(later, 'draft.md').click();
-        assert.equal(fx.reader(), null, 'a released card opens nothing');
+        assert.equal(fx.reader(), retainedDraft, 'a released card opens nothing new');
         card(report.wrapper, 'report.pdf').click();
         assert.equal(title(), 'report.pdf');
         fx.media.release(report.dropped);
@@ -644,8 +686,9 @@ test("owner uploads read beside the delivered reader, other files keep the dialo
         fx.media.release(earlier);
         assert.ok(fx.reader(), "releasing an owner's message leaves the delivered reader open");
         fx.media.release(brief.wrapper);
-        assert.equal(fx.reader(), null, 'releasing the group that holds brief.md closes its reader');
-        assert.equal(fx.held.pending.at(-1).signal.aborted, true, 'and stops its read');
+        const retainedBrief = fx.reader();
+        assert.ok(retainedBrief, 'the captured delivered report remains readable too');
+        assert.equal(fx.held.pending.at(-1).signal.aborted, false);
 
         const kept = owner('Kept', [uploadView('plan.pdf', 'file')]);
         card(kept, 'plan.pdf').click();
@@ -655,7 +698,9 @@ test("owner uploads read beside the delivered reader, other files keep the dialo
         fx.media.release(kept);
         assert.equal(title(), null, "releasing the owner's message closes the dialog its card opened");
         card(kept, 'plan.pdf').click();
-        assert.deepEqual([title(), fx.reader()], [null, null], 'a released card opens nothing');
+        assert.deepEqual([title(), fx.reader()], [null, retainedBrief], 'a released card opens nothing and leaves captured reading alone');
+        fx.media.destroy();
+        assert.equal(fx.reader(), null, 'destroy still closes reading and its pending load');
     } finally {
         fx.restore();
     }
@@ -778,7 +823,9 @@ test('a superseded, closed or released image load paints nothing and its late ev
         fx.reader.release(a.node);
         assert.ok(fx.dialog(), "another message's release keeps it");
         fx.reader.release(b.node);
-        assert.equal(fx.dialog(), null, 'the message that opened it takes it along');
+        assert.ok(fx.dialog(), 'the captured image survives its source message');
+        fx.reader.close();
+        assert.equal(fx.dialog(), null, 'explicit close still aborts the pending image');
         assert.equal(images[1].getAttribute('src'), null);
         for (const type of ['load', 'error']) images[1].dispatch(type);
         await settle();
@@ -841,7 +888,7 @@ test('an image that outlasts the bound stops, says so and waits for Retry; close
     }
 });
 
-test('a delivered photo tile previews in the chat; Open stays explicit; the tile closes with the bubble holding it', async () => {
+test('a delivered photo previews from its captured source after tile eviction; Open stays explicit', async () => {
     const fx = mediaFixture();
     const images = imageCapture(fx.doc);
     const outside = [];
@@ -875,11 +922,12 @@ test('a delivered photo tile previews in the chat; Open stays explicit; the tile
         fx.media.release(bubbles[1]);
         assert.ok(fx.reader(), 'the emptied bubble that never reached the feed owns nothing');
         fx.media.release(wrapper);
-        assert.equal(fx.reader(), null, 'evicting the bubble that now holds the tile closes its preview');
+        assert.equal(fx.reader(), reader, 'the captured image is independent of the evicted tile');
         images.at(-1).dispatch('load');
         await settle();
         tile.click();
-        assert.equal(fx.reader(), null, 'a late load and a released tile open nothing');
+        assert.equal(fx.reader(), reader, 'the released tile cannot replace the captured reader');
+        assert.equal(reader.querySelector('.document-reader-body').children[0], images.at(-1));
         // The ••• menu keeps Open in new tab for a fresh photo, an inline one through window.open.
         const inline = fx.media.buildMediaBubble({ type: 'photo', role: 'assistant', mime: 'image/png', image_base64: 'AAAA' });
         fx.feed.append(inline);
@@ -966,7 +1014,7 @@ test("a photo's ••• menu views it in the same reader, focus back on ••
     }
 });
 
-test("an owner's uploaded image previews from its upload route and its preview closes when the tile becomes a card", async () => {
+test("an owner's captured upload preview survives a thumbnail becoming an unavailable-preview card", async () => {
     const fx = mediaFixture();
     const images = imageCapture(fx.doc);
     try {
@@ -986,7 +1034,8 @@ test("an owner's uploaded image previews from its upload route and its preview c
         globalThis.fetch = async (_url, init) => ({ ok: true, status: 200, method: init?.method });
         bubble.querySelector('img.chat-photo').dispatch('error');
         await settle();
-        assert.equal(fx.reader(), null, 'the tile became a card, and its preview went with it');
+        assert.ok(fx.reader(), 'the already decoded reader image survives the thumbnail error');
+        assert.equal(fx.reader().querySelector('.document-reader-body').children[0], images.at(-1));
         assert.equal(bubble.querySelector('.chat-photo-open'), null);
         assert.match(bubble.querySelector('.chat-file-meta').textContent, /Preview unavailable/);
     } finally {
@@ -1017,7 +1066,8 @@ test('a delivered raster card and a question image preview; SVG and a current-pa
         const current = card({ ...fx.delivered('shot.png', 3, 'task-c'), mime: 'image/png', download_url: '/api/files/download?path=shot.png' });
         assert.notEqual(current.querySelector('.chat-file-more').textContent, 'View');
         current.click();
-        assert.deepEqual([dialog().open, fx.reader()], [true, null], 'a current file path is not the delivered copy');
+        assert.equal(dialog().open, true, 'a current file path is not read as a delivered copy');
+        assert.equal(fx.reader().querySelector('.document-reader-title').textContent, 'chart.png', 'the current path never replaces the exact captured reader');
         fx.media.closeTransient();
         // A question's image material is the same card (result_files.syncQuestionMaterials).
         const question = fx.doc.createElement('div');
@@ -1027,7 +1077,7 @@ test('a delivered raster card and a question image preview; SVG and a current-pa
         assert.deepEqual([fx.reader().querySelector('.document-reader-title').textContent, images.at(-1).getAttribute('src')],
             ['comparison.png', '/api/tasks/task-q/artifacts/comparison.png']);
         fx.media.release(question);
-        assert.equal(fx.reader(), null, 'the question that holds the material takes its preview along');
+        assert.equal(fx.reader().querySelector('.document-reader-title').textContent, 'comparison.png', 'question retirement retains its captured material');
     } finally {
         fx.restore();
     }

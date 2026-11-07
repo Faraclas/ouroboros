@@ -30,7 +30,9 @@ function makeDoc() {
     }
     doc.body = node('body');
     doc.body.querySelector = () => null;
-    doc.querySelector = (selector) => (selector === 'dialog[open]' && doc.dialogOpen ? {} : null);
+    doc.querySelector = (selector) => (
+        selector === 'dialog[open]' && (doc.dialogOpen || doc.modelessOpen)
+        || selector === 'dialog:modal' && doc.dialogOpen ? {} : null);
     doc.dialogs = [];
     doc.querySelectorAll = () => doc.dialogs;
     doc.activeElement = doc.body;
@@ -108,6 +110,20 @@ test('Escape closes the top layer unless something inside took the key or a nati
     assert.equal(event.prevented, true);
     assert.equal(w.layers.size(), 0);
     w.win.fire('keydown', { key: 'Escape', defaultPrevented: false, preventDefault() { throw new Error('nothing open'); } });
+    w.layers.destroy();
+});
+
+test('a background modeless reader does not take Escape from the focused shell layer', () => {
+    const w = world();
+    const closed = [];
+    w.doc.modelessOpen = true;
+    w.layers.push({ id: 'drawer', el: w.sidebar, onClose: () => closed.push('drawer') });
+    assert.equal(w.doc.activeElement, w.sidebar);
+    const event = { key: 'Escape', defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+    w.win.fire('keydown', event);
+    assert.deepEqual(closed, ['drawer']);
+    assert.equal(w.doc.modelessOpen, true, 'the unrelated reader stays open');
+    assert.equal(event.defaultPrevented, true);
     w.layers.destroy();
 });
 

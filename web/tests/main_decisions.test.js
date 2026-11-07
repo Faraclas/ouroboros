@@ -411,7 +411,9 @@ test('question photos reuse the existing file preview and the reader, from their
         const image = fx.tracker.created.filter((node) => node.tagName === 'IMG').at(-1);
         assert.equal(image.getAttribute('src'), '/api/tasks/task-1/artifacts/material-safe.png');
         fx.controller.release(card);
-        assert.equal(document.body.querySelector('.document-reader'), null, 'retiring the question closes its reader');
+        assert.equal(document.body.querySelector('.document-reader'), reader, 'the retired question leaves its captured document readable');
+        fx.controller.destroy();
+        assert.equal(document.body.querySelector('.document-reader'), null, 'destroy still closes the captured reader');
     } finally { fx.controller.destroy(); fx.restore(); }
 });
 
@@ -462,6 +464,8 @@ test('current Main pause offers the existing real Resume action and withdraws it
         main.waiting.snapshot({ main_attention: [row], main_attention_complete: true, current_questions_complete: true });
         const resume = find(env.mount, node => node.dataset.resumeRun === '1');
         assert.ok(resume);
+        assert.match(find(env.mount, node => node.classList.contains('owner-action-reason')).textContent,
+            /Paused at the spending limit.*Resume/);
         await resume.listeners.get('click')[0]({ stopPropagation() {} });
         assert.equal(calls[0].url, '/api/tasks/paused/resume');
         assert.equal(calls[0].init.method, 'POST');

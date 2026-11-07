@@ -610,7 +610,7 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
     own.get_by_text('Publication slips by about a week.', exact=True).wait_for()
     assert own.evaluate(CARD_FORM_JS) == card('waiting').evaluate(CARD_FORM_JS)
     setup_browser.capture(page, f'question-mirror-same-form-{width}')
-    page.locator('#project-panel-close').click()
+    page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
 
     # One touch answers from Main: the recorded result reads for five seconds, then only the
     # Main copy goes. A duplicate live frame and the census's own answer never restart it.
@@ -639,7 +639,7 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
     page.evaluate("""p => window.dispatchEvent(new CustomEvent('ouro:open-project', {detail: {project: p,
         task_id: 'proof-task', quiz_id: 'waiting'}}))""", project)
     own.locator('.chat-quiz-option.chosen').filter(has_text='Wait for written permission').wait_for()
-    page.locator('#project-panel-close').click()
+    page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
 
     # The Project form answers another question while the owner reads further down: the copy
     # above the reader settles and leaves without moving the reading position. Closing the

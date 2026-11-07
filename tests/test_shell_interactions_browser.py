@@ -633,27 +633,38 @@ def test_collapsed_projects_keep_only_the_pinned_ones_and_the_tools_follow(shell
     assert facts['expanded']['expanded'] == 'true' and len(facts['expanded']['rows']) == len(PROJECTS), facts
 
 
-DOT_FACTS = """() => {
+DOT_FACTS = """project => {
     const ink = (el) => el && getComputedStyle(el).color;
     const fill = (mark) => mark && getComputedStyle(mark.querySelector('i')).backgroundColor;
     const token = (name) => { const probe = document.createElement('span'); probe.style.color = `var(${name})`;
         document.querySelector('#nav-projects-list').append(probe); const c = getComputedStyle(probe).color; probe.remove(); return c; };
-    const unread = document.querySelector('#nav-projects-list .nav-project-row[data-unread]');
+    const unread = document.querySelector(`#nav-projects-list .nav-project-row[data-project-id="${project}"]`);
     const working = document.querySelector('#nav-projects-list .status-mark[data-shape="moving"]')?.closest('.nav-project-row');
     const read = document.querySelector('#nav-projects-list .nav-project-row:not([data-unread]):not(.active)');
     const mark = (row) => row?.querySelector('.status-mark');
-    return {unread: unread && {shape: mark(unread).dataset.shape, hue: mark(unread).dataset.hue, fill: fill(mark(unread)),
-                ring: getComputedStyle(mark(unread).querySelector('i')).boxShadow, size: mark(unread).querySelector('i').getBoundingClientRect().width,
+    const region = unread?.querySelector('.nav-project-unread');
+    const own = region?.querySelector('.nav-project-unread-own');
+    const nested = region?.querySelector('.nav-project-unread-descendants');
+    return {unread: unread && {shape: mark(unread).dataset.shape, hue: mark(unread).dataset.hue, hidden: mark(unread).hidden,
+                count: unread.dataset.unreadCount, regionHidden: region.hidden, regionAria: region.getAttribute('aria-hidden'),
+                pill: {shown: !own.hidden && getComputedStyle(own).display !== 'none', text: own.textContent,
+                    fill: getComputedStyle(own).backgroundColor, ink: ink(own), title: own.title,
+                    width: own.getBoundingClientRect().width, height: own.getBoundingClientRect().height},
+                descendants: {hidden: nested.hidden, svgs: nested.querySelectorAll('svg').length,
+                    text: nested.textContent, title: nested.title},
                 ink: ink(unread), name: unread.getAttribute('aria-label')},
             working: working && {hue: mark(working).dataset.hue, fill: fill(mark(working)), ink: ink(working)},
-            readInk: ink(read), crimson: token('--mark-unread'),
+            readInk: ink(read), crimson: token('--tone-crimson'), crimsonInk: token('--tone-crimson-ink'),
+            tintedMarks: document.querySelectorAll('#nav-projects-list .status-mark[data-hue="unread"]').length,
             retired: document.querySelectorAll('#primary-sidebar :is(.nav-unread-dot, .nav-activity-marker)').length};
 }"""
 
 
-def test_sidebar_marks_say_new_messages_in_crimson_and_work_in_the_row_ink(shell_ui, tmp_path):
+def test_sidebar_unread_pill_and_work_mark_keep_separate_meanings(shell_ui, tmp_path):
     page = seed_page(shell_ui, 1108, 680)
-    unread = [dict(p, visible_revision=3) if i == 2 else p for i, p in enumerate(PROJECTS)]
+    unread = [dict(p, visible_revision=3) if i == 2 else
+              dict(p, parent_id=PROJECTS[2]['id'], visible_revision=2) if i == 3 else p
+              for i, p in enumerate(PROJECTS)]
     state = dict(live_state([PROJECTS[5]['id']]), projects=unread)
     facts = {'engine': shell_ui['engine']}
     try:
@@ -663,15 +674,23 @@ def test_sidebar_marks_say_new_messages_in_crimson_and_work_in_the_row_ink(shell
         page.wait_for_function("() => document.querySelector('#nav-projects-list .nav-project-row[data-unread]') && "
                                "document.querySelector('#nav-projects-list .status-mark[data-shape=\"moving\"]')",
                                timeout=20_000)
-        facts.update(page.evaluate(DOT_FACTS))
+        facts.update(page.evaluate(DOT_FACTS, PROJECTS[2]['id']))
     finally:
         evidence(tmp_path, f'shell-sidebar-dots-{shell_ui["engine"]}', facts)
         page.close()
-    # A room at rest with new messages is one plain 7px crimson dot, no ring around it; its name keeps every row's ink.
-    assert facts['unread']['shape'] == 'dot' and facts['unread']['hue'] == 'unread', facts
-    assert facts['unread']['fill'] == facts['crimson'] and facts['unread']['ring'] == 'none', facts
-    assert facts['unread']['size'] == 7 and facts['unread']['ink'] == facts['readInk'], facts
-    assert facts['unread']['name'].endswith(' · new messages'), facts
+    # Own unread is a crimson number, independent of work and known-descendant unread.
+    room, pill = facts['unread'], facts['unread']['pill']
+    assert (room['shape'], room['hue'], room['hidden']) == ('none', 'ink', True), facts
+    assert room['count'] == '3' and not room['regionHidden'] and room['regionAria'] == 'true', facts
+    assert pill['shown'] and pill['text'] == '3', facts
+    assert pill['fill'] == facts['crimson'] and pill['ink'] == facts['crimsonInk'], facts
+    assert pill['width'] >= 18 and pill['height'] == 18, facts
+    own_words = f"3 unread messages in {PROJECTS[2]['name']}"
+    child_words = f"Unread in listed descendants: {PROJECTS[3]['name']} (2)"
+    assert pill['title'] == own_words, facts
+    assert room['descendants'] == {'hidden': False, 'svgs': 1, 'text': '', 'title': child_words}, facts
+    assert room['name'] == f"{PROJECTS[2]['name']} · Top level · {own_words} · {child_words}", facts
+    assert room['ink'] == facts['readInk'] and facts['tintedMarks'] == 0, facts
     assert facts['working']['hue'] == 'ink' and facts['working']['fill'] == facts['working']['ink'], facts
     assert facts['retired'] == 0, facts
 
@@ -818,7 +837,7 @@ PANEL_FRAMES = """({project, opening, answers}) => { const panel = document.getE
     return sample({root: panel, target: () => panel, property: 'transform',
         ready: () => panel.classList.contains('open') === opening,
         act: () => { if (opening) window.dispatchEvent(new CustomEvent('ouro:open-project', {detail: {project}}));
-                     else panel.querySelector('#project-panel-close').click(); },
+                     else panel.querySelector(`[data-pane-project="${project.id}"] [data-pane-close]`).click(); },
         measure: () => ({left: panel.getBoundingClientRect().left, hidden: panel.hidden,
                         rows: answers.filter(answer => [...panel.querySelectorAll('.chat-messages .chat-bubble')]
                             .some(row => row.textContent.includes(answer))).length})}); }"""
@@ -844,8 +863,8 @@ def test_docked_the_project_panel_comes_in_with_its_room_and_goes_back_with_it(s
         width = page.evaluate('innerWidth')
         facts['opening'] = page.evaluate(PANEL_FRAMES, {'project': PROJECTS[0], 'opening': True, 'answers': answers})
         rest(page)
-        page.locator('#project-panel-close').click(trial=True)
-        facts['closing'] = page.evaluate(PANEL_FRAMES, {'opening': False, 'answers': answers})
+        page.locator(f'[data-pane-project="{PROJECTS[0]["id"]}"] [data-pane-close]').click(trial=True)
+        facts['closing'] = page.evaluate(PANEL_FRAMES, {'project': PROJECTS[0], 'opening': False, 'answers': answers})
         page.wait_for_function("() => document.getElementById('project-panel').hidden")
     finally:
         evidence(tmp_path, f'shell-panel-arrival-{shell_ui["engine"]}', facts)
@@ -939,6 +958,8 @@ def test_a_row_that_hides_gives_the_keyboard_to_the_projects_toggle(shell_ui, tm
         page.keyboard.press('Enter')
         page.locator('body > .project-row-menu:not([data-leaving])').wait_for()
         facts['in_menu'] = page.evaluate("() => document.activeElement.dataset.prm || ''")
+        page.keyboard.press('ArrowDown')
+        facts['second_in_menu'] = page.evaluate("() => document.activeElement.dataset.prm || ''")
         unpin(pins[1:])
         page.wait_for_function(hidden, arg=pins[0], timeout=20_000)
         settle(page)
@@ -957,7 +978,8 @@ def test_a_row_that_hides_gives_the_keyboard_to_the_projects_toggle(shell_ui, tm
     finally:
         evidence(tmp_path, f'shell-sidebar-collapse-focus-{shell_ui["engine"]}', facts)
         page.close()
-    assert facts['collapsed'] == pins and facts['in_menu'] == 'pin', facts
+    assert facts['collapsed'] == pins and facts['in_menu'] == 'beside', facts
+    assert facts['second_in_menu'] == 'pin', facts
     assert facts['menus_after'] == 0 and facts['focus_after_menu'] == 'nav-projects-toggle', facts
     assert facts['focus_after_row'] == 'nav-projects-toggle' and facts['list_hidden'] is True, facts
     assert facts['expanded_rows'] == len(PROJECTS), 'the keyboard expands the list again from where it was left'
@@ -966,7 +988,7 @@ def test_a_row_that_hides_gives_the_keyboard_to_the_projects_toggle(shell_ui, tm
 ROWS = "() => [...document.querySelectorAll('#nav-projects-list > .nav-project-item')].filter((e) => !e.hidden).map((e) => e.querySelector('[data-project-id]').dataset.projectId)"
 
 
-def test_collapsed_projects_ignore_the_census_and_the_open_one(shell_ui, tmp_path):
+def test_collapsed_projects_ignore_the_census_but_keep_the_open_one(shell_ui, tmp_path):
     page = seed_page(shell_ui, 1108, 680)
     current = {'state': live_state([PROJECTS[3]['id']])}
     facts = {'engine': shell_ui['engine']}
@@ -985,7 +1007,7 @@ def test_collapsed_projects_ignore_the_census_and_the_open_one(shell_ui, tmp_pat
             settle(page)
             facts[name] = page.evaluate(ROWS)
             facts[f'{name}_header'] = page.evaluate(header)
-        # The open Project keeps no row in a collapsed list either: the room itself is open beside it.
+        # Global collapse retains the active destination, not every room with census work.
         open_project(page, 12)
         settle(page)
         facts['open'] = page.evaluate(ROWS)
@@ -993,7 +1015,7 @@ def test_collapsed_projects_ignore_the_census_and_the_open_one(shell_ui, tmp_pat
     finally:
         evidence(tmp_path, f'shell-sidebar-collapse-census-{shell_ui["engine"]}', facts)
         page.close()
-    assert facts['one'] == facts['three'] == facts['none'] == facts['open'] == [], facts
-    assert facts['list_hidden'] is True, facts
+    assert facts['one'] == facts['three'] == facts['none'] == [], facts
+    assert facts['open'] == [PROJECTS[12]['id']] and facts['list_hidden'] is False, facts
     # Work under the collapsed header shows as its one mark: moving while any works, nothing once none does.
     assert (facts['one_header'], facts['three_header'], facts['none_header']) == ('moving', 'moving', 'none'), facts

@@ -433,6 +433,12 @@ def write_task_result(
         if create_only and existing:
             return None
         prepared_fields = dict(fields)
+        if "activity_assessments" in prepared_fields:
+            # Explicit judgments use activity_history.record_assessment under this
+            # same store lock. Ordinary enrichment/copy-back cannot replace them.
+            from ouroboros.activity_history import merge_assessments
+            prepared_fields["activity_assessments"] = merge_assessments(
+                existing.get("activity_assessments"), prepared_fields["activity_assessments"])
         if not existing and "swarm_fanout_rollup" not in prepared_fields:
             from ouroboros.swarm_rollup import initial_swarm_rollup
             prepared_fields["swarm_fanout_rollup"] = initial_swarm_rollup(results_drive_root)
@@ -443,6 +449,10 @@ def write_task_result(
         projected_fields = _field_projector(existing, {**prepared_fields, "status": status}) if _field_projector else prepared_fields
         if projected_fields is None:  # projector saw a terminal/stale row: no mutation
             return None
+        if isinstance(existing.get("service_observations"), dict) and isinstance(projected_fields.get("service_observations"), dict):
+            from ouroboros.service_observations import merge_observations
+            projected_fields["service_observations"] = merge_observations(
+                existing["service_observations"], projected_fields["service_observations"])
         # The store reconciles fan-out base witnesses with addressed event union,
         # including an independently repaired execution-root base on copy-back.
         projected_status = str(projected_fields.pop("status", status))

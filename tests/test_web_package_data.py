@@ -88,3 +88,22 @@ def test_vendor_tree_fully_covered_by_package_data():
         "web/vendor files not covered by any [tool.setuptools.package-data] "
         f"glob (would be dropped from the wheel): {missing}"
     )
+
+
+def test_index_html_static_references_covered_by_package_data():
+    """The remodeled shell's artwork is as mandatory as its scripts and CSS."""
+    globs = _package_data_web_globs()
+    html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    refs = set(re.findall(r'(?:href|src)="/static/([^"#?]+)', html))
+    assert refs
+    for ref in sorted(refs):
+        assert (WEB_DIR / ref).is_file(), f"missing static asset: {ref}"
+        assert _covered(ref, globs), f"static asset absent from wheel patterns: {ref}"
+
+
+def test_sidebar_artwork_tree_covered_by_package_data():
+    globs = _package_data_web_globs()
+    files = sorted(path.relative_to(WEB_DIR).as_posix()
+                   for path in (WEB_DIR / "assets" / "sidebar-art").rglob("*") if path.is_file())
+    assert files, "remodeled sidebar artwork is missing"
+    assert all(_covered(path, globs) for path in files), files

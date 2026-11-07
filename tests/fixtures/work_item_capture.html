@@ -1,0 +1,74 @@
+<!doctype html>
+<html class="ouro-ui"><head><meta charset="utf-8">
+<link rel="stylesheet" href="/static/ui.css"><link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/work_items.css"></head><body>
+<button id="origin">Actions for Project B</button>
+<textarea id="chat">Active room A draft</textarea>
+<script type="module">
+// Product modules + their shared mutation/focus owners; only the server is fake.
+import {createWorkItems} from '/static/modules/work_items.js';
+import {openProjectRowMenu} from '/static/modules/project_create.js';
+const h = window.h = {mode: 'success', writes: [], reads: [], toasts: [], items: [],
+    receipts: new Map(), release: null, checkRelease: null, readDelay: false, aborted: 0,
+    actions: [], target: {id: 'b', name: 'Project B', lifecycle: 'active'}};
+function held(signal, releaseName) {
+    return new Promise((resolve, reject) => {
+        const abort = () => { h.aborted++; reject(new DOMException('Aborted', 'AbortError')); };
+        h[releaseName] = () => { signal.removeEventListener('abort', abort); resolve(); };
+        if (signal.aborted) abort(); else signal.addEventListener('abort', abort, {once: true});
+    });
+}
+h.wi = createWorkItems({
+    onCaptured: (p, item) => h.toasts.push({project: p, item}),
+    read: async (url, opts, policy) => {
+        if (policy.rejectOkFalse !== true) throw Error('Strict response policy missing');
+        if (!opts.method) {
+            const u = new URL(url, location.origin);
+            if (u.pathname !== '/api/extensions/project-boards/list') throw Error('Unexpected read');
+            h.reads.push(url);
+            if (h.readDelay) await held(opts.signal, 'checkRelease');
+            const items = h.items.filter(i => i.project_id === u.searchParams.get('project_id'));
+            return {ok: true, items, counts: {idea: items.length}, total: items.length,
+                offset: 0, limit: 100, has_more: false};
+        }
+        const payload = JSON.parse(opts.body);
+        h.writes.push({url, payload, method: opts.method, headers: opts.headers});
+        if (url !== '/api/extensions/project-boards/capture' || opts.method !== 'POST') throw Error('Unexpected write');
+        if (Object.keys(payload).sort().join(',') !== 'description,project_id,request_id,title') {
+            throw Object.assign(Error('Unknown capture fields'), {status: 400, body: {ok: false, error: {code: 'invalid'}}});
+        }
+        if (!payload.project_id || !payload.title.trim() || !payload.request_id) throw Error('Incomplete capture');
+        const mode = h.mode; h.mode = 'success';
+        if (mode === 'delay') await held(opts.signal, 'release');
+        if (mode === 'reject') throw Object.assign(Error('Readonly board'), {status: 403, body: {ok: false, error: {code: 'readonly'}}});
+        let item = h.receipts.get(payload.request_id);
+        if (item && JSON.stringify(h.receipts.get(payload.request_id).request) !== JSON.stringify(payload)) {
+            throw Object.assign(Error('Request conflict'), {status: 409, body: {ok: false, error: {code: 'request_conflict'}}});
+        }
+        if (!item) {
+            item = {...payload, request: structuredClone(payload), disposition: 'idea',
+                id: 'saved-' + h.items.length, revision: 1};
+            h.items.push(item); h.receipts.set(payload.request_id, item);
+        }
+        if (mode === 'lost') throw Error('Connection lost after commit');
+        const mismatches = { 'mismatch-project': {project_id: 'WRONG'},
+            'mismatch-title': {title: 'WRONG'}, 'mismatch-description': {description: 'WRONG'},
+            'mismatch-state': {disposition: 'planned'} };
+        if (mode in mismatches) return {ok: true, item: {...item, ...mismatches[mode]}};
+        if (mode === 'bad-json') return {ok: true};
+        if (mode === 'null-data') return null;
+        return {ok: true, item};
+    },
+});
+h.open = (id = 'b', name = 'Project B') => h.wi.openCapture({id, name});
+h.menu = (add = true, go = true) => {
+    // Bind the row identity as at opening; a later selection/rename is not a retarget.
+    const target = {...h.target};
+    openProjectRowMenu(target, {anchorEl: document.querySelector('#origin'),
+        onAddWorkItem: add ? () => {h.actions.push(['add', target.id]); h.wi.openCapture(target);} : undefined,
+        onGoToWorkItems: go ? () => {h.actions.push(['go', target.id]); h.wi.open(target, '', {listOnly: true});} : undefined});
+};
+document.querySelector('#origin').addEventListener('contextmenu', event => {event.preventDefault(); h.menu();});
+h.destroy = () => h.wi.destroy();
+window.ready = true;
+</script></body></html>

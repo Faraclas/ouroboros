@@ -501,10 +501,18 @@ function positionTaskControlMenu(anchor, menu) {
 
 function watchTaskControlMenu(anchor, menu) {
     const isCurrentMenu = () => openMenu === menu && openTrigger === anchor;
+    const { left, top, width, height } = anchor.getBoundingClientRect();
+    const openedAt = { x: left + width / 2, y: top + height / 2 };
     const closeForViewportChange = (event) => {
-        // A height-clamped portal is its own scrollport. Scrolling it does not
-        // move the trigger, so keep it open; ancestor/page scroll still closes.
-        if (event.type === 'scroll' && event.target === menu) return;
+        // Like bindMenu, invalidate geometry, not a queued or independent feed
+        // scroll notification. A stationary trigger keeps its portal usable.
+        if (event.type === 'scroll') {
+            if (event.target === menu) return;
+            const now = anchor.getBoundingClientRect();
+            if (anchor.isConnected
+                && Math.abs(now.left + now.width / 2 - openedAt.x) <= 0.5
+                && Math.abs(now.top + now.height / 2 - openedAt.y) <= 0.5) return;
+        }
         if (isCurrentMenu()) closeTaskControlMenu();
     };
     document.addEventListener('scroll', closeForViewportChange, true);

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "status": "unavailable",
+  "source": "github.copilot_internal.user",
+  "observed_at": null,
+  "last_attempt_at": "2030-01-02T03:00:00Z",
+  "next_refresh_after": "2030-01-02T03:05:00Z",
+  "error": {
+    "code": "unauthorized",
+    "message": "GitHub rejected the credential (401).",
+    "http_status": 401,
+    "retry_after_s": null
+  },
+  "account": null,
+  "premium": null,
+  "reset_at": null,
+  "nominal_usd": null
+}

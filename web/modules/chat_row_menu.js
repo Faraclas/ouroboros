@@ -5,10 +5,11 @@
 // the card's Stop… menu, offered by the same rule). A work card's Reply lives only here (owner 17.10, Q9 B): the
 // card's action row holds commands over the work; a bubble then lists the registered message actions its control
 // row shows (message_actions.js), in words. Esc and an outside press close it; keyboard focus enters the
-// menu and returns to the row. A right-click on a link, a field or selected words keeps the browser's own menu,
-// so selected text stays copyable. On touch the row answers the press (owner 19.10, 4A): it sinks a little while the
+// menu and returns to the row. Links and fields keep the native menu; selected message words
+// offer source-bound selection actions. Shift+right-click keeps the native menu. On touch the row answers the press (owner 19.10, 4A): it sinks a little while the
 // finger holds, and when the menu opens it lifts over the dimmed feed, with a haptic (haptics.js), until the menu
 // closes; and a row that offers Reply can be swiped left to reply (chat_row_swipe.js), with the same Reply.
+import { messageSelection } from './chat_selection.js';
 import { REPLY_ICON } from './chat_reply.js';
 import { createRowSwipe } from './chat_row_swipe.js';
 import { haptic } from './haptics.js';
@@ -36,7 +37,7 @@ const shown = (node) => Boolean(node?.isConnected && !node.hidden && !node.disab
  * omitted). Returns `{ open, destroy }`.
  */
 export function createChatRowMenu({ feed, replies, cardOf, actionsOf, afterAction = () => {},
-    actions = getMessageActions() }) {
+    actions = getMessageActions(), sendSelection = () => {} }) {
     const doc = feed.ownerDocument;
     let current = null;  // { menu, binding, row }
     let press = null;  // a touch that may become (or became) a long press
@@ -45,7 +46,7 @@ export function createChatRowMenu({ feed, replies, cardOf, actionsOf, afterActio
 
     const selectedIn = (row) => {
         const selection = doc.getSelection?.();
-        return Boolean(selection && !selection.isCollapsed && row.contains(selection.anchorNode));
+        return Boolean(selection && !selection.isCollapsed && selection.rangeCount && selection.getRangeAt(0).intersectsNode(row));
     };
 
     const rowOf = (node) => {
@@ -89,7 +90,15 @@ export function createChatRowMenu({ feed, replies, cardOf, actionsOf, afterActio
         return items;
     }
 
-    function itemsFor(row) {
+    function itemsFor(row, selected = '') {
+        if (selected) {
+            const ref = replies.bubbleRef(row); // capture source identity before focus or later history redraw
+            return [
+                ...(ref ? [['reply-selection', 'Reply to selection', () => replies.startSelection(ref, selected)]] : []),
+                ['send-selection', 'Send to chat', () => sendSelection(selected)],
+                ['copy-selection', 'Copy selection', () => copyTextWithToast(selected), true],
+            ];
+        }
         const record = row.matches('.chat-live-card') ? cardOf(row.dataset.taskId || '') : null;
         const items = record ? cardItems(row, record) : bubbleItems(row);
         // The row's own Project reference (a portal's footer, the reference under an answer or a receipt).
@@ -123,9 +132,9 @@ export function createChatRowMenu({ feed, replies, cardOf, actionsOf, afterActio
 
     /** Open the menu of `row`, at a pointer `point` or under the focused `anchor`. False when the row offers nothing.
      * `lift`: a long press opened it, so the row lifts while it is open. */
-    function open(row, { point, anchor = row, lift = false } = {}) {
+    function open(row, { point, anchor = row, lift = false, selected = '' } = {}) {
         close();
-        const items = itemsFor(row);
+        const items = itemsFor(row, selected);
         if (!items.length) return false;
         // Focus returns to the row: a bubble or card that is not itself focusable takes focus like a quote's target.
         if (anchor === row && row.tabIndex < 0 && !row.hasAttribute('tabindex')) row.tabIndex = -1;
@@ -162,20 +171,22 @@ export function createChatRowMenu({ feed, replies, cardOf, actionsOf, afterActio
     function onContextMenu(event) {
         const row = rowOf(event.target);
         if (!row) return;
+        if (event.shiftKey) { close({ restoreFocus: false }); return; } // native Copy/Search escape
         // A long press already answered (Android also fires contextmenu for it).
-        if (press?.fired || Date.now() < swallowClickUntil || current?.row === row) { event.preventDefault(); return; }
+        if (press?.fired || Date.now() < swallowClickUntil) { event.preventDefault(); return; }
         // Words the owner selected keep the browser's menu (Copy them). A right button on macOS selects the word under
         // it before this event; that selection is the gesture's own, not the owner's, and goes with the row menu.
         const owned = rightPress?.row === row ? rightPress.selected : selectedIn(row);
+        const selected = rightPress?.row === row ? rightPress.text : messageSelection(row);
         rightPress = null;
-        if (event.target.closest(NATIVE) || owned) return;
+        if (event.target.closest(NATIVE) || (owned && !selected)) return;
         // Android may fire it before the long press's time: it answers that touch and lifts the row as the press
         // would, so the touch's timer opens nothing more and the lifting finger's click is swallowed (onPointerEnd).
         const touch = press && !press.fired && press.row === row ? press : null;
-        if (!open(row, { point: { x: event.clientX, y: event.clientY }, lift: Boolean(touch) })) return;
+        if (!open(row, { point: { x: event.clientX, y: event.clientY }, lift: Boolean(touch), selected })) return;
         event.preventDefault();
         if (touch) { clearTimeout(touch.timer); clearTimeout(touch.holdTimer); touch.fired = true; }
-        if (selectedIn(row)) doc.getSelection().removeAllRanges();
+        if (!selected && selectedIn(row)) doc.getSelection().removeAllRanges();
     }
 
     function onKeydown(event) {
@@ -183,7 +194,7 @@ export function createChatRowMenu({ feed, replies, cardOf, actionsOf, afterActio
         const focused = doc.activeElement;
         const row = rowOf(focused);
         if (!row || focused.closest(NATIVE)) return;
-        if (open(row, { anchor: focused })) event.preventDefault();
+        if (open(row, { anchor: focused, selected: messageSelection(row) })) event.preventDefault();
     }
 
     function cancelPress() {
@@ -198,14 +209,14 @@ export function createChatRowMenu({ feed, replies, cardOf, actionsOf, afterActio
     function onPointerDown(event) {
         cancelPress();
         const row = rowOf(event.target);
-        rightPress = event.button === 2 && row ? { row, selected: selectedIn(row) } : null;
+        rightPress = event.button === 2 && row ? { row, selected: selectedIn(row), text: messageSelection(row) } : null;
         if (event.pointerType !== 'touch' || !event.isPrimary) return;
         if (!row || event.target.closest(NATIVE)) return;
         const { clientX: x, clientY: y } = event;
         const touch = { id: event.pointerId, x, y, row, fired: false };
         touch.holdTimer = setTimeout(() => { if (press === touch && itemsFor(row).length) setPress(row, 'hold'); }, HOLD_MS);
         touch.timer = setTimeout(() => {
-            touch.fired = open(row, { point: { x, y }, lift: true });
+            touch.fired = open(row, { point: { x, y }, lift: true, selected: messageSelection(row) });
             if (!touch.fired && pressOf(row) === 'hold') setPress(row, '');
         }, LONG_PRESS_MS);
         press = touch;

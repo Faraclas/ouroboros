@@ -255,6 +255,8 @@ def test_assignment_dispatches_exact_uncommitted_evolution_claim(tmp_path, monke
 
     workers.assign_tasks()
 
+    assert "dispatch_wait" not in task
+    assert "dispatch_wait" not in workers.RUNNING[task["id"]]["task"]
     assert inbox.items == [task]
     assert worker.busy_task_id == task["id"]
     assert workers.RUNNING[task["id"]]["task"] == task

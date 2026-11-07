@@ -187,6 +187,7 @@ def test_ui_projects_sidebar_unread_and_keyboard_menu(direct_server_with_data):
                 assert add.get_attribute("aria-label") == "New project"
                 assert page.locator("#nav-projects-count").inner_text() == "1"
                 assert row.get_attribute("data-unread") == ""
+                assert row.locator(".nav-project-unread-own").inner_text() == "1"
 
                 row.click()
                 page.wait_for_selector('#project-panel:not([hidden])', timeout=30_000)
@@ -194,14 +195,19 @@ def test_ui_projects_sidebar_unread_and_keyboard_menu(direct_server_with_data):
                     "() => document.querySelector('#nav-projects-count')?.textContent === ''",
                     timeout=30_000,
                 )
-                page.click("#project-panel-close")
+                assert row.get_attribute("data-unread") is None
+                assert row.get_attribute("data-unread-count") == "0"
+                assert row.locator(".nav-project-unread-own").is_hidden()
+                page.click('[data-pane-project="alpha"] [data-pane-close]')
 
                 kebab = page.locator('.nav-project-kebab[aria-label="Actions for Alpha project"]')
                 kebab.focus()
                 kebab.press("Enter")
                 menu = page.locator('.project-row-menu:not([data-leaving])[role="menu"]')
                 menu.wait_for(state="visible", timeout=5_000)
-                assert page.locator(':focus').get_attribute("data-prm") == "pin"  # the menu's first action
+                assert page.locator(':focus').get_attribute("data-prm") == "beside"
+                page.keyboard.press("ArrowDown")
+                assert page.locator(':focus').get_attribute("data-prm") == "pin"
                 box = menu.bounding_box()
                 assert box is not None
                 assert box["x"] >= 0 and box["y"] >= 0

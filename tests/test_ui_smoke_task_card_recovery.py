@@ -105,7 +105,7 @@ def test_bound_direct_task_header_and_review_cost_survive_reopen(
                 page.locator(card_selector).wait_for(state="visible", timeout=15_000)
 
             def close_project():
-                page.locator("#project-panel-close").click()
+                page.locator(f'[data-pane-project="{project_id}"] [data-pane-close]').click()
                 page.wait_for_function(
                     "() => !document.getElementById('project-panel').classList.contains('open')"
                 )

@@ -166,7 +166,7 @@ def test_empty_main_greeting_contract(direct_server_with_data, engine):
             page.wait_for_selector('#project-panel [data-history-hydrated="true"]', state="attached")
             _settle(page)
             assert page.locator(f"#project-panel {ANY_WELCOME}").count() == 0
-            page.click("#project-panel-close")
+            page.click('[data-pane-project="welcome-room"] [data-pane-close]')
 
             # (b) The preference is hidden: Settings -> Appearance has no greeting control.
             page.locator('[data-nav-page="settings"]').click()

@@ -57,6 +57,16 @@ def test_sole_busy_parent_can_grow_child_but_same_project_roots_do_not(assigning
     workers.PENDING.append(task("held-root", project_id="project"))
     workers.assign_tasks()
     assert not assigning.created
+    held = next(row for row in workers.PENDING if row["id"] == "held-root")
+    from supervisor.worker_assignment import pending_assignment_view
+    observed = pending_assignment_view(held)["dispatch_wait"]
+    assert "dispatch_wait" not in held
+    assert observed["code"] == "project_busy"
+    assert observed["ids"] == ["owner"]
+    assert queue.persist_queue_snapshot(reason="activity_wait_observed")
+    snapshot = __import__("json").loads(queue.QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+    shown = next(row["task"] for row in snapshot["pending"] if row["id"] == "held-root")
+    assert shown["dispatch_wait"] == observed
     workers.PENDING.append(task("child", project_id="project", root_task_id="owner",
                                 parent_task_id="owner", delegation_role="subagent", depth=1))
     workers.assign_tasks()

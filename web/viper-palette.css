@@ -1,0 +1,158 @@
+/* Viper personal palette. Loaded after the original client sheets.
+   Legacy tone-crimson names are compatibility roles, not literal colour promises.
+   Jade identifies actions/live work; violet identifies Viper; status remains semantic.
+   Owner olive-earth and System amber keep separate voices. No geometry or interaction changes. */
+:root:root {
+    --accent: #70b795;
+    --accent-light: #9bd5b8;
+    --mark-unread: var(--accent-light);
+    --status-live-fg: var(--accent-light);
+    --status-live-bg: var(--accent-10);
+    --quote-assistant-ink: var(--assistant-sender);
+    --place-mark: var(--tone-crimson-ink);
+    --accent-dim: rgba(67, 142, 106, .15);
+    --accent-04: rgba(67, 142, 106, .04);
+    --accent-05: rgba(67, 142, 106, .05);
+    --accent-08: rgba(67, 142, 106, .08);
+    --accent-10: rgba(67, 142, 106, .10);
+    --accent-12: rgba(67, 142, 106, .12);
+    --accent-14: rgba(67, 142, 106, .14);
+    --accent-18: rgba(67, 142, 106, .18);
+    --accent-22: rgba(67, 142, 106, .22);
+    --accent-25: rgba(67, 142, 106, .25);
+    --accent-35: rgba(67, 142, 106, .35);
+    --accent-45: rgba(67, 142, 106, .45);
+    --accent-55: rgba(67, 142, 106, .55);
+    --focus-accent-border: #9bd5b8;
+    --focus-accent-ring: rgba(112, 183, 149, .28);
+    --assistant-sender: #cfb8ed;
+    --voice-ouroboros: #30243f;
+    --voice-ouroboros-card: #30243f;
+    --voice-ouroboros-note: #282034;
+    --voice-ouroboros-note-hover: #2c223a;
+    /* A quiet olive body, with warm sage ink: owner messages, notes and quotes
+       share one identity without borrowing the jade action or amber status. */
+    --voice-owner: #34382b;
+    --user-sender: #cad4ac;
+    --user-text: #f1f0e6;
+    --user-bubble-from: rgba(139, 154, 100, .18);
+    --user-bubble-to: rgba(139, 154, 100, .12);
+    --user-border: rgba(139, 154, 100, .24);
+    --user-glow: rgba(202, 212, 172, .04);
+    --tone-chosen-answer: #424c32;
+    --tone-chosen-answer-ink: #f1f0e6;
+    --tone-chosen-answer-detail: #e0e5d2;
+    --tone-recorded-answer: var(--user-sender);
+    --tone-recorded-mark: var(--user-sender);
+    --relay-ledge-1: #241d2e;
+    --relay-ledge-2: #201b28;
+    --tone-crimson: #285d46;
+    --tone-crimson-hover: #214f3b;
+    --tone-crimson-ink: #f0fff7;
+    --tone-crimson-soft: #244b3b;
+    --tone-crimson-soft-ink: #c5ebd7;
+    --tone-crimson-word: var(--accent-light);
+    --tone-recommended: #c5ebd7;
+    --project: #d3b2ed;
+    --chart-series-1: #a68aca;
+    /* Danger must not inherit the new brand hue. */
+    --panic-ink: #fe9498;
+}
+:root:root[data-theme="light"] {
+    --accent: #286448;
+    --accent-light: #245f44;
+    --mark-unread: var(--accent);
+    --place-mark: var(--accent);
+    --focus-accent-border: #286448;
+    --focus-accent-ring: var(--accent-18);
+    --assistant-sender: #674185;
+    --assistant-text: #32253e;
+    --voice-ouroboros: #f2edf7;
+    --voice-ouroboros-card: #f7f3fa;
+    --voice-ouroboros-note: #f7f3fa;
+    --voice-ouroboros-note-hover: #f2edf7;
+    --voice-owner: #e9eddf;
+    --user-sender: #4b5933;
+    --user-text: #30382a;
+    --user-bubble-from: rgba(112, 132, 72, .12);
+    --user-bubble-to: rgba(112, 132, 72, .08);
+    --user-border: rgba(90, 110, 56, .18);
+    --user-glow: var(--user-glow-light);
+    --tone-chosen-answer: #e2e8d4;
+    --tone-chosen-answer-ink: #45552b;
+    --tone-chosen-answer-detail: #4e5844;
+    --relay-ledge-1: #eae2f1;
+    --relay-ledge-2: #e3d8ed;
+    --tone-crimson: var(--accent-10);
+    --tone-crimson-hover: var(--accent-14);
+    --tone-crimson-ink: #235a41;
+    --tone-crimson-soft: var(--tone-crimson);
+    --tone-crimson-soft-ink: var(--tone-crimson-ink);
+    --tone-crimson-word: var(--tone-crimson-ink);
+    --tone-recommended: var(--status-ok-fg);
+    --project: #794997;
+    --project-08: rgba(121, 73, 151, .08);
+    --project-12: rgba(121, 73, 151, .12);
+    --project-18: rgba(121, 73, 151, .18);
+    --chart-series-1: #79539b;
+    --diagram-primary: #f0eaf5;
+    --panic-ink: var(--status-error-fg);
+}
+/* Match the source's voice-local override specificity. All dependent aliases are
+   restated where they resolve, including error ink independent of accent-light. */
+:root:root:not([data-theme="light"]) :is(.chat-bubble.assistant, .chat-live-card) {
+    --text-primary: #f4eff9;
+    --assistant-text: var(--text-primary);
+    --text-secondary: #d7cce3;
+    --text-meta: #e5dced;
+    --text-disabled: #c4b5d3;
+    --text-muted: var(--text-disabled);
+    --surface-capsule: #49365d;
+    --surface-capsule-hover: #534067;
+    --surface-tray: #3d2e4e;
+    --surface-card: var(--surface-tray);
+    --surface-card-soft: var(--surface-tray);
+    --surface-control: var(--surface-tray);
+    --ui-card-bg: var(--surface-card);
+    --ui-card-bg-soft: var(--surface-card-soft);
+    --status-neutral-bg: var(--surface-capsule);
+    --status-neutral-fg: var(--text-secondary);
+    --tone-quiet-hover: var(--surface-capsule);
+    --tone-green: var(--surface-capsule);
+    --tone-green-hover: var(--surface-capsule-hover);
+    --tone-red: var(--surface-capsule);
+    --tone-red-hover: var(--surface-capsule-hover);
+    --tone-amber: var(--surface-capsule);
+    --tone-amber-hover: var(--surface-capsule-hover);
+    --status-ok-bg: var(--surface-capsule);
+    --status-warn-bg: var(--surface-capsule);
+    --status-error-bg: var(--surface-capsule);
+    --status-live-fg: #b6e5cb;
+    --status-live-bg: var(--surface-capsule);
+    --accent-light: #b6e5cb;
+    --accent-08: var(--surface-capsule);
+    --accent-10: var(--surface-capsule);
+    --accent-18: var(--surface-capsule-hover);
+    --tone-crimson-word: var(--accent-light);
+    --quote-assistant-ink: var(--assistant-sender);
+    --focus-accent-border: var(--accent-light);
+    --status-error-fg: #ffb3b7;
+    --status-error-word: var(--status-error-fg);
+    --project: #e1c4f4;
+    --project-08: var(--surface-capsule);
+    --project-12: var(--surface-capsule-hover);
+    --project-18: var(--surface-capsule-hover);
+    --status-info-fg: #b6d4ff;
+}
+/* The source declares owner-local aliases after its theme blocks. Restate at
+   matching specificity so links, timestamps and quiet controls read on olive. */
+:root:root:not([data-theme="light"]) .chat-bubble.user {
+    --text-primary: var(--user-text);
+    --text-secondary: #d4d7c3;
+    --text-meta: #d4d7c3;
+    --text-disabled: var(--user-sender);
+    --text-muted: var(--text-disabled);
+    --accent-light: var(--user-sender);
+    --tone-crimson-word: var(--accent-light);
+    --focus-accent-border: var(--accent-light);
+}

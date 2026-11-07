@@ -107,13 +107,13 @@ def test_page_header_is_shared_foundation_for_top_pages():
         header_call = page.split("renderPageHeader({", 1)[1].split("})", 1)[0]
         assert "description:" not in header_call, f"{rel} passes a caption line to its header"
     assert "app-page-icon" not in header_js and "app-page-icon" not in css
-    # The Project panel's bar is the same component, rendered by app.js; index.html keeps no hand-written bar.
+    # Each room owns the same header component; index.html keeps no hand-written bar.
     html = _read("web/index.html")
     assert "project-panel-bar" not in html and "project-panel-close" not in html
-    app_js = _read("web/app.js")
-    assert "titleId: 'project-panel-title'" in app_js and "className: 'project-panel-bar project-inspector-header'" in app_js
-    assert "named: false" in app_js
-    assert "import { renderPageHeader } from './modules/page_header.js';" in app_js
+    pane_js = _read("web/modules/pane_workspace.js")
+    assert "titleId: `viper-title-${id}`" in pane_js and "className: 'project-panel-bar project-inspector-header'" in pane_js
+    assert "named: false" in pane_js
+    assert "import { renderPageHeader } from './page_header.js';" in pane_js
     for path in (
         "web/modules/chat.js",
         "web/modules/files.js",
@@ -194,14 +194,16 @@ def test_project_panel_composer_and_welcome_contracts():
 def test_room_bars_hold_states_and_panic_without_more():
     chat_js = _read("web/modules/chat.js")
     app_js = _read("web/app.js")
-    # A room's bar is declared once in chat_header.js; chat.js mounts Main's, app.js the Project panel's.
+    # A room's bar is declared once in chat_header.js; chat.js mounts Main's, pane_workspace each Project's.
     header_markup = _read("web/modules/chat_header.js")
     assert "actionsHtml: mainHeaderActionsHtml()," in chat_js
     # Restart and Panic are bar buttons, each one node with one handler; Panic stands in every room's bar.
     assert 'class="chat-header-btn ui-chrome-control" type="button" data-chat-command="restart"' in header_markup
     assert 'class="chat-header-btn danger ui-chrome-control" type="button" data-chat-command="panic"' in header_markup
     assert (chat_js + header_markup).count('type="button" data-chat-command="restart"') == 1, "one Restart node, never a second copy"
-    assert 'trailingHtml: `${panicButtonHtml()}<button id="project-panel-close"' in app_js
+    pane_js = _read("web/modules/pane_workspace.js")
+    assert 'trailingHtml: panicButtonHtml()' in pane_js
+    assert 'class="shell-icon-control project-panel-close" data-pane-close' in pane_js
     assert "await confirmAndSendRestart({ openConfirmDialog, ws });" in header_markup
     # No More and no ⋯ on any width: a state has its own control (the consciousness chip), a command lives in the
     # Shade of the state it changes, and Evolve and Review stay in Dashboard and Settings.

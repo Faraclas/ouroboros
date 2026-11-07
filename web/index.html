@@ -24,6 +24,13 @@
     <script src="/static/highlight.min.js"></script>
     <script src="/static/vendor/katex/katex.min.js"></script>
     <script src="/static/vendor/katex/contrib/auto-render.min.js"></script>
+    <link rel="stylesheet" href="/static/viper-palette.css">
+<link rel="stylesheet" href="/static/pane_workspace.css"><link rel="stylesheet" href="/static/reader_collaboration.css"><link rel="stylesheet" href="/static/sidebar_art.css"><link rel="stylesheet" href="/static/copilot_usage.css"><link rel="stylesheet" href="/static/projects_manager.css">
+<link rel="stylesheet" href="/static/work_visibility.css">
+<link rel="stylesheet" href="/static/project_hierarchy.css">
+<link rel="stylesheet" href="/static/project_unread.css">
+<link rel="stylesheet" href="/static/work_items.css">
+    <link rel="stylesheet" href="/static/room_activity.css">
 </head>
 <body>
     <div id="app">
@@ -43,6 +50,29 @@
             </section>
             <div class="sidebar-foot">
                 <!-- Files, Skills, Widgets, Dashboard, Settings: rendered from the page registry (pages.js) -->
+                <div class="viper-sidebar-art" aria-hidden="true">
+                    <div class="viper-sidebar-art-stack">
+                        <div class="viper-sidebar-logo-row" data-logo-row="tools">
+                            <img data-brand="gentoo" class="viper-sidebar-gentoo" src="/static/assets/sidebar-art/Gentoo_Linux_logo_matte.svg" width="595" height="623" alt="" draggable="false">
+                            <span class="viper-sidebar-zed" data-brand="zed">
+                                <img class="viper-sidebar-zed-light" src="/static/assets/sidebar-art/zed-light.svg" width="32" height="32" alt="" draggable="false">
+                                <img class="viper-sidebar-zed-dark" src="/static/assets/sidebar-art/zed-dark.svg" width="32" height="32" alt="" draggable="false">
+                            </span>
+                            <img data-brand="podman" src="/static/assets/sidebar-art/podman.webp" width="32" height="32" alt="" draggable="false">
+                            <img data-brand="antigravity" src="/static/assets/sidebar-art/antigravity.svg" width="32" height="32" alt="" draggable="false">
+                        </div>
+                        <div class="viper-sidebar-logo-row" data-logo-row="models">
+                            <img data-brand="ouroboros" src="/static/assets/sidebar-art/ouroboros.png" width="1024" height="1024" alt="" draggable="false">
+                            <span class="viper-sidebar-openai" data-brand="openai">
+                                <img class="viper-sidebar-openai-light" src="/static/assets/sidebar-art/openai-light.svg" width="268" height="268" alt="" draggable="false">
+                                <img class="viper-sidebar-openai-dark" src="/static/assets/sidebar-art/openai-dark.svg" width="268" height="268" alt="" draggable="false">
+                            </span>
+                            <img data-brand="claude" src="/static/assets/sidebar-art/claude.svg" width="248" height="248" alt="" draggable="false">
+                            <img data-brand="gemini" src="/static/assets/sidebar-art/gemini.svg" width="32" height="32" alt="" draggable="false">
+                        </div>
+                        <img class="viper-sidebar-avatar" src="/static/assets/sidebar-art/viper.png" width="512" height="512" alt="" draggable="false">
+                    </div>
+                </div>
                 <div class="sidebar-foot-meta">
                     <span id="nav-version"></span>
                 </div>

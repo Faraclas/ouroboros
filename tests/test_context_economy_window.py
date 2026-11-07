@@ -346,7 +346,7 @@ def _native(main_call, monkeypatch, tmp_path, *, task_text="hi", owner_mode="low
     from ouroboros import capability_evidence as ce, context, fallback_cooldown, loop_transport
     from ouroboros.model_slots import MODEL_ACCOUNTS_KEY
     from ouroboros.tool_policy import initial_tool_schemas
-    from tests._memory_view_context import world
+    from tests._memory_view_context import native_fixture_core, world
     from tests.test_model_wait_controls import _loop_tools
 
     ctx, gateway, owner, events, _decide, _observations = main_call
@@ -381,14 +381,14 @@ def _native(main_call, monkeypatch, tmp_path, *, task_text="hi", owner_mode="low
     tools._ctx.task_metadata = {"model_role": "main"}
     tools._ctx.model_wait_context = owner
     env, memory, _rooms = world(tmp_path / "w")
-    # This is a synthetic installation: neither a session queue nor a cached
-    # host-wide process scan is part of the window/rebind input under test.
+    # Synthetic inputs exclude foreign queues/probes and variable host display roots.
     from ouroboros import config, context_health
     monkeypatch.setattr(config, "DATA_DIR", env.drive_root)
     monkeypatch.setattr(context_health, "_stray_server_note", lambda _env: "")
     task = {"type": "task", "text": task_text, "id": "tmain", "chat_id": 1,
             "budget_drive_root": str(env.drive_root)}
     core = context._capture_context_core(env, memory, task, None, None)
+    core = native_fixture_core(core, tmp_path / "w")
     core = core if view is None else dataclasses.replace(core, memory_view_json=view)
     core = dataclasses.replace(core, architecture_md=core.architecture_md + "\n\n" + "word " * (books // 5)) if books else core
     schemas = initial_tool_schemas(tools, context_mode=owner_mode)

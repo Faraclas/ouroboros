@@ -274,6 +274,14 @@ def project_replica_task_result_fields(
     # including its absence on historical rows; replicas cannot originate it.
     overlay.pop("canonical_terminal_projection_origin", None)
     overlay.pop("pause_notices", None)  # confirmed host transitions alone own pending chat disclosure
+    if "activity_assessments" in canonical_fields:
+        from ouroboros.activity_history import merge_assessments
+        overlay["activity_assessments"] = merge_assessments(
+            canonical_fields["activity_assessments"], overlay.get("activity_assessments"))
+    if isinstance(canonical_fields.get("service_observations"), dict) and isinstance(overlay.get("service_observations"), dict):
+        from ouroboros.service_observations import merge_observations
+        overlay["service_observations"] = merge_observations(
+            canonical_fields["service_observations"], overlay["service_observations"])
     for field in CANONICAL_CUSTODY_FIELDS:  # a replica never revives a retired claim nor erases a live one
         overlay.pop(field, None)
     # Unread-mail custody is a union: a stale replica never drops a canonical row.

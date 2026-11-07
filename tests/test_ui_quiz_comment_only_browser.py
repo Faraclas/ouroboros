@@ -301,7 +301,7 @@ def test_project_question_takes_own_words_on_enter_in_the_project_or_its_main_co
                         assert copy.locator('.chat-quiz-option').count() == len(OPTIONS)
                         assert copy.locator('.chat-quiz-comment').get_attribute("enterkeyhint") == "send"
                     if answer_in == "main":
-                        page.locator('#project-panel-close').click()
+                        page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
                         panel.wait_for(state="hidden")
                     card = in_project if answer_in == "project" else in_main
                     field = card.locator('.chat-quiz-comment')

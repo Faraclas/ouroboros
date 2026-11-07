@@ -41,7 +41,7 @@ const PLACE_WORDS = {
     engine: { label: 'Agent engine', why: 'Kept by the engine. Not a cache.', split: true },
     task_results: { label: 'Task results and files', why: 'Kept with each task.' },
     archives: { label: 'Archives', why: 'Kept. Rotated logs and backups.' },
-    memory_skills: { label: 'Memory, notes and skills', why: 'Kept until you delete that project or skill.' },
+    memory_skills: { label: 'Memory, notes and skills', why: 'Kept. Closing a project does not remove its notes; skills are managed separately.' },
     project_folders: { label: 'Project folders', why: 'Your project files. Not deleted here.' },
     deliverables: { label: 'Deliverables', why: 'Files Ouroboros made for you. Not deleted here.' },
     work_folders: { label: 'Task work folders', why: 'Removed by the app’s own cleanup {days} days after a task finishes.' },

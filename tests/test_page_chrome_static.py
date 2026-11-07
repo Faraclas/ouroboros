@@ -255,7 +255,7 @@ def test_sidebar_is_three_zones_with_the_projects_list_as_the_one_scroller():
     app_js = _read("web/app.js")
     assert "kebab.innerHTML = SHELL_ICONS.more;" in app_js and "kebab.textContent = '⋯'" not in app_js
     assert "navProjectsToggle?.classList.toggle('active'" not in _read("web/app.js")
-    assert "openProjectPanel(item.project, { openOnly: true })" in _read("web/app.js")
+    assert "openProjectPanel(item.project, { openOnly: true, composerFocus: true })" in _read("web/app.js")
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +325,11 @@ def test_server_navigation_and_chat_static_contracts():
     assert "export async function cleanupUploadedAttachments" in media_source
     assert "method: 'DELETE'" in media_source
     assert "Promise.allSettled" in media_source
-    assert '>Loading…</span>' in _read("web/modules/chat_header.js")
+    header = _read("web/modules/chat_header.js")
+    assert '<span class="chat-budget-text" id="chat-budget-text">—</span>' in header
+    assert 'title="Checking GitHub Copilot usage"' in header and "bindCopilotHeader(budget)" in header
+    assert "const onBudget = () => openDashboardTab?.('costs');" in header
+    assert "headerBudgetPresentation" not in header  # account usage must not become an app-budget fallback
     assert "syncHeaderControlState({ accounting: { available: false } });" in chat_source
     assert "budget_text: 'Connecting...'" not in chat_source
     assert "send(msg, options = {})" in _read("web/modules/ws.js")

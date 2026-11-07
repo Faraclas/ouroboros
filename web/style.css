@@ -9394,8 +9394,15 @@ body.keyboard-open .project-panel {
 
 .document-reader-body.is-actual .document-reader-image { max-width: none; max-height: none; }
 
+/* Modeless desktop workspace; the existing phone rule below remains its one viewport owner. */
+dialog.document-reader[open] { position: fixed; inset: auto; left: var(--reader-left, max(12px, calc(50vw - 500px))); top: var(--reader-top, 10vh); margin: 0; z-index: 1200; width: min(1000px, calc(100vw - 24px)); height: min(1000px, 78dvh); resize: both; min-width: min(340px, calc(100vw - 24px)); min-height: 200px; max-width: calc(100vw - 12px); max-height: 90dvh; }
+.document-reader .document-reader-head { cursor: move; touch-action: none; }
+.document-reader .document-reader-body { min-height: 0; }
+
 /* A phone reads the document on a full sheet; Close returns to the same place in the chat. */
 @media (max-width: 620px) {
+    dialog.document-reader[open] { inset: 0; width: 100vw; height: 100dvh; min-width: 0; min-height: 0; max-width: none; max-height: none; resize: none; border: 0; border-radius: 0; }
+    .document-reader .document-reader-head { cursor: default; touch-action: auto; }
     .document-reader {
         width: 100vw;
         height: 100vh;

@@ -1,11 +1,12 @@
 import { bindPageHeader, bindTabStrip, renderPageHeader, renderTabStrip } from './page_header.js';
 
 // By importance and expected use (docs/DESIGN.md §5): the log first and by default, then what
-// runs now, what Ouroboros does on its own (consciousness and its places) and what it costs, then
+// runs now, the project catalog, what Ouroboros does on its own (consciousness and its places) and what it costs, then
 // updates, the owner-measured Storage and Evolution (off by default).
 const DASHBOARD_TABS = [
     { value: 'logs', label: 'Logs' },
     { value: 'activity', label: 'Activity' },
+    { value: 'projects', label: 'Projects' },
     { value: 'consciousness', label: 'Consciousness' },
     { value: 'costs', label: 'Costs' },
     { value: 'updates', label: 'Updates' },
@@ -13,7 +14,7 @@ const DASHBOARD_TABS = [
     { value: 'evolution', label: 'Evolution' },
 ];
 // Static guard markers: renderTabStrip emits data-dashboard-tab="logs",
-// data-dashboard-tab="activity", data-dashboard-tab="consciousness", data-dashboard-tab="costs",
+// data-dashboard-tab="activity", data-dashboard-tab="projects", data-dashboard-tab="consciousness", data-dashboard-tab="costs",
 // data-dashboard-tab="updates", data-dashboard-tab="storage", and
 // data-dashboard-tab="evolution" from DASHBOARD_TABS at runtime.
 

@@ -1,0 +1,71 @@
+/* The original Main and Project owners keep their nodes; only their composition changes. */
+#viper-workspace { grid-column: 2; grid-row: 1; position: relative; min-width: 0; min-height: 0; display: flex; overflow: hidden; }
+#viper-workspace > #content { flex: 1; min-height: 0; }
+html[data-layout="stack"] #viper-workspace { grid-column: 1; }
+/* In collaboration the whole tabbed room is the opaque card above the drawer, not each nested project. */
+html[data-layout="stack"] #viper-workspace.viper-collaboration { z-index: var(--z-room); background: var(--bg-primary); transform-origin: 0 50%; transition: transform var(--drawer-settle, var(--motion-close)) var(--ease-sheet); }
+html[data-layout="stack"] body.nav-drawer-open #viper-workspace.viper-collaboration { transform: translateX(var(--drawer-w)) scale(.96); border-radius: var(--room-card-radius); box-shadow: var(--room-card-shadow); }
+html[data-layout="stack"] body #viper-workspace.viper-collaboration.dragging { transition: none; transform: translate3d(calc(var(--drawer-p, 0) * var(--drawer-w)), 0, 0) scale(calc(1 - .04 * min(var(--drawer-p, 0), 1))); }
+html[data-layout="stack"] body.nav-drawer-open #viper-workspace.viper-collaboration :is(#content, .project-panel),
+html[data-layout="stack"] body #viper-workspace.viper-collaboration :is(#content, .project-panel).dragging { transform: none; border-radius: 0; box-shadow: none; }
+#project-panel > .project-panel-body { min-width: 0; }
+#project-panel .viper-room-pane {
+    position: relative; inset: auto; width: 100%; max-width: 100%; min-width: 0; min-height: 0;
+    grid-column: auto; flex: 1; border: 0; box-shadow: none; transform: none; opacity: 1;
+    pointer-events: auto; transition: none; overflow: hidden;
+}
+#project-panel .viper-room-pane[hidden], .viper-pane-tabs[hidden], .viper-pane-divider[hidden] { display: none; }
+#project-panel .viper-room-pane[data-leaving] { position: absolute; inset: 0; pointer-events: none; }
+#project-panel .viper-room-pane > .project-panel-body { height: 100%; }
+#project-panel .viper-room-pane .app-page-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#project-panel .viper-room-pane .app-page-title-block { min-width: 0; }
+#project-panel .viper-room-pane .app-page-trailing { flex-wrap: wrap; justify-content: flex-end; }
+#viper-workspace.viper-collaboration { display: grid; grid-template-columns: minmax(440px, var(--viper-main-weight, 1fr)) 8px minmax(440px, var(--viper-project-weight, 1fr)); }
+#viper-workspace.viper-collaboration > #content { grid-column: 1; grid-row: 1; }
+#viper-workspace.viper-collaboration > .viper-pane-divider { grid-column: 2; grid-row: 1; }
+#viper-workspace.viper-collaboration > #project-panel {
+    position: relative; inset: auto; grid-column: 3; grid-row: 1; width: 100%; max-width: 100%; min-width: 0;
+    min-height: 0; transform: none; opacity: 1; transition: none; box-shadow: none; border-left: none;
+}
+#project-panel.viper-paired > .project-panel-body { display: grid; grid-template-columns: var(--viper-columns); }
+#project-panel.viper-paired .viper-room-pane { grid-column: var(--viper-pane-column); grid-row: 1; }
+body.viper-workspace-open #project-panel-backdrop { display: none; }
+#viper-workspace.viper-compact { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+#viper-workspace.viper-compact > .viper-pane-tabs { grid-column: 1; grid-row: 1; }
+#viper-workspace.viper-compact > #content { grid-column: 1; grid-row: 2; }
+#viper-workspace.viper-compact:not(.viper-main-view) > #content { visibility: hidden; pointer-events: none; }
+#viper-workspace.viper-compact > #project-panel { grid-column: 1; grid-row: 2; z-index: 2; }
+#viper-workspace.viper-compact.viper-main-view > #project-panel { display: none; }
+#viper-workspace.viper-compact #project-panel > .project-panel-body { display: flex; }
+.viper-pane-tabs { display: flex; min-width: 0; flex: 0 0 auto; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--divider); overflow-x: auto; background: var(--bg-primary); }
+.viper-pane-tabs button { border: 1px solid transparent; border-radius: var(--pill-radius); padding: 6px 12px; background: transparent; color: var(--text-secondary); font: inherit; max-width: 260px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.viper-pane-tabs button[aria-selected="true"] { background: var(--accent-12); border-color: var(--accent); color: var(--text-primary); }
+.viper-pane-divider { grid-row: 1; cursor: col-resize; background: var(--divider); touch-action: none; }
+.viper-pane-divider:hover { background: var(--accent); }
+.viper-pane-divider:focus-visible { background: var(--focus-accent-border); outline: 2px solid var(--focus-accent-border); outline-offset: -2px; }
+.viper-room-pane.viper-pane-focused { box-shadow: inset 0 2px var(--accent) !important; }
+.viper-pane-announcement { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+#project-panel.viper-paired > .resize-handle { display: none; }
+/* Room headers inherit the shared floating/keyboard-flow rules and measured reserve.
+   A nested pane must not override platform clearance or spend that reserve twice. */
+/* Words stay primary; the existing chat/layers glyphs distinguish room kinds without new fills. */
+.viper-oriented-header .app-page-title { display: block; }
+.viper-room-icon { display: inline-flex; vertical-align: middle; margin-inline-end: var(--space-2); color: var(--text-secondary); }
+.viper-room-icon svg { width: 17px; height: 17px; }
+/* A narrow room trades the repeated consciousness word for its named brain control before its own name. */
+.viper-room-pane[data-orientation-narrow] .cx-chip-word { display: none; }
+.viper-room-pane[data-orientation-narrow] .viper-room-icon { display: none; }
+#content.viper-main-focused { box-shadow: inset 0 2px var(--accent); }
+.viper-project-info { padding: 4px 2px 12px; margin-bottom: 6px; border-bottom: 1px solid var(--divider); }
+.viper-project-info-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.viper-project-info h3 { margin: 0; font: inherit; font-weight: 500; color: var(--text-primary); }
+.viper-project-purpose { margin: 3px 0 10px; color: var(--text-secondary); }
+.viper-project-info dl { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 12px; }
+.viper-project-info dt { color: var(--text-secondary); }
+.viper-project-info dd { margin: 0; min-width: 0; overflow-wrap: anywhere; user-select: text; }
+.viper-location-path { font-family: monospace; }
+.viper-project-info-status { color: var(--text-secondary); margin: 6px 0 0; }
+.viper-project-info-status:empty { display: none; }
+.viper-project-location-scope { margin: 10px 0 0; color: var(--text-secondary); font-size: var(--type-meta); }
+.viper-project-info-retry { font: inherit; color: var(--text-primary); background: transparent; border: 1px solid var(--divider); border-radius: var(--radius-sm, 6px); padding: 4px 8px; cursor: pointer; }
+.viper-project-info-retry[hidden] { display: none; }

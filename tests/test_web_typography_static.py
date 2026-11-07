@@ -222,6 +222,57 @@ def _document_stylesheets(document: str) -> list[str]:
     return parser.paths
 
 
+VIPER_PALETTE_ROLES = frozenset("""
+--accent --accent-04 --accent-05 --accent-08 --accent-10 --accent-12 --accent-14 --accent-18
+--accent-22 --accent-25 --accent-35 --accent-45 --accent-55 --accent-dim --accent-light
+--assistant-sender --assistant-text --chart-series-1 --diagram-primary --focus-accent-border
+--focus-accent-ring --mark-unread --panic-ink --place-mark --project --project-08 --project-12
+--project-18 --quote-assistant-ink --relay-ledge-1 --relay-ledge-2 --status-error-bg
+--status-error-fg --status-error-word --status-info-fg --status-live-bg --status-live-fg
+--status-neutral-bg --status-neutral-fg --status-ok-bg --status-warn-bg --surface-capsule
+--surface-capsule-hover --surface-card --surface-card-soft --surface-control --surface-tray
+--text-disabled --text-meta --text-muted --text-primary --text-secondary --tone-amber
+--tone-amber-hover --tone-chosen-answer --tone-chosen-answer-detail --tone-chosen-answer-ink
+--tone-crimson --tone-crimson-hover --tone-crimson-ink --tone-crimson-soft --tone-crimson-soft-ink
+--tone-crimson-word --tone-green --tone-green-hover --tone-quiet-hover --tone-recommended
+--tone-recorded-answer --tone-recorded-mark --tone-red --tone-red-hover --ui-card-bg --ui-card-bg-soft
+--user-border --user-bubble-from --user-bubble-to --user-glow --user-sender --user-text
+--voice-ouroboros --voice-ouroboros-card --voice-ouroboros-note --voice-ouroboros-note-hover --voice-owner
+""".split())
+VIPER_PALETTE_SCOPES = {
+    ':root:root', ':root:root[data-theme="light"]',
+    ':root:root:not([data-theme="light"]) :is(.chat-bubble.assistant, .chat-live-card)',
+    ':root:root:not([data-theme="light"]) .chat-bubble.user',
+}
+
+
+def _assert_viper_palette(css: str) -> None:
+    rules = RULE.findall(_decommented(css))
+    assert {" ".join(selector.split()) for selector, _body in rules} == VIPER_PALETTE_SCOPES
+    for _selector, body in rules:
+        for declaration in body.split(';'):
+            if not declaration.strip():
+                continue
+            name, colon, value = declaration.partition(':')
+            assert colon and name.strip() in VIPER_PALETTE_ROLES and value.strip(), declaration
+
+
+def _assert_document_palette(document: str, sheets: list[str], shared: dict[str, str]) -> None:
+    assert sheets[0] == "web/ui.css" and sheets.count("web/ui.css") == 1
+    overlay = "web/viper-palette.css"
+    assert sheets.count(overlay) == (1 if document == "web/index.html" else 0)
+    for sheet in sheets[1:]:
+        if sheet == overlay:
+            _assert_viper_palette(_read(sheet))  # DESIGN's explicit SPA-only authored role exception
+        else:
+            css = _decommented(_read(sheet))
+            # The shared solid-control press recipe is a contextual interaction alias, not a palette copy.
+            if sheet == "web/style.css":
+                css = css.replace(':root[data-theme] :is(.chat-send-inline, .chat-quiz-send, .app-tab.active, .app-tab.is-active) { --press: var(--press-solid); }', '')
+            declared = set(re.findall(r"(--[a-z0-9-]+)\s*:", css))
+            assert not (declared & shared.keys()), f"{sheet} shadows shared roles: {declared & shared.keys()}"
+
+
 def test_both_documents_load_one_real_shared_palette_before_page_styles() -> None:
     """No copied palette: both hosts must load the same nonempty source.
 
@@ -236,10 +287,27 @@ def test_both_documents_load_one_real_shared_palette_before_page_styles() -> Non
     assert len(shared) > 20, "shared source must contain the actual palette"
     for document in ("web/index.html", "web/onboarding_template.html"):
         sheets = _document_stylesheets(document)
-        assert sheets[0] == "web/ui.css" and sheets.count("web/ui.css") == 1
-        for sheet in sheets[1:]:
-            declared = set(DECLARATION.findall(_decommented(_read(sheet))))
-            assert not (declared & shared.keys()), f"{sheet} shadows shared roles: {declared & shared.keys()}"
+        _assert_document_palette(document, sheets, shared)
+
+
+def test_authored_palette_exception_keeps_role_scope_layout_and_document_negatives(monkeypatch):
+    import pytest
+    css = _read("web/viper-palette.css")
+    _assert_viper_palette(css)
+    for mutation in (css + '.new-scope { --accent: green; }',
+                     css.replace('--accent:', '--invented-role:', 1),
+                     css.replace('--accent:', 'padding:', 1)):
+        with pytest.raises(AssertionError):
+            _assert_viper_palette(mutation)
+    for document, sheets in (
+        ("web/onboarding_template.html", ["web/ui.css", "web/viper-palette.css"]),
+        ("web/index.html", ["web/ui.css", "web/viper-palette.css", "web/viper-palette.css"]),
+    ):
+        with pytest.raises(AssertionError):
+            _assert_document_palette(document, sheets, {"--accent": "red"})
+    monkeypatch.setitem(globals(), '_read', lambda _path: ':root { --accent: green; }')
+    with pytest.raises(AssertionError):
+        _assert_document_palette("web/onboarding_template.html", ["web/ui.css", "web/ordinary.css"], {"--accent": "red"})
 
 
 def test_no_tiny_raw_font_sizes_on_migrated_surfaces() -> None:

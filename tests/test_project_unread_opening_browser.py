@@ -182,7 +182,7 @@ def test_an_unread_room_opens_on_its_reply_however_deep_its_childrens_words_bury
             _emit_ws_frame(room.page, {"type": "projects_changed"})
             room.settled(800)
             assert len(room.older) == pages, "a later read finds no opening owed: it never pages"
-            room.page.locator("#project-panel-close").evaluate("el => el.click()")
+            room.page.locator(f'[data-pane-project="{room.project_id}"] [data-pane-close]').evaluate("el => el.click()")
             room.open()
             room.settled()
             gap = room.messages.evaluate("n => n.scrollHeight - n.scrollTop - n.clientHeight")
@@ -217,7 +217,7 @@ _WINDOW = """hidden => {
     document.dispatchEvent(new Event('visibilitychange'));
 }"""
 # Leaving the room: its own close, or another page (showPage closes the open Project).
-_LEAVE = {"close": "#project-panel-close", "settings": '[data-nav-page="settings"]'}
+_LEAVE = {"close": '[data-pane-project="{project_id}"] [data-pane-close]', "settings": '[data-nav-page="settings"]'}
 
 
 @pytest.mark.parametrize("move", ["wheel", "box", "close", "settings", "window"])
@@ -239,7 +239,7 @@ def test_the_readers_own_move_ends_the_reach(direct_server_with_data, monkeypatc
             assert _wait_for(room.page, lambda: len(room.held) == 1, attempts=200), room.older
             room.settled(200)
             if move in _LEAVE:
-                room.page.locator(_LEAVE[move]).evaluate("el => el.click()")
+                room.page.locator(_LEAVE[move].format(project_id=room.project_id)).evaluate("el => el.click()")
             elif move == "window":
                 room.page.evaluate(_WINDOW, True)
             else:
@@ -336,7 +336,7 @@ def test_a_room_kept_hidden_during_the_reach_asks_for_nothing_until_it_is_opened
             room.open()
             assert _wait_for(room.page, lambda: len(room.held) == 1, attempts=200), room.older
             _stage_file(room.page)
-            room.page.locator("#project-panel-close").evaluate("el => el.click()")
+            room.page.locator(f'[data-pane-project="{room.project_id}"] [data-pane-close]').evaluate("el => el.click()")
             room.page.locator('.chat-instance-panel[data-pending-work="1"]').wait_for(state='attached')
             assert room.page.locator('.chat-instance-panel[data-pending-work="1"]').count() == 1
             room.release()
@@ -370,7 +370,7 @@ def test_a_reopened_room_lands_once_after_its_superseded_reach(direct_server_wit
             room = _Room(browser, direct_server_with_data["url"], "reopened-room", hold=2)
             room.open()
             assert _wait_for(room.page, lambda: len(room.held) == 1, attempts=200), room.older
-            room.page.locator("#project-panel-close").evaluate("el => el.click()")
+            room.page.locator(f'[data-pane-project="{room.project_id}"] [data-pane-close]').evaluate("el => el.click()")
             # After the exit, the replacement reads independently of the destroyed room's held page.
             room.messages.wait_for(state='detached')
             room.open()

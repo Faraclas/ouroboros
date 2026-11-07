@@ -430,7 +430,7 @@ def test_main_copy_survives_census_before_ack_and_shows_recorded_answer(
                         quiz = page.locator(f'.chat-quiz-card[data-task-id="{task_id}"][data-quiz-id="{quiz_id}"]'
                                             ":not(.project-question-card)")
                         quiz.get_by_text("Include the independent replication too.", exact=True).wait_for()
-                        page.locator("#project-panel-close").click()
+                        page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
                         main_question.scroll_into_view_if_needed()
                         page.screenshot(animations="disabled", path=str(evidence / f"{prefix}-1-main-question.png"))
 

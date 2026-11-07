@@ -117,7 +117,7 @@ def _retained_daemon_pids() -> "set[int]":
 
 # Preserve routing, model intent, holds and exact continuation sources on restart.
 _PENDING_FIELDS = (
-    'id', 'type', 'chat_id', 'text',
+    'id', 'type', 'chat_id', 'text', 'dispatch_wait',
     'priority', 'depth', 'description', 'objective',
     'title', 'expected_output', 'constraints', 'role',
     'context', 'parent_task_id', 'root_task_id', 'session_id',
@@ -150,10 +150,11 @@ def persist_queue_snapshot(reason: str = "") -> bool:
     custody (``_keeps_saved_queue``).
     """
     from supervisor.direct_roots import collect_direct_roots
+    from supervisor.worker_assignment import pending_assignment_view
 
     direct = collect_direct_roots()  # Never wait for an actor while holding Q.
     with _queue()._queue_lock:
-        pending_items = [dict(t) for t in _queue().PENDING]
+        pending_items = [pending_assignment_view(t) for t in _queue().PENDING]
         running_items = [
             (task_id, dict(meta) if isinstance(meta, dict) else {})
             for task_id, meta in _queue().RUNNING.items()
@@ -295,6 +296,7 @@ def _saved_pending_task(row: dict) -> dict:
     stamps one) are known; a time no row kept stays unknown (``None``), never this restore's clock.
     """
     task = dict(row["task"])
+    task.pop("dispatch_wait", None)  # a new generation must observe its own chooser, not replay a diagnosis
     value = row["queued_at"] if "queued_at" in row else task.get("queued_at")
     known = (isinstance(value, str) and value.strip()) or (
         isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0)

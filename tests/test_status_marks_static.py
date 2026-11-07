@@ -1,12 +1,12 @@
-"""Amber is the owner's attention and nothing else (docs/DESIGN.md "Status marks").
+"""Amber meanings, including the explicitly approved activity-list wait words (docs/DESIGN.md).
 
 Every stylesheet rule that paints amber — through an amber token, a custom property that aliases one, or an amber
-literal — is listed in ``AMBER_REGISTRY`` under one of its four meanings: the owner's move, a warning worth reading,
-the System voice, or a data category that is not a status (plus the palette that defines the tokens). A new rule that
+literal — is listed in ``AMBER_REGISTRY`` under its meaning: the owner's move, a warning worth reading,
+the System voice, a data category, or the explicitly approved activity-list waits (plus the palette tokens). A new rule that
 paints amber fails until it is listed under one of them; a listed rule that no longer paints amber fails until its
 line is removed, so the list only says what is true. Scripts may not paint amber beyond the counts in
 ``SCRIPT_AMBER``. What goes on by itself or what someone chose (queued, waiting, paused, stopped, unconfirmed, work in
-flight, a mode, a level, a setting value) never belongs here.
+flight, a mode, a level, a setting value) never belongs here except the exact activity selectors below.
 
 The scan reads the first-party sheets as text: comments and formatting do not matter, nested at-rules and nested
 rules do, and every selector of a selector list is its own entry.
@@ -21,12 +21,25 @@ from typing import Iterator
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 WEB = REPO_ROOT / "web"
-SHEETS = ("web/ui.css", "web/style.css", "web/settings.css", "web/model_roles.css", "web/model_wait.css",
-          "web/room_work.css", "web/onboarding.css", "web/cards.css", "web/consciousness.css")
-CATEGORIES = ("owner", "warning", "system", "data", "palette")
+CATEGORIES = ("owner", "warning", "system", "data", "palette", "activity")
+ACTIVITY_AMBER = {
+    '.rw-trigger:is([data-tone="queued"], [data-tone="held"], [data-tone="wait"])',
+    '.rw-row:is([data-activity="queued"], [data-activity="waiting"], [data-activity="paused"]) > .rw-main :is(.rw-name, .rw-state)',
+}
 
 # category | sheet | [at-rule context » ]selector | properties
 AMBER_REGISTRY = """
+# Owner-approved activity-list words; these are recorded waits, not owner-action marks or warnings.
+activity | web/room_activity.css | .rw-trigger:is([data-tone="queued"], [data-tone="held"], [data-tone="wait"]) | color
+activity | web/room_activity.css | .rw-row:is([data-activity="queued"], [data-activity="waiting"], [data-activity="paused"]) > .rw-main :is(.rw-name, .rw-state) | color
+# Account usage can paint warning through aliases; unknown/loading remains neutral.
+warning | web/copilot_usage.css | :root[data-theme] .copilot-usage-pill[data-usage-tone="warning"] | --copilot-surface, --copilot-ink
+warning | web/copilot_usage.css | :root[data-theme] .copilot-usage-pill.copilot-usage-pill.ui-chrome-control | color, background
+warning | web/copilot_usage.css | :root[data-theme] .copilot-usage-pill.copilot-usage-pill.ui-chrome-control:hover | background
+warning | web/copilot_usage.css | :root[data-theme] .copilot-usage-pill .chat-budget-text | color
+warning | web/copilot_usage.css | .copilot-usage-pill .chat-budget-bar-fill | background
+warning | web/copilot_usage.css | .copilot-credits-card[data-usage-tone="warning"] .copilot-credits-primary strong | color
+warning | web/copilot_usage.css | .copilot-credits-error | color
 # The owner's move: a question to answer or an action only the owner can take (sign in, a spending limit, a
 # suggested trust to confirm, local changes before an update, an Evolution chip that needs the owner).
 owner | web/ui.css | .status-mark[data-hue="owner"] | color
@@ -263,13 +276,20 @@ def registry(text: str = AMBER_REGISTRY) -> dict[tuple[str, str, str], str]:
         assert category in CATEGORIES, line
         for prop in props.split(","):
             key = (sheet, " ".join(selector.split()), prop.strip())
+            if category == "activity":
+                assert sheet == "web/room_activity.css" and key[1] in ACTIVITY_AMBER and key[2] == "color", line
             assert key not in entries, f"listed twice: {key}"
             entries[key] = category
     return entries
 
 
+def _sheet_paths(root: pathlib.Path = WEB) -> list[str]:
+    return sorted("web/" + path.relative_to(root).as_posix() for path in root.rglob("*.css")
+                  if "vendor" not in path.relative_to(root).parts)
+
+
 def _sheets() -> dict[str, str]:
-    return {sheet: (REPO_ROOT / sheet).read_text(encoding="utf-8") for sheet in SHEETS}
+    return {sheet: (REPO_ROOT / sheet).read_text(encoding="utf-8") for sheet in _sheet_paths()}
 
 
 def test_every_rule_that_paints_amber_is_listed_with_its_meaning() -> None:
@@ -287,7 +307,22 @@ def test_every_rule_that_paints_amber_is_listed_with_its_meaning() -> None:
 
 
 def test_the_sheets_scanned_are_every_first_party_sheet() -> None:
-    assert sorted(f"web/{path.name}" for path in WEB.glob("*.css")) == sorted(SHEETS)
+    assert set(_sheets()) == set(_sheet_paths())
+
+
+def test_sheet_discovery_includes_nested_first_party_and_excludes_vendor(tmp_path):
+    for name in ("ui.css", "modules/new.css", "vendor/third.css", "modules/vendor/third.css"):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('.fixture { color: orange; }', encoding='utf-8')
+    assert _sheet_paths(tmp_path) == ["web/modules/new.css", "web/ui.css"]
+
+
+def test_activity_exception_cannot_authorize_other_automatic_states():
+    import pytest
+    for selector in ('.rw-row[data-activity="stopped"]', '.any-queue', '.setting.active'):
+        with pytest.raises(AssertionError):
+            registry(f"activity | web/room_activity.css | {selector} | color")
 
 
 def test_scripts_paint_no_amber_beyond_their_listed_counts() -> None:

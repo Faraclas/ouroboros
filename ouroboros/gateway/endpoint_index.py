@@ -105,6 +105,7 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "POST /api/projects/{project_id}/delete",
     "GET /api/fs/dirs",
     "GET /api/chat/history",
+    "GET /api/rooms/{chat_id}/activity",
     "GET /api/logs/{name}",
     "POST /api/chat/upload",
     "DELETE /api/chat/upload",
@@ -353,6 +354,9 @@ HTTP_SHAPES: dict[str, Shape] = {
     "GET /api/chat/history": Shape(
         "200,400,409,503:ChatHistoryResponse", query="chat_id cursor around n_human n_progress limit",
         note="an error page echoes the cursor sent, so the same request can be repeated"),
+    "GET /api/rooms/{chat_id}/activity": Shape(
+        "200:ActivityPageResponse 400,409,503:ErrorResponse", query="cursor limit",
+        note="passive bounded retained root/service activity; cursor advances over scanned candidates, gaps explicit; no liveness or control authority"),
     "POST /api/chat/upload": Shape("200:UploadResponse 400:ErrorResponse", "multipart", note="form field file"),
     "DELETE /api/chat/upload": Shape("200:ChatUploadDeleteResponse 400,404,409:ErrorResponse", "ChatUploadDeleteRequest",
                                      note="pending uploads only; a repeat answers 404"),

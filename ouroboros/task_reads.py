@@ -104,16 +104,16 @@ class TaskReads:
                 while len(_REPLICAS) > _REPLICAS_MAX:
                     _REPLICAS.popitem(last=False)
 
-    def prefetch(self, task_ids: Iterable[str]) -> None:
+    def prefetch(self, task_ids: Iterable[str], *, follow_successors: bool = True) -> None:
         """Read ``task_ids`` from the canonical root, then, a wave each, the successors and
         child replicas their effective projection overlays. A batch the store cannot answer now
         is left to each ``load``, which then reads (and fails, migration included) on its own."""
         try:
-            self._prefetch(task_ids)
+            self._prefetch(task_ids, follow_successors=follow_successors)
         except Exception:
             log.debug("Batched task facts unavailable; reading per task", exc_info=True)
 
-    def _prefetch(self, task_ids: Iterable[str]) -> None:
+    def _prefetch(self, task_ids: Iterable[str], *, follow_successors: bool = True) -> None:
         from ouroboros.task_results import cancellation_blocks_child_result
         from ouroboros.task_status import _child_drive_candidates
 
@@ -125,9 +125,9 @@ class TaskReads:
             for task_id in frontier:
                 document = self._peek(self.root, task_id) or {}
                 successor = str(document.get("superseded_by") or document.get("retry_task_id") or "").strip()
-                if successor:
+                if follow_successors and successor:
                     self._successors[task_id] = successor
-                if successor and successor not in seen:
+                if follow_successors and successor and successor not in seen:
                     successors.add(successor)
             seen |= successors
             frontier = successors
@@ -184,6 +184,12 @@ class TaskReads:
         from ouroboros import task_status
 
         return task_status.load_effective_task_result(self.root, task_id, materialize_artifacts=False, reads=self)
+
+    def physical(self, task_id: str) -> Dict[str, Any]:
+        """This retained occurrence's current/replica facts, never a successor's history."""
+        from ouroboros.task_status import effective_task_result
+        return effective_task_result(self.root, self.load(self.root, task_id),
+                                     materialize_artifacts=False, reads=self, follow_successors=False, infer_orphans=False)
 
     # -- once-per-read facts ----------------------------------------------------------------
     def queue_snapshot(self, root: Any) -> Dict[str, Any]:

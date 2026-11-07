@@ -76,6 +76,15 @@ def candidate_is_leasable(candidate: Dict[str, Any], running_ids: Set[str], *,
                                                - {str(candidate.get("id") or "")})
 
 
+def blocking_project_tasks(candidate: Dict[str, Any], running: Iterable[Any], cold_holders: Dict[str, Set[str]]) -> list[str]:
+    """Observed occupants of the same lane, using the lease owner's own predicates."""
+    project = _task_project_id(candidate)
+    ids = {str(_as_task(item).get("id") or "") for item in running
+           if _is_lane_occupant(item) and _task_project_id(item) == project}
+    ids.update(cold_holders.get(project, set()))
+    return sorted(ids - {"", str(candidate.get("id") or "")})
+
+
 def task_lane_project_state(running: Any, pending: Any, tid: Any) -> dict:
     """Scope and exact carrier (including absence) for a conversion rollback.
 

@@ -15,6 +15,7 @@ import { markSwarmLabel, syncSwarmReceipt } from './swarm_presentation.js';
 import { createChatMedia, decorateContactSource, showTaskIncidentToast } from './chat_media.js';
 import { attachmentCaption, attachmentViews, createUnconfirmedSends } from './chat_attachments.js';
 import { createChatDecision } from './chat_decision.js';
+import { decorateRoomHeader } from './room_orientation.js';
 import { createRoomWork } from './room_work.js';
 import { applyCardWorkViews, cardControls, cardMenuActions, changedOffers, emptyWorkState, openCardControls, ownStopPress, reconcileWorkState, roomStatusView } from './work_status.js';
 import { statusMarkHtml } from './status_mark.js';
@@ -58,6 +59,7 @@ import {
 import { composerMarkup, createComposer } from './composer.js';
 import { effortFact } from './effort_chip.js';
 import { mountEmptyChatWelcome } from './welcome_preference.js';
+import { appendSelection } from './chat_selection.js';
 import { createChatReplies } from './chat_reply.js';
 import { createHistoryReveal } from './chat_history_reveal.js';
 import { createChatRowMenu } from './chat_row_menu.js';
@@ -222,7 +224,8 @@ export function createChatInstance({
     const headerHtml = asPanel
         ? `<div class="chat-panel-statusbar"><span id="chat-status" class="status-badge offline">Connecting…</span></div>`
         : renderPageHeader({
-            title: title,
+            title: 'Main Chat',
+            named: false,
             variant: 'overlay',
             className: 'chat-page-header',
             toolbarClass: 'ui-chrome-group',
@@ -260,6 +263,7 @@ export function createChatInstance({
     const inputArea = byId('input-area');
     const statusBadge = byId('status');
     const pageHeader = page.querySelector('.chat-page-header') || (asPanel ? container?.closest?.('.project-panel')?.querySelector?.('.project-panel-bar') : null);
+    decorateRoomHeader(pageHeader, { main: !asPanel });
     const pageNote = page.querySelector('.chat-page-note');
     const scrollBottomBtn = byId('scroll-bottom');
     const scrollActivityDot = scrollBottomBtn?.querySelector('.chat-scroll-activity-dot');
@@ -275,6 +279,7 @@ export function createChatInstance({
     const onWs = (event, fn) => wsDisposers.push(ws.on(event, fn));
     const replies = createChatReplies({ chatId, feed: messagesDiv, input, composerArea: inputArea, key: storeKey('ouro_chat_reply'),
         reading: () => reading, onDomWrite: withStableViewport, history: () => historyReveal,
+        appendSelected: text => appendSelection(composer, text),
         navigate: revealQuotedSource, present: () => !destroyed && isInstanceVisible() });
     const chatMedia = createChatMedia({
         chatSessionId,
@@ -285,6 +290,7 @@ export function createChatInstance({
         stampNodeTimestamp,
         onDomWrite: withStableViewport,
         replies, composer: () => composer,
+        focusOrigin: () => window.dispatchEvent(new CustomEvent('viper:focus-document-room', { detail: { projectId } })),
     });
     const mainWaiting = isMain ? createMainWaiting({ page, messagesDiv, insertMessageNode, stampNodeTimestamp,
         openSettings: openSettingsTab, refresh: () => refreshHeaderControlState(true), mutate: withStableViewport,
@@ -560,7 +566,7 @@ export function createChatInstance({
     const episodes = createTaskEpisodes({ records: liveCardRecords, reanchor: reanchorTaskCard, renamed: portals.relabel,
         activity: (record) => currentActivity(record), follow: portals.follow,
         expand: (record) => { setLiveCardExpanded(record, true); hydrateCardReviews(record.groupId); } });
-    const rowMenu = createChatRowMenu({ feed: messagesDiv, replies, cardOf: (id) => liveCardRecords.get(id),
+    const rowMenu = createChatRowMenu({ feed: messagesDiv, replies, sendSelection: text => appendSelection(composer, text), cardOf: (id) => liveCardRecords.get(id),
         actionsOf: (record) => cardMenuActions(workState, record, currentActivity(record)), afterAction: reread });
 
     let childHoldRead = false;
@@ -2865,7 +2871,8 @@ export function createChatInstance({
             let changed = false;
             if (pageHeader && messagesDiv) {
                 // The bar's own height places the note under it; the transcript clears both.
-                const bar = Math.ceil(pageHeader.offsetHeight || 0);
+                const explanation = roomWork?.explanation;
+                const bar = Math.ceil((pageHeader.offsetHeight || 0) + (!asPanel && explanation && !explanation.hidden ? explanation.offsetHeight : 0));
                 const note = pageNote?.offsetParent ? Math.ceil(pageNote.offsetHeight || 0) : 0;
                 const barValue = `${bar}px`;
                 if (page.style.getPropertyValue('--chat-header-bar') !== barValue) {
@@ -3544,10 +3551,11 @@ export function createChatInstance({
     const historyReveal = createHistoryReveal({ pager: historyPager, reading, feed: messagesDiv, records: liveCardRecords,
         present: isInstanceVisible, expand: record =>
             (explicitCardExpansion.set(record.groupId, true), setLiveCardExpanded(record, true)) });
-    roomWork = createRoomWork({ page, asPanel, ws, statusBadge, messagesDiv, reading, stateSnapshots, revealQuestion,
+    roomWork = createRoomWork({ page, asPanel, projectId, chatId, ws, statusBadge, messagesDiv, reading, stateSnapshots, revealQuestion,
         works: () => workState, liveCardRecords, pendingSubmissions, pendingSuggestedNames,
         cancelRunFromCard, refreshHeaderControlState, captureVisibleTimelineAnchor, restoreVisibleTimelineAnchor,
-        historyPager, showLatest, hostReady: hostStart.ready });
+        historyPager, showLatest, withStableViewport, hostReady: hostStart.ready });
+    if (roomWork?.explanation) chatResizeObserver?.observe(roomWork.explanation);
     // Main's bar: Restart, Panic, the budget and the consciousness chip; a Project's bar is app.js's.
     header = asPanel ? null : createRoomHeader({ bar: pageHeader, ws, shade: roomWork, openDashboardTab,
         refreshState: refreshHeaderControlState });
@@ -3576,7 +3584,7 @@ export function createChatInstance({
         // Unsendable client-side state (staged File objects / an in-flight
         // upload / a sent message not yet saved, whose Send again
         // lives here). app.js must hide, not destroy, an instance holding it.
-        hasPendingWork: () => composer.hasPendingWork() || unconfirmed.count > 0,
+        hasPendingWork: () => composer.hasPendingWork() || unconfirmed.count > 0 || chatMedia.hasOpenReader(),
         // app.js, when this room leaves the screen without being destroyed: the
         // modal a file card opened (reader, file dialog) closes and its read
         // stops; staged attachments and uploads are untouched.

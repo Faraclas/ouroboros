@@ -523,7 +523,7 @@ def _project(run, data_project):
     page.keyboard.type("Draft line three")
     _assert_fits(run.geometry(panel_field, "project-typed"), mode, "project-typed", rows=3)
     # Close (a pressed row only opens, #1998): the instance is destroyed, its draft kept.
-    close = page.locator("#project-panel-close")
+    close = page.locator(f'[data-pane-project="{data_project}"] [data-pane-close]')
     close.evaluate("el => el.click()")
     page.wait_for_function("() => !document.querySelector('#project-panel textarea.chat-input')")
     page.wait_for_function("() => document.getElementById('project-panel').hidden")

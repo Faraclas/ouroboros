@@ -38,7 +38,7 @@ test('header accepts the legacy numeric state shape without fabricating null as 
 
 // The budget is a neutral fact; it is the owner's move only while a task the spending limit stopped waits for the owner
 // (gateway/main_decisions.py: a Main attention row whose reason is the budget), even at the limit itself.
-test('the budget pill asks for the owner only while a spending-limit stop waits for the owner', () => {
+test('spending-limit attention stays a Main action and is not Copilot account usage', () => {
     const atLimit = { spent_usd: 10, budget_limit: 10 };
     assert.deepEqual([headerBudgetPresentation(atLimit).fillPct, headerBudgetPresentation(atLimit).attention], [100, false]);
     const resume = { task_id: 'r', attention_reason: 'restart' };
@@ -49,18 +49,16 @@ test('the budget pill asks for the owner only while a spending-limit stop waits 
     // The fact rides beside the money, whatever the ledger read says.
     assert.equal(headerBudgetPresentation({ accounting: { available: false }, main_attention: [stopped] }).attention, true);
     assert.equal(headerBudgetPresentation({ ...atLimit, main_attention: null }).attention, false);
-    // The bar's owner (chat_header.js) writes it on the pill and the stylesheet keeps amber for it alone; Panic stays danger.
+    // The account pill has a separate owner; spending-limit actions stay in Main.
     const header = readFileSync(new URL('../modules/chat_header.js', import.meta.url), 'utf8');
-    assert.match(header, /budget\.dataset\.attention = view\.attention \? '1' : '0'/);
+    assert.match(header, /bindCopilotHeader\(budget\)/);
+    assert.doesNotMatch(header, /budget\.dataset\.attention/);
+    const waiting = readFileSync(new URL('../modules/main_waiting.js', import.meta.url), 'utf8');
+    assert.match(waiting, /budget: 'Paused at the spending limit/);
+    assert.match(waiting, /createTaskResumeButton\(record\.groupId/);
     const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
     const rules = (selector) => [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)]
         .filter(([, head]) => head.includes(selector)).map(([, head, body]) => `${head.trim()} { ${body.trim()} }`);
-    const amber = /--amber|--status-warn|--tone-amber|245,\s*158,\s*11/;
-    const budget = rules('chat-budget');
-    assert.ok(budget.length >= 6, 'the budget rules are read');
-    assert.deepEqual(budget.filter((rule) => amber.test(rule) && !rule.includes('[data-attention="1"]')), [],
-        'nothing paints the budget amber without the owner\'s move');
-    assert.ok(budget.some((rule) => amber.test(rule) && rule.includes('[data-attention="1"]')));
     assert.ok(rules('.chat-header-btn.danger.ui-chrome-control').some((rule) => /--tone-red|--status-error/.test(rule)));
 });
 

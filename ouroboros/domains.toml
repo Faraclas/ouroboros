@@ -65,6 +65,10 @@ D19 = "Frozen contracts (ABI)"
 D20 = "Presence"
 
 [modules]
+"ouroboros/activity_history.py" = "D17"
+"ouroboros/gateway/activity.py" = "D11"
+"ouroboros/gateway/activity_contracts.py" = "D11"
+"ouroboros/tools/activity.py" = "D05"
 "ouroboros/loop_completion_schema.py" = "D01"
 "ouroboros/place_reply.py" = "D20"
 "ouroboros/place_arrivals.py" = "D20"

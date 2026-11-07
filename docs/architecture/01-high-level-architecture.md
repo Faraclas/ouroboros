@@ -26,7 +26,12 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
     contributions.js, composer_plus.js, composer_chips.js, host_modules.js, holds.js — the contributions store and verbs; skills' "+" items and capsule-row chips; trusted page modules; the start ledger (CLIENT_CONTRACT §11; DESIGN "Skills in the page")
     project_reference.js — the one Project pointer control and the only raiser of `ouro:open-project` (DESIGN "References and actions")
     project_activity.js, work_status.js, work_types.js, status_mark.js — Project marks and room words from the server's `rooms`/`works`; their typedefs (§3 Liveness census)
-    room_work.js, project_read_state.js, chat_header.js, consciousness_status.js — a room's bar: work list (no execution authority), consciousness chip and Shade, Panic, Main's Restart/budget; read receipt (§3 Project rooms)
+    room_work.js, project_read_state.js, chat_header.js, consciousness_status.js — a room's bar: work list (no execution authority), consciousness chip and Shade, Panic, Main's Restart/Copilot usage; read receipt (§3 Project rooms)
+    room_activity.js, activity_types.js, work_visibility.js — retained occurrences, coverage, keyed history/assessment and room status wording; no liveness/control authority (§6)
+    pane_workspace.js, room_orientation.js, orientation_config.js — retained Main/project composition, room identity and configured-location disclosure (§3)
+    projects_manager.js, project_hierarchy.js, project_parent.js, project_unread.js — project catalog, tree, parent editor and destination-specific unread presentation (§3)
+    copilot_usage.js, work_items.js — optional account-credit read and passive shared Work Items (§3)
+    reader_collaboration.js, chat_selection.js — modeless reader movement and exact selection-to-origin-draft transfer, never automatic send (§3)
     model_wait.js — model waits and owner actions in chat cards (§6 Quota and auth waits)
     task_checkpoints.js, cancel_presentation.js, dashboard.js, logs.js, worker_sha_presentation.js, costs.js, files.js — typed checkpoints and cancellation-cause text shared by Chat and Logs; Dashboard, Logs, worker-SHA presentation, Costs (unknown is not free), Files (§3)
     skills.js, skill_*.js — Skills page: Installed, Browse and Sources, cards, sheet, dialogs, Skill Review cards, publish (§3 Skills and Widgets)
@@ -39,6 +44,7 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
     acceptance_incident_presentation.js — a stored task-acceptance incident, read-only; no reviewer authority (§6 Result review)
     widgets.js, widget_render.js, widget_module.js, widget_assets.js, widget_frame.js, widget_card.js, widget_reorder.js, widget_list.js, widget_size.js, widget_chart.js, widget_job.js, masonry.js — Widgets page leaves: host and card registry, the declarative renderer, framed mounts, card chrome, list-request policy, helpers and masonry (§3)
 skills/browser_speech/, skills/device_voice/, skills/templates/ — built-ins (`skills/builtin.json`): speech engines (ui/stt.js, ui/tts.js) and the "+" starters
+skills/copilot-credits/, skills/project-orientation/, skills/project-boards/ — source-only UI backend seeds; normal install/grant/enablement, no migration of same-name external state (§13)
 supervisor/ — background thread inside server.py (§5)
   active_activity.py — process-local direct actors/start phases/call observations for `/api/state`; private reply expectation/handoff facts, no queue rows (§3 Direct turns and the activity block)
   message_bus.py — local message bus for the Web UI and transport skills; re-exports the ingress names
@@ -357,7 +363,8 @@ ouroboros/ — agent core and shared runtime (§6)
   terminal_cost_reconciliation.py — Usage recovery/projection (§6 Budget tracking)
   task_continuation.py — Durable review continuation state
   task_results.py — Task-result merge-writes (one store transaction) and typed readers; `resolve_ctx_lineage` answers a context's root/child lineage (§6 Task lifecycle)
-  task_store.py, task_reads.py — Indexed facts/signatures, review/plan candidates, documents, display views; one captured value per statement, decoded after close; read/modify inside (PERSISTENCE.md)
+  task_store.py, task_reads.py — Indexed facts, documents and physical/effective views; capture before decoding, read/modify inside (PERSISTENCE.md)
+  activity_history.py — Retained room roots/services/failed checks and source-bound judgments over existing records (§3, §6)
   pause_notices.py — Confirmed-pause System disclosures: pending episodes, saved-chat receipts, off-loop local replay
   task_result_schema.py — Task-result schema admission: the `_schema_version` stamp, the classifier, and the quarantine an unstamped, future or malformed row lands in
   task_status.py — effective status, lineage and waits; `execution_owner` and dated `execution_observation` separate lifecycle from liveness (§5); the worker-side cancel predicate fails open toward liveness (§10 invariant 14)
@@ -420,6 +427,7 @@ ouroboros/ — agent core and shared runtime (§6)
     task_continue.py — POST owner Continue `{action_nonce}`; one nonce answers one admission (owner_continue.py; §6 Owner Continue)
     main_decisions.py — Main's current questions and human-required controls, gaps explicit (§3)
     work_status.py, work_projection.py, work_contracts.py — one status per work and room in `/api/state` (§3 Liveness census)
+    activity.py, activity_contracts.py — passive retained room activity and its public shapes; no liveness or control authority (§6)
     task_decision.py — The one `POST /api/decisions` ingress with family-parsed ids (`quiz:` here, `routing:` → routing_decision.py, `card:` → card_decision.py, `interaction:` reserved); writes `KIND_QUIZ_ANSWER` (owner_quiz.py; §11.1)
     cards.py, card_decision.py — `/api/cards/*` reads (apps as inert text) and pins; a press is recorded, then mailed as `KIND_CARD_INPUT` or sent as the owner's message
     task_model_wait.py — Shared model-wait decision effects over the existing mailbox, with live-owner/revision checks
@@ -516,6 +524,7 @@ ouroboros/ — agent core and shared runtime (§6)
     edit_ops.py — `apply_patch` and `edit_batch` with the shared syntax check and unified diff backing write_file; the diff pulse in every system-repository edit result
     media.py — extract_pdf_text (ocr_pdf alias, not OCR), youtube_transcript, extract_video_frames; typed optional-dependency facts, fresh artifact_store/video_frames directory per call
     verify.py — Independent checks through the shared pre-exec guards, not a process-command tool by design (§6 Tool capability and execution)
+    activity.py — assess_activity: an integrating root's explicit source-bound judgment, never repair or review PASS (§6)
     review_helpers.py — shared review helpers: governance-doc loading, checklist slicing, the prompt-size SSOT, the density-calibrated input cap
     review_binary_context.py — Staged/parent Git object metadata for review packs
     review_subject.py — Frozen subjects/managed deltas/isolated checkouts; captured identity owns reuse (§6 Subject operation)

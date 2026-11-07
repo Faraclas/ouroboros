@@ -908,6 +908,23 @@ def _apply_cancel_state_projection(
         pass
 
 
+def recorded_outcome(row: Dict[str, Any]) -> str:
+    """Recorded lifecycle, shared by work and retained-history presentation."""
+    axes = row.get("outcome_axes") if isinstance(row.get("outcome_axes"), dict) else {}
+    lifecycle = axes.get("lifecycle") if isinstance(axes.get("lifecycle"), dict) else {}
+    return str(lifecycle.get("status") or row.get("status") or "")
+
+
+def shown_outcome(row: Dict[str, Any]) -> str:
+    """An owner-finalized turn keeps Stopped on every presentation surface."""
+    status = recorded_outcome(row)
+    if status in {"completed", "failed"} and isinstance(row.get("cancel_origin"), dict):
+        from ouroboros.project_dialogue import outcome_phase
+        if outcome_phase({**row, "root_phase_checkpoint": {}}, {}) == "cancelled":
+            return "cancelled"
+    return status
+
+
 def effective_task_result(
     drive_root: pathlib.Path,
     result: Dict[str, Any],
@@ -917,6 +934,8 @@ def effective_task_result(
     _events_index: Optional[_EventsTailIndex] = None,
     _boot: bool = False,
     reads: Any = None,
+    follow_successors: bool = True,
+    infer_orphans: bool = True,
 ) -> Dict[str, Any]:
     """Merge parent result, child-drive result, and active queue state.
 
@@ -938,9 +957,12 @@ def effective_task_result(
     instead of N; ``None`` keeps the per-call read for single-row callers.
     ``reads`` (``task_reads.TaskReads``) serves every document, the queue snapshot, the cancel
     intents and the events tail of a read of many tasks from its batches.
+    ``follow_successors=False`` keeps this physical occurrence and its own replica,
+    for history that must not replace an earlier failure with a later answer.
+    ``infer_orphans=False`` keeps recorded facts without historical event-tail inference.
     """
     load = reads.load if reads is not None else load_task_result
-    if reads is not None and _events_index is None:
+    if infer_orphans and reads is not None and _events_index is None:
         _events_index = reads.events_index
 
     if not result:
@@ -949,7 +971,7 @@ def effective_task_result(
     if not task_id:
         return dict(result)
     retry_id = str(result.get("superseded_by") or result.get("retry_task_id") or "").strip()
-    if retry_id and retry_id != task_id and retry_id not in _seen:
+    if follow_successors and retry_id and retry_id != task_id and retry_id not in _seen:
         retry_result = load(drive_root, retry_id) or {}
         if retry_result:
             effective_retry = effective_task_result(
@@ -957,7 +979,8 @@ def effective_task_result(
                 retry_result,
                 materialize_artifacts=materialize_artifacts,
                 _seen=frozenset(set(_seen) | {task_id}),
-                _events_index=_events_index, _boot=_boot, **({"reads": reads} if reads is not None else {}),
+                _events_index=_events_index, _boot=_boot, infer_orphans=infer_orphans,
+                **({"reads": reads} if reads is not None else {}),
             )
             if effective_retry:
                 merged_retry = dict(effective_retry)
@@ -1129,7 +1152,7 @@ def effective_task_result(
                         bundle,
                         "task ended before artifact finalization",
                     )
-            elif _is_stale_orphan_running_task(
+            elif infer_orphans and _is_stale_orphan_running_task(
                 pathlib.Path(drive_root), task_id, merged, _events_index,
                 queue_snapshot=queue_snapshot, boot=_boot,
             ):

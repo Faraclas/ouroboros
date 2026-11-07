@@ -144,10 +144,16 @@ export class NodeStub {
 export function fixture({ insertNode = null, formatMsgTime = () => null } = {}) {
     const tracker = { adds: 0, removes: 0, created: [] };
     const body = new NodeStub('body', tracker);
+    const documentEvents = new NodeStub('#document', tracker);
+    const view = new EventTarget();
+    view.open = () => {};
     const inserted = [];
     const prior = { document: globalThis.document, window: globalThis.window, navigator: globalThis.navigator };
     globalThis.document = {
         body,
+        defaultView: view,
+        addEventListener: documentEvents.addEventListener.bind(documentEvents),
+        removeEventListener: documentEvents.removeEventListener.bind(documentEvents),
         createElement: (tag) => {
             const node = new NodeStub(tag, tracker);
             tracker.created.push(node);
@@ -156,7 +162,7 @@ export function fixture({ insertNode = null, formatMsgTime = () => null } = {}) 
         createDocumentFragment: () => new NodeStub('#fragment', tracker),
         execCommand: () => true,
     };
-    globalThis.window = { open() {} };
+    globalThis.window = view;
     Object.defineProperty(globalThis, 'navigator', {
         configurable: true,
         value: { clipboard: { writeText: async () => {} } },

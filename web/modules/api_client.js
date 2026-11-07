@@ -81,6 +81,14 @@ export function jsonPost(url, payload = {}, options = {}) {
     }, options);
 }
 
+/** Retained room activity is history, never permission to control a live task. */
+export function getRoomActivity(chatId, { cursor = '', limit = 30, signal } = {}) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (cursor) query.set('cursor', cursor);
+    return fetchJson(`/api/rooms/${encodeURIComponent(chatId)}/activity?${query}`,
+        { cache: 'no-store', signal });
+}
+
 /** Exact-profile refresh; omitted target keeps the existing full refresh. */
 export function refreshAccountResources(target, options = {}) {
     return jsonPost('/api/claudexor/quota/refresh', target ? { target } : {}, options);

@@ -76,7 +76,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "switch_model",
     "request_restart", "promote_to_stable", "prepare_self_change",
     "preflight_review", "advisory_review", "review_change", "review_status",
-    "verify_and_record",
+    "verify_and_record", "assess_activity",
     # Skill discovery and review are core capabilities; installing, updating and source changes
     # load on demand (enable_tools) after a search found something worth it.
     "list_skills", "skill_review", "skill_preflight",

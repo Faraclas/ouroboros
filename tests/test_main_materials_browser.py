@@ -327,7 +327,7 @@ def test_main_live_completion_opens_project_answer_documents_and_task_files(wait
                         assert saved.read_bytes() == brief.read_bytes()
                         page.keyboard.press('Escape')
                         expect(document).to_be_focused()
-                        page.locator('#project-panel-close').click()
+                        page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
                         receipt['stages'].append(f'{stage}: Main folded; Project full answer, delivered reader and task Files downloads match')
                 finally:
                     receipt['live_completion_frames'] = [frame for frame in frames if frame.get('system_type') == 'project_completion_summary']
@@ -458,7 +458,7 @@ def test_main_final_released_with_its_history_page_mounts_again_with_project_doo
                         expect(dialog.locator('.document-reader-body')).to_contain_text(payloads['research/brief.txt'].decode().strip())
                         page.screenshot(path=str(evidence / f'{stage}.png'), animations='disabled')
                         page.keyboard.press('Escape')
-                        page.locator('#project-panel-close').click()
+                        page.locator(f'[data-pane-project="{receipt["project"]["id"]}"] [data-pane-close]').click()
                         page.evaluate('() => document.activeElement?.blur()')
                         receipt['stages'].append(f'{stage}: Main fold and Project full answer/nested delivered document readable')
 

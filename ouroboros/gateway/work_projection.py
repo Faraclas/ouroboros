@@ -216,9 +216,9 @@ def _service_tails(task_id: str, attempt: int, row: Mapping[str, Any], raw: Mapp
     view = raw.get("service_observations") or row.get("service_observations") or {}
     sources = []
     if stored.get("task_attempt") == attempt:
-        sources.extend(stored.get("services") or [])
+        sources.extend(s for s in stored.get("services") or [] if isinstance(s, dict) and s.get("task_attempt", attempt) == attempt)
     if view.get("task_id") == task_id and view.get("task_attempt") == attempt:
-        sources.extend(view.get("services") or [])
+        sources.extend(s for s in view.get("services") or [] if isinstance(s, dict) and s.get("task_attempt", attempt) == attempt)
     wait = raw.get("owner_wait") or row.get("sleep_wait") or {}
     if wait.get("task_attempt") == attempt:
         sources.extend({**pin, "task_id": task_id} for pin in (wait.get("sleep") or {}).get("services") or [])
@@ -227,16 +227,7 @@ def _service_tails(task_id: str, attempt: int, row: Mapping[str, Any], raw: Mapp
 
 def _typed_services(sources: Iterable[Mapping[str, Any]], now: float) -> list:
     from ouroboros.peer_roster import iso_from_epoch
-    from datetime import timezone
-
-    def stamp(value):
-        epoch = iso_from_epoch(value)
-        if epoch:
-            return epoch
-        try:
-            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
-        except (ValueError, TypeError):
-            return None
+    from ouroboros.service_observations import service_start_stamp as stamp
 
     selected = {}
     for service in sources:

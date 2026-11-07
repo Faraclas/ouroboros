@@ -366,15 +366,21 @@ def test_s3_chat_card_dropdown_hurry_and_soft_stop(direct_server_with_data):
                     """,
                 )
 
-                # Owner decision 1D: any nested scroll or resize dismisses
-                # without issuing a task-control action.
+                # Viewport invalidation: a queued scroll with no anchor movement
+                # keeps the portal; actual movement and resize dismiss without
+                # issuing a task action. This narrows the old bare-event proxy.
                 trigger.click()
                 menu.wait_for(state="visible", timeout=10_000)
+                page.locator("#chat-messages").dispatch_event("scroll")
+                assert menu.count() == 1
+                assert trigger.get_attribute("aria-expanded") == "true"
+                trigger.evaluate("n => n.style.transform = 'translateY(2px)'")
                 page.locator("#chat-messages").dispatch_event("scroll")
                 menu.wait_for(state="detached", timeout=10_000)
                 assert trigger.get_attribute("aria-expanded") == "false"
                 assert trigger.evaluate("(node) => document.activeElement === node") is True
                 assert page.evaluate("() => window.__s3Calls.length") == 0
+                trigger.evaluate("n => n.style.removeProperty('transform')")
 
                 trigger.click()
                 menu.wait_for(state="visible", timeout=10_000)

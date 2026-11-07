@@ -8,6 +8,9 @@ real request with ``context.build_llm_messages``, so the first capture activates
 from __future__ import annotations
 
 import pathlib
+import dataclasses
+import json
+import re
 from typing import Any, Dict, Tuple
 
 from tests import _memory_inventory_shared as shared
@@ -29,6 +32,24 @@ def blocks(env: Any, memory: Any, task: Dict[str, Any], **kwargs: Any) -> Tuple[
     first, *stable, third = (block["text"] for block in messages[0]["content"])
     second = "\n\n".join(text for text in stable if not text.startswith("## DEVELOPMENT.md\n"))
     return first, second, third, cap
+
+
+def native_fixture_core(core, world_root):
+    """Replace fixture-world prefixes in three rendered fields, not arbitrary authored text.
+
+    Real env/disk objects, assignment, supplementary messages, memory-view JSON and
+    schemas stay untouched. The world's parent is never replaced: the existing
+    foreign-session isolation oracle must remain meaningful.
+    """
+    roots = {str(world_root), str(pathlib.Path(world_root).resolve())}
+    roots |= {json.dumps(root)[1:-1] for root in roots}
+    fields = {}
+    for name in ('dynamic_head_text', 'dynamic_text', 'semi_stable_text'):
+        text = getattr(core, name)
+        for root in sorted(roots, key=len, reverse=True):
+            text = re.sub(re.escape(root) + r'(?=[/\\"`]|$)', lambda _match: '/synthetic-native-root', text)
+        fields[name] = text
+    return dataclasses.replace(core, **fields)
 
 
 def section(text: str, heading: str) -> str:

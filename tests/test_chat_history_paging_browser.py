@@ -615,7 +615,7 @@ def test_history_details_selection_replay_and_project_reopen(direct_server_with_
                     _screenshot(page, tmp_path, f"routing-destination-opened-{browser_engine}-{width}")
                     # Opened again after reading back to its first message, the room is at its
                     # newest message and reads its newest page only (owner decision 2026-10-05).
-                    page.locator('#project-panel-close').click()
+                    page.locator(f'[data-pane-project="{destination["id"]}"] [data-pane-close]').click()
                     seen = len(page.evaluate("() => window.__historyReads"))
                     reopened = _open_project(page, project)
                     assert not [read["cursor"] for read in page.evaluate("n => window.__historyReads.slice(n)", seen)
@@ -722,7 +722,7 @@ def test_a_room_behind_other_rooms_archives_opens_at_its_newest_message_and_page
                     assert page.locator(f"{feed} .chat-load-older button").evaluate("node => node.hidden")
                     _screenshot(page, tmp_path, f"quiet-room-newest-{browser_engine}-{width}")
 
-                    page.locator("#project-panel-close").click()
+                    page.locator(f'[data-pane-project="{quiet["id"]}"] [data-pane-close]').click()
                     feed = _open_project(page, deep)
                     _assert_at_newest(page, feed, "DEEP_ROW_0399")
                     reads = _reads(page, deep["chat_id"])

@@ -15,6 +15,53 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
+def service_start_stamp(value: Any) -> str | None:
+    """One public exact-start spelling for live and retained service projections."""
+    from datetime import datetime, timezone
+    from ouroboros.peer_roster import iso_from_epoch
+
+    epoch = iso_from_epoch(value)
+    if epoch:
+        return epoch
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
+    except (ValueError, TypeError):
+        return None
+
+
+def merge_observations(canonical: dict, incoming: dict) -> dict:
+    """Retain every exact start; only a later dated probe replaces the same start."""
+    from datetime import datetime
+    import math
+
+    def clock(row):
+        value = row.get("observed_at")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value if math.isfinite(value) else float("-inf")
+        try:
+            at = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+            return at.timestamp() if at.tzinfo else float("-inf")
+        except (ValueError, OverflowError, OSError):
+            return float("-inf")
+
+    def attempt(source):
+        value = source.get("task_attempt")
+        return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+    rows, unidentified = {}, []
+    for source in (canonical, incoming):
+        for row in source.get("services") or []:
+            if not isinstance(row, dict) or not row.get("service_id") or not row.get("started_at"):
+                if row not in unidentified:
+                    unidentified.append(row)  # keep the reader's explicit incomplete-source disclosure
+                continue
+            key = row.get("service_id"), row.get("started_at")
+            if key not in rows or clock(row) > clock(rows[key]):
+                rows[key] = {"task_attempt": attempt(source), **row} if attempt(source) else row
+    newest = max((canonical, incoming), key=lambda source: (attempt(source), clock(source)))
+    return {**canonical, **newest, "services": [*rows.values(), *unidentified]}
+
+
 def observe(record: Any, facts: dict | None) -> dict:
     """One exact start, dated after its own probe; output availability is independent."""
     row = {"task_id": record.task_id, "service_id": record.service_id, "name": record.name,

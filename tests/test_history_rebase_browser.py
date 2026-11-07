@@ -79,7 +79,7 @@ def test_unavailable_recent_then_latest_keeps_a_retained_room_at_the_present(dir
             assert after['button'] != 'Retry loading messages' and 'could not be loaded' not in after['note'], after
             _screenshot(page, tmp_path, f'unavailable-recent-latest-{browser_engine}')
 
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             page.locator('.chat-instance-panel[data-pending-work="1"]').wait_for(state='attached')
             assert page.locator('.chat-instance-panel[data-pending-work="1"]').count() == 1
             before = page.evaluate('() => window.__historyReads.length')
@@ -226,7 +226,7 @@ def test_send_while_a_reopened_room_loads_keeps_a_failed_draft_and_stays_at_the_
                     for _ in range(3):
                         _step(page, feed, automatic=True)
                     _bookmark_place(page, target, 80)
-                page.locator('#project-panel-close').click()
+                page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
                 page.locator(feed).wait_for(state='detached')  # a new instance owes the held newest read
                 page.evaluate('id => { window.__holdRoom = {chatId: id, released: new Promise(r => { window.__releaseRoom = r; })}; }', cid)
                 _click_project(page, project)
@@ -305,7 +305,7 @@ def test_unavailable_recent_in_a_shallow_room_reopens_following_the_present(dire
             assert page.evaluate(since, [before, cid]) == [], 'the loaded present needs no read'
             assert page.locator(feed).evaluate(_GAP) <= 8
 
-            page.locator('#project-panel-close').click()
+            page.locator(f'[data-pane-project="{project["id"]}"] [data-pane-close]').click()
             page.locator('.chat-instance-panel[data-pending-work="1"]').wait_for(state='attached')
             assert page.locator('.chat-instance-panel[data-pending-work="1"]').count() == 1
             _click_project(page, project)
