@@ -683,7 +683,7 @@ def _supervisor_harness(monkeypatch, tmp_path, steps):
     its next ``while`` check), ``raise_after_stop``/``raise_after_restart`` =
     the flag is set and the same tick then crashes (the shutdown race)."""
     import threading
-    import queue as queue_mod
+    from supervisor.event_observation import ObservedEventQueue
 
     import server
     import supervisor.events as events_mod
@@ -784,7 +784,8 @@ def _supervisor_harness(monkeypatch, tmp_path, steps):
     for name in ("init", "spawn_workers", "kill_workers", "assign_tasks", "ensure_workers_healthy",
                  "auto_resume_after_restart"):
         monkeypatch.setattr(workers_mod, name, noop)
-    monkeypatch.setattr(workers_mod, "get_event_q", lambda: queue_mod.Queue())
+    event_queue = ObservedEventQueue()
+    monkeypatch.setattr(workers_mod, "get_event_q", lambda *, create=True: event_queue)
     monkeypatch.setattr("ouroboros.delegate_recovery.pre_adopt_planned_handoffs", noop)
     monkeypatch.setattr("ouroboros.tools.services.prune_service_logs", lambda _root: {})
     monkeypatch.setattr("ouroboros.consciousness.BackgroundConsciousness", _Consciousness)

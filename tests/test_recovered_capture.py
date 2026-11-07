@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -254,7 +255,8 @@ def test_relocated_failed_turn_is_captured_without_touching_active_thread(tmp_pa
     assert rc.capture_seat_evidence(root, TASK, "turn-one") == receipt
 
 
-def test_supervisor_reaches_ready_and_real_assignment_while_both_captures_are_blocked(tmp_path, monkeypatch):
+@pytest.mark.parametrize("delay_admission", [False, True])
+def test_supervisor_reaches_ready_and_real_assignment_while_both_captures_are_blocked(tmp_path, monkeypatch, caplog, delay_admission):
     import server
     from ouroboros import server_liveness, subagent_worktrees as worktrees, usage_store
     from supervisor import queue, state, worker_assignment, workspace_preparation
@@ -266,7 +268,7 @@ def test_supervisor_reaches_ready_and_real_assignment_while_both_captures_are_bl
     quiet_custody(root, monkeypatch, Engine())
     drain = server._check_pending_restart_drain
     migrate_usage = usage_store.migrate_from_journal
-    rec = _supervisor_harness(monkeypatch, root, ["ok"] * 1000)
+    rec = _supervisor_harness(monkeypatch, root, [])
     monkeypatch.setattr(usage_store, "migrate_from_journal", migrate_usage)
     _queue, _state, workers = _install_queue(root, monkeypatch)
     monkeypatch.setattr(server, "_startup_custody_sweep", maintenance._startup_custody_sweep)
@@ -275,10 +277,19 @@ def test_supervisor_reaches_ready_and_real_assignment_while_both_captures_are_bl
     monkeypatch.setattr(workers, "assign_tasks", worker_assignment.assign_tasks)
     monkeypatch.setattr(state, "budget_remaining", lambda *a, **kw: 100)
     monkeypatch.setattr(workers, "repo_writer_task_allowed", lambda task: True)
-    for name in ("_run_terminal_duty", "_run_cold_custody", "_run_schedule_duty"):
-        def finish(*args):
-            next(arg for arg in args if hasattr(arg, "release")).release()
-        monkeypatch.setattr(maintenance, name, finish)
+    start_duty = maintenance._start_maintenance_thread
+    skipped_duties = []
+    def only_capture_duty(latch, name, action, args):
+        if name == "custody-maintenance":
+            return start_duty(latch, name, action, args)
+        skipped_duties.append(name)
+        latch.release()
+    # Patch the dispatch owner: HOST_DUTIES holds bound callables, so changing
+    # a runner's module name alone leaves the table's real duties active.
+    monkeypatch.setattr(maintenance, "_start_maintenance_thread", only_capture_duty)
+    monkeypatch.setattr(maintenance, "_LAST_CANCEL_INTENT_SWEEP", [0.0])
+    monkeypatch.setattr(maintenance, "_LAST_COLD_CUSTODY_SWEEP", [0.0])
+    monkeypatch.setattr(maintenance, "_STEP_FAILURES", {})
     monkeypatch.setattr(maintenance, "_tick_maintenance_child", lambda: None)
     monkeypatch.setattr(maintenance, "_CUSTODY_SWEEP_LOCK", threading.Lock())
     entered = {kind: threading.Event() for kind in ("ordinary", "review")}
@@ -305,11 +316,30 @@ def test_supervisor_reaches_ready_and_real_assignment_while_both_captures_are_bl
     monkeypatch.setattr(server, "_check_pending_restart_drain", before_dispatch)
     def delivered(task):
         sent.append(dict(task))
-        rec.stop.set()
     workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None,
         in_q=SimpleNamespace(put=delivered)))
     task = {"id": "new-task", "type": "task", "chat_id": 0, "text": "Independent work", "admitted_dispatch": "none"}
     queue.PENDING.append(task)
+    # Assignment commits on a real asynchronous lane. Script exhaustion must
+    # not close its generation, and put entry precedes the RUNNING binding.
+    deadline = time.monotonic() + 10
+    tick_gate, ticks = threading.Event(), [0]
+    if delay_admission:
+        launch = worker_assignment._launch_job
+        def delayed_launch(*args):
+            assert tick_gate.wait(5), "supervisor did not reach the controlled admission ordering"
+            return launch(*args)
+        monkeypatch.setattr(worker_assignment, "_launch_job", delayed_launch)
+    def until_bound(_root, name, *_args, **_kwargs):
+        if name == "events.jsonl":
+            ticks[0] += 1
+            if ticks[0] == 1001:
+                tick_gate.set()  # the old finite driver stopped here, before the lane could put
+            with queue._queue_lock:
+                bound = bool(sent) and task["id"] in workers.RUNNING and not queue.PENDING
+            if bound or time.monotonic() >= deadline:
+                rec.stop.set()
+    monkeypatch.setattr(state, "rotate_jsonl_log_if_needed", until_bound)
     start = maintenance.bind_body_lifespan(root, body_stop, collection_ready=rec.ready.is_set)
     start()
     runtime = body.body_runtime(root)
@@ -319,6 +349,10 @@ def test_supervisor_reaches_ready_and_real_assignment_while_both_captures_are_bl
         assert server._supervisor_error is None
         _until(lambda: any(row.get("id") == task["id"] for row in sent))
         assert task["id"] in workers.RUNNING and not queue.PENDING
+        assert all(event.is_set() for event in entered.values())
+        assert "post_task_synthesis_recovery" in skipped_duties and not maintenance._STEP_FAILURES
+        assert "Supervisor idle inputs are unobservable" not in caplog.text
+        assert workers.get_event_q(create=False) is workers.get_event_q()
         assert not release.is_set() and not current.run(root, entries[0].run_id).patch_captured
         assert not rc._receipt(root, "review", "op-one")
         # Another recovery observes the same settlements without joining either archive.
