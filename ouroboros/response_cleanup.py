@@ -57,8 +57,7 @@ async def _aclose(close, owner) -> None:
     except Exception as error:
         from ouroboros._usage_wait import postresponse_off_loop
         try:
-            await postresponse_off_loop(_record_failure, error, owner,
-                                        retain_on_cancel=lambda result, capture: result)
+            await postresponse_off_loop(_record_failure, error, owner, retain_on_cancel=None)
         except Exception:
             pass  # Off-loop recording failure is not a response failure either.
 

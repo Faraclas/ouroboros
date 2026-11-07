@@ -300,3 +300,125 @@ def test_sdk_status_survives_cleanup_without_resend(monkeypatch, status, asynchr
         finally:
             client.close()
     assert sent == ["/v1/chat/completions"]
+
+
+@pytest.mark.parametrize("throwing_logger", [False, True])
+def test_cancel_during_cleanup_recording_is_not_paid_response_retention(monkeypatch, throwing_logger):
+    import threading
+    from unittest.mock import Mock
+    from ouroboros import response_cleanup as cleanup, _usage_wait as waits
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+    logger = Mock()
+    if throwing_logger:
+        logger.exception.side_effect = OSError("secondary logging failure")
+    monkeypatch.setattr(waits, "log", logger)
+
+    def recording(error, owner):
+        started.set()
+        assert release.wait(5)
+        finished.set()
+        # The real cleanup recorder returns no received-answer object.
+        return None
+
+    monkeypatch.setattr(cleanup, "_record_failure", recording)
+
+    async def failing_close():
+        raise OSError("cleanup failed")
+
+    async def run():
+        task = asyncio.create_task(cleanup._aclose(failing_close, (None, None, "fixture")))
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)  # Deliver the caller cancellation while recording is held.
+            assert not task.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert finished.is_set()
+            logger.exception.assert_not_called()
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("throwing_logger", [False, True])
+def test_received_answer_retention_failure_cannot_replace_cancellation(monkeypatch, throwing_logger):
+    import threading
+    from unittest.mock import Mock
+    from ouroboros import _usage_wait as waits
+    started, release = threading.Event(), threading.Event()
+    logger = Mock()
+    if throwing_logger:
+        logger.exception.side_effect = OSError("logging failed")
+    monkeypatch.setattr(waits, "log", logger)
+    answer = {"answer": "received"}
+
+    def received():
+        started.set()
+        assert release.wait(5)
+        return answer
+
+    def retention(value, capture):
+        assert value is answer
+        raise OSError("retention failed")
+
+    async def run():
+        task = asyncio.create_task(waits.postresponse_off_loop(received, retain_on_cancel=retention))
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            release.set()
+            with pytest.raises(asyncio.CancelledError) as error:
+                await task
+            assert error.value.response is answer
+            assert error.value.response_retention_error == "OSError"
+            assert logger.exception.call_count == 1
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("throwing_logger", [False, True])
+def test_completion_won_model_cancel_keeps_control_after_retention_failure(monkeypatch, throwing_logger):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from ouroboros import _usage_wait as waits, owner_pause
+    logger = Mock()
+    if throwing_logger:
+        logger.exception.side_effect = OSError("logging failed")
+    monkeypatch.setattr(waits, "log", logger)
+    answer = {"answer": "completion won"}
+    sent = []
+
+    def submit(reservation, consumer, function):
+        caller = asyncio.current_task()
+        future = consumer(lambda action, *args: action(*args), function)
+        future.add_done_callback(lambda done: caller.cancel())
+        sent.append(future)
+        return future
+
+    monkeypatch.setattr(owner_pause, "submit_model", submit)
+
+    async def complete():
+        return answer
+
+    def retention(value, capture):
+        assert value is answer
+        raise OSError("retention failed")
+
+    async def run():
+        with pytest.raises(asyncio.CancelledError) as error:
+            await waits.model_send_async(SimpleNamespace(attempt_id="fixture"), complete,
+                                         retain_on_cancel=retention)
+        assert error.value.response is answer
+        assert error.value.response_retention_error == "OSError"
+        assert len(sent) == 1 and sent[0].done() and not sent[0].cancelled()
+        assert logger.exception.call_count == 1
+
+    asyncio.run(run())

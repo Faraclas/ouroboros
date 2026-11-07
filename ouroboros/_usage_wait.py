@@ -312,12 +312,21 @@ async def presend_off_loop(function, *args, on_cancel=None, **kwargs):
         raise
 
 
+def _note_retention_failure(cancelled, failure):
+    cancelled.response_retention_error = type(failure).__name__
+    try:
+        log.exception("Failed to retain cancelled paid response")
+    except Exception:
+        pass  # A broken diagnostic sink cannot replace caller cancellation.
+
+
 async def postresponse_off_loop(function, *args, retain_on_cancel):
-    """Join accounting, retain the received answer, then propagate cancellation.
+    """Join completed work, optionally retain its answer, then propagate cancellation.
 
     The response already exists: cancellation cannot cancel accounting or
     skip its unresolved fallback. It still forbids caller continuation. The
     existing private response store owns retention, not the cancelled stack.
+    Cleanup-only evidence uses retain_on_cancel=None: there is no answer to retain.
     """
     from ouroboros import usage_accounting as ua
 
@@ -338,6 +347,8 @@ async def postresponse_off_loop(function, *args, retain_on_cancel):
     ua.adopt_physical_attempt_capture(capture)
     if cancelled is None:
         return response
+    if retain_on_cancel is None:
+        raise cancelled
     cancelled.physical_attempt_capture = capture
     cancelled.response = response
     retention = asyncio.create_task(asyncio.to_thread(retain_on_cancel, response, capture))
@@ -353,8 +364,7 @@ async def postresponse_off_loop(function, *args, retain_on_cancel):
     except Exception as exc:
         # Keep the exact object on the exception too; do not turn a failed
         # retention into success or authorize execution after Stop.
-        cancelled.response_retention_error = type(exc).__name__
-        log.exception("Failed to retain cancelled paid response")
+        _note_retention_failure(cancelled, exc)
     raise cancelled
 
 
@@ -612,8 +622,7 @@ async def model_send_async(reservation, complete, *, retain_on_cancel, retain_on
         try:
             cancelled.response_manifest_ref = retention.result()["manifest_ref"]
         except Exception as exc:
-            cancelled.response_retention_error = type(exc).__name__
-            log.exception("Failed to retain cancelled paid response")
+            _note_retention_failure(cancelled, exc)
         raise cancelled
     finally:
         capture = outcome.get("capture")

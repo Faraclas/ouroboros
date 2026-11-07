@@ -190,7 +190,7 @@ ouroboros/ — agent core and shared runtime (§6)
   llm_routing.py, llm_attempt.py, llm_messages.py, llm_capability_policy.py, llm_fallback.py, llm_pricing.py, llm_openai_compatible.py, llm_anthropic.py, llm_gigachat.py, llm_local.py, llm_claudexor.py, llm_substitution.py — leaves of `llm.py`: routing, attempt candidates and cache policy, transcript shaping, capability policy, the recovery ladder, price catalogs, one wire lane each, served-model substitution (§6 Caller-owned subscription model calls)
   llm_stream.py — SSE assembly inside one physical attempt (§6 Streams and transport waits)
   send_clock.py — Main preparation clocks and physical-candidate binding
-  net_transport.py — clients/keepalive/CA; response_cleanup.py — decoded close fidelity; copilot_responses.py/copilot_native_custody.py — codec/replay (§6–7)
+  net_transport.py — clients/keepalive/CA; response_cleanup.py — decoded close fidelity, joined cancellation without answer retention; copilot_responses.py/copilot_native_custody.py — codec/replay (§6–7)
   model_wait.py — quota/auth waits bound to the task or phase owner (§6 Quota and auth waits)
   transport_custody.py — typed transport facts for the physical-attempt custody seam
   openrouter_attribution.py — canonical OpenRouter application attribution, centralized so forks do not compete under one identity (§7)
