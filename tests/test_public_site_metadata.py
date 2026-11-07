@@ -379,13 +379,7 @@ def test_claudexor_dependency_snapshot_is_pin_derived_and_least_privilege():
     workflow = yaml.load(text, Loader=yaml.BaseLoader)
 
     assert workflow["permissions"] == {"contents": "write"}
-    assert workflow["on"]["push"]["branches"] == ["main", "ouroboros"]
-    assert workflow["on"]["push"]["paths"] == [
-        "ouroboros/claudexor_runtime_pin.json",
-        ".github/workflows/dependency-graph.yml",
-    ]
-    assert workflow["on"]["workflow_dispatch"] == {}
-    assert "pull_request" not in workflow["on"]
+    assert workflow["on"] == {"workflow_dispatch": {}}
     assert "secrets." not in text
     assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in text
     assert 'pin["release"]["version"]' in text

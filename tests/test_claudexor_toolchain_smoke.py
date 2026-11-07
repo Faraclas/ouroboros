@@ -152,13 +152,11 @@ def test_a_refusal_is_named_and_the_limits_always_reach_the_summary(tmp_path, mo
     assert "No vendor harness was installed" in written
 
 
-def test_platform_gate_runs_the_toolchain_witness_on_windows_pull_requests():
+def test_manual_platform_gate_runs_the_toolchain_witness_on_windows():
     path = REPO_ROOT / ".github" / "workflows" / "claudexor-platform-gate.yml"
     workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
     triggers = workflow.get("on", workflow.get(True))
-    for event in ("push", "pull_request"):
-        assert "scripts/claudexor_toolchain_smoke.py" in triggers[event]["paths"]
-    assert triggers["pull_request"]["branches"] == ["ouroboros"]
+    assert set(triggers) == {"workflow_dispatch"}
     job = workflow["jobs"]["toolchain"]
     assert "if" not in job
     assert "windows-latest" in job["strategy"]["matrix"]["os"]
@@ -177,7 +175,7 @@ def test_platform_gate_runs_the_real_codex_install_on_windows_without_credential
     workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert workflow["permissions"] == {"contents": "read"}
     job = workflow["jobs"]["consumer"]
-    # Unconditional (pushes and PRs), Windows only, and its caveat is in the check name.
+    # Unconditional within the manual run, Windows only; its caveat is in the check name.
     assert "if" not in job and "strategy" not in job
     assert job["runs-on"] == "windows-latest"
     assert "no login, no model task" in job["name"]
