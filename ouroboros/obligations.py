@@ -34,7 +34,7 @@ ObligationsUnavailable = store.StoreError  # the sets are rows: unavailable exac
 _FACT_COLUMNS = ("task_id", "headless_child_drive_root", "child_drive_root", "drive_root")
 
 
-def task_written(txn, task_id, columns=None):
+def task_written(txn, task_id, columns=None, *, document=None, current=None):
     """Publish duty inputs in the task writer's transaction. The terminal-write counter moves on
     closing/closed writes, never on a live task's writes, and stamps the row's ``terminal_seq`` with
     its new value, so a pass keyed on the counter reads only the rows written since (``task_store``)."""
@@ -55,6 +55,9 @@ def task_written(txn, task_id, columns=None):
     plan_written(txn, task_id, columns)
     from ouroboros.maintenance_retirement import task_written as retirement_written
     retirement_written(txn, task_id, columns)
+    if document is not None and current is not None:
+        from ouroboros.project_attention import admission_written
+        admission_written(txn, document, current)
 
 
 def review_collection_pending(row: dict) -> bool:

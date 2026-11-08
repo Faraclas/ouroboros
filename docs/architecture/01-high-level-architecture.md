@@ -209,7 +209,7 @@ ouroboros/ — agent core and shared runtime (§6)
   safety_config.py — independent coverage per kind (your work, consciousness), the resolved checker and the one-time settings migration
   safety_records.py — verdict-neutral Safety usage and event bookkeeping
   ouroboros/gateway/safety_settings.py — owner Safety level, rules and checker endpoints
-  consciousness.py, consciousness_wake.py — the background alarm admitting an ordinary Main turn through the supervisor tick; the wake input and `wake_task_metadata` envelope (§6 Background consciousness)
+  consciousness.py, consciousness_wake.py, project_attention.py — periodic Main wakes and admission-witnessed project-idle opportunities through the ordinary direct wake lane; shared wake authority, separate clock (§6 Background consciousness)
   consciousness_authority.py, consciousness_allowance.py — dispatch-bound autonomy ceilings and the rolling 24-hour allowance (§6 Background consciousness and Evolution)
   chat_chain.py, chat_references.py, chronicle_store.py — addressed dialogue reads: content identities, legacy `(gen, line)` hints, Reply facts, `retain_memory_source`; append-only chronicle: pages/parts, version-bound accounts and separate common-view selections, disposable index (§6)
   mark_anchors.py — a mark tied to a tool (optional call text) or a path trails that call's result once per task (§6 Post-task work)

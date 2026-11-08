@@ -254,7 +254,7 @@ def recent_wakes(drive_root, places, *, live_wake_task_id: str = "", now: float 
         row = json.loads(documents[task_id])
         metadata = row.get("metadata") or {}
         # Category-only legacy roots use the allowance's own-clock fallback.
-        cause = "focus" if wake_cause(metadata) == "focus" else "own"
+        cause = wake_cause(metadata) if wake_cause(metadata) in {"focus", "project_idle"} else "own"
         focus = metadata.get("focus") or {}
         sending = (focus.get("identity") or {}).get("sends_as") if cause == "focus" else None
         place_id = str(focus.get("place_id") or "")

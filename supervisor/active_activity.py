@@ -198,6 +198,7 @@ class DirectActivityEntry:
     activity_id: str
     chat_id: int
     project_id: str = ""
+    consciousness_cause: str = ""  # admission-time private cause, including preparation
     client_message_id: str = ""
     kind: str = "direct_chat"
     phase: str = "preparing"
@@ -346,6 +347,7 @@ class DirectActivityRegistry:
         *,
         client_message_id: str = "",
         project_id: str = "",
+        consciousness_cause: str = "",
         kind: str = "direct_chat",
         phase: str = "preparing",
         origin_message_ref: Optional[Dict[str, Any]] = None,
@@ -371,6 +373,7 @@ class DirectActivityRegistry:
             activity_id=aid,
             chat_id=int(chat_id or 0),
             project_id=str(project_id or ""),
+            consciousness_cause=str(consciousness_cause or ""),
             client_message_id=str(client_message_id or ""),
             kind=str(kind or "direct_chat"),
             phase=str(phase or "preparing"),

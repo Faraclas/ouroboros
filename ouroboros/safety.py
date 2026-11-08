@@ -553,6 +553,8 @@ def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, 
         occasion = "confirmed owner account" if (focus.get("actor") or {}).get("owner_confirmed") else "person in a place"
     elif metadata.get("wake_cause") == "own_clock":
         occasion = "own clock"
+    elif metadata.get("wake_cause") == "project_idle":
+        occasion = "project idle opportunity"
     elif kind == "owner":
         occasion = "owner door"
     directives = getattr(ctx, "_owner_directives", None)

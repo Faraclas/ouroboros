@@ -76,7 +76,7 @@ export function allowanceText(snapshot) {
 export function wakeRows(wakes) {
     return (Array.isArray(wakes) ? wakes : []).slice(0, WAKES_SHOWN).map((wake) => ({
         time: clockText(wake.startedAt) || '—',
-        text: wake.summary || (wake.cause === 'focus' ? wake.placeLabel || 'A place' : 'Own time'),
+        text: wake.summary || (wake.cause === 'focus' ? wake.placeLabel || 'A place' : wake.cause === 'project_idle' ? 'Project attention' : 'Own time'),
         outcome: wakePhaseText(wake),
     }));
 }

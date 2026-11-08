@@ -109,6 +109,9 @@ def wake_cause_title(metadata: Dict[str, Any]) -> str:
     cause = wake_cause(metadata)
     if cause == "own_clock":
         return "Own time"
+    if cause == "project_idle":
+        project = metadata.get("project_attention") or {}
+        return "Project attention: " + str(project.get("name") or project.get("project_id") or "unknown project")
     if cause == "focus":
         focus, place = metadata.get("focus") or {}, (metadata.get("presence") or {}).get("place") or {}
         return str(focus.get("label") or cause_label(

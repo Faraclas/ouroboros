@@ -149,6 +149,7 @@ SCENARIOS = {
     # #1729/#1730 in real processes: the owner's doors on one live task that keeps its id (no retry exists since #1376).
     "S40": ("owner Pause / Resume / Stop on one live task, same id: after a Pause and a consumed Resume (and without them) the same id runs again and continues its saved work; a Pause of the running task fences its logical root, a model write served after the acceptance never lands while one before it did, one Resume reopens the tree and Stop ends it Cancelled with no late effect and no successor row", LANE_MOCK),
     "S41": ("live skill-smoke adapter: ordinary author, one independent rebuttal, immutable payload, true/unknown criticism red, tool-policy and identity controls", LANE_MOCK),
+    "S42": ("project idle attention: real ordinary direct turn, received project context, no-work/scout suppression and later genuine opportunity", LANE_MOCK),
 }
 
 MOCK_SLUG = "openai-compatible::mock-model"

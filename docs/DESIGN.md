@@ -1892,7 +1892,7 @@ current work” promises no turn yet. Coverage: “wakes that reached a model ca
 in the last 48 h”; empty: “No wakes in the last 48 h.” Unavailable reads retain
 rows with an authored warning. Neither means Off.
 
-Rows: time, Own time/house mark or place, phase, duration, edge cost in card words.
+Rows: time, Own time/house mark, Project attention or place, phase, duration, edge cost in card words.
 Account: “as {label}”/“as you” by the place; absent adds nothing.
 Summaries wrap whole; else the note's first words lead one CSS-ellipsized meta line,
 else counts.
@@ -2211,7 +2211,7 @@ without claiming it stopped the task; continuation requires the Ouroboros
 process to keep running.
 
 A self-started run (a wake, a schedule-born root) keeps the ordinary task card (owner 28.10, 1A 2A): its accepted summary fills the title slot when the run has no authored name (a wake), else it is the card's line under the schedule's name; either way it leads Details as “In its words”, and the answer remains the run's own note when it finishes silently.
-While running, the server supplies Own time, the focus's cause label or the
+While running, the server supplies Own time, Project attention, the focus's cause label or the
 schedule's name in that title slot; no summary leaves the title in place, with
 no invented sentence. Model waits, controls and temporary model changes last
 until the turn ends; the persistence checkbox still saves the consciousness

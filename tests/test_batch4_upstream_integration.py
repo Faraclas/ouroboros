@@ -148,7 +148,11 @@ def test_sent_review_settles_after_pause_and_author_close_with_original_group(en
                                   root_limit=2.0, global_limit_usd=100)), _parent(f) as parent:
             result = run_review_request(_request(), slots=[_slot()], drive_root=f.root,
                                         usage_ctx=f.ctx, llm=SentModel())
-            assert sent.wait(5)
+            assert sent.wait(5), {
+                "review_actors": result.actors,
+                "review_operations": [(op.owner_id, op.closed) for op in review_operation._LIVE.values()],
+                "threads": [thread.name for thread in threading.enumerate()],
+            }
             operation = next(op for op in review_operation._LIVE.values() if op.task_id == TASK)
             assert request_owner_pause(TASK, request_id="pause-after-send")["ok"]
             # The author's own context carries no review episode: it stays fenced.

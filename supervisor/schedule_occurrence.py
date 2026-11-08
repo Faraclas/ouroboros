@@ -768,6 +768,11 @@ def admit(prepared: List[Dict[str, Any]], *, stop: Optional[Callable[[], bool]] 
         if admitted and q.persist_queue_snapshot(reason="scheduled_tasks") is not True:
             _unqueue(admitted)  # not durable in the queue: republished from their receipts next pass
             log.error("Queue snapshot failed after scheduled admission; %d task(s) withdrawn", len(admitted))
+        elif admitted:
+            from ouroboros.project_attention import note_admission
+            for task in q.PENDING:
+                if str(task.get("id") or "") in admitted:
+                    note_admission(q.DRIVE_ROOT, task)
 
 
 def _refused(record: Dict[str, Any], block: str, outcome: Dict[str, Any]) -> None:

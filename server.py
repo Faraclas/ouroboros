@@ -872,6 +872,9 @@ def _run_supervisor(settings: dict) -> None:
             if _consciousness is not None and not draining and not _restart_lifecycle.agent_restart_pending():
                 try:
                     _consciousness.tick(time.time())
+                    from ouroboros.project_attention import tick_attention
+                    tick_attention(_consciousness, ready=_supervisor_ready.is_set(),
+                                   pending_inputs=pending_idle_observations(get_event_q()))
                 except Exception:
                     log.warning("Consciousness alarm tick failed", exc_info=True)
 

@@ -548,7 +548,7 @@
  * @property {{label: string, owner: boolean}=} as
  * @property {string} task_id
  * @property {?number} chat_id
- * @property {'own'|'focus'} cause
+ * @property {'own'|'focus'|'project_idle'} cause
  * @property {string} place_label
  * @property {string} conversation
  * @property {?string} started_at

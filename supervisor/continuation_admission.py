@@ -756,6 +756,8 @@ def admit_continuation(predecessor_task_id: str, *, action_nonce: str) -> Dict[s
                     "successor_task_id": successor, "unconfirmed": True}
         q.release_task_admission(successor, token)
     try:
+        from ouroboros.project_attention import note_admission
+        note_admission(q.DRIVE_ROOT, admitted)
         from ouroboros.owner_continue import mark_claim_admitted
 
         mark_claim_admitted(q.DRIVE_ROOT, predecessor, nonce)
