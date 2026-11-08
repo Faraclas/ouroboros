@@ -946,15 +946,15 @@ def _finish_task(ctx: ToolContext, action: str, answer: str | None = None,
                  answer_sha256: str | None = None, rationale: str = "",
                  acceptance_subject: dict | None = None, pending_review: str | None = None,
                  silent: bool = False, swarm_comparison: str | None = None, summary: str = "") -> str:
-    """Stage an author act; a self-started run (an own-clock or focused wake, a schedule-born root
+    """Stage an author act; a self-started run (clock, place or project attention, a schedule-born root
     without a Presence binding) may choose silence and may leave one sentence for its human."""
-    from ouroboros.consciousness_authority import is_focus_wake, is_own_clock_wake
+    from ouroboros.consciousness_authority import is_self_started_wake
     from ouroboros.dialogue_provenance import presence_caller_binding
     from ouroboros.task_results import resolve_ctx_lineage
 
     metadata = getattr(ctx, "task_metadata", None) or {}
     occurrence = metadata.get("schedule_occurrence")
-    self_started = (bool(getattr(ctx, "is_direct_chat", False)) and (is_own_clock_wake(metadata) or is_focus_wake(metadata))
+    self_started = (bool(getattr(ctx, "is_direct_chat", False)) and is_self_started_wake(metadata)
                     or (isinstance(occurrence, dict)
                         and str(occurrence.get("schedule_id") or "").strip()
                         and str(occurrence.get("token") or "").strip()

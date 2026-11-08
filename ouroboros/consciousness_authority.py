@@ -105,7 +105,8 @@ def is_consciousness_origin(metadata: Any) -> bool:
 # are work the wake started, not the wake).
 WAKE_CAUSE_OWN_CLOCK = "own_clock"
 WAKE_CAUSE_FOCUS = "focus"
-WAKE_CAUSES = (WAKE_CAUSE_OWN_CLOCK, WAKE_CAUSE_FOCUS)
+WAKE_CAUSE_PROJECT_IDLE = "project_idle"
+WAKE_CAUSES = (WAKE_CAUSE_OWN_CLOCK, WAKE_CAUSE_FOCUS, WAKE_CAUSE_PROJECT_IDLE)
 
 # Whose life a piece of work belongs to: the owner's work or consciousness
 # (own wakes, place focuses and everything they start). Host-minted at root
@@ -130,6 +131,16 @@ def is_own_clock_wake(metadata: Any) -> bool:
 def is_focus_wake(metadata: Any) -> bool:
     """A consciousness turn focused on a place room."""
     return is_consciousness_origin(metadata) and wake_cause(metadata) == WAKE_CAUSE_FOCUS
+
+
+def is_self_started_wake(metadata: Any) -> bool:
+    """A host-started consciousness turn, not an ordinary descendant it started."""
+    return is_consciousness_origin(metadata) and bool(wake_cause(metadata))
+
+
+def is_project_idle_wake(metadata: Any) -> bool:
+    """An opportunity to consider existing work, without an owner command."""
+    return is_consciousness_origin(metadata) and wake_cause(metadata) == WAKE_CAUSE_PROJECT_IDLE
 
 
 def work_kind(metadata: Any) -> str:

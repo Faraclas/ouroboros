@@ -287,6 +287,9 @@ def _admit_chat_task(
     image_data: Optional[Union[Tuple[str, str], Tuple[str, str, str]]] = None,
     task_constraint: Optional[dict] = None,
     task_metadata: Optional[dict] = None,
+    admission_check: Optional[Callable[[], bool]] = None,
+    defer_wake_name: bool = False,
+    required_bind: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Build and REGISTER one direct turn; ``None`` when it was refused.
 
@@ -327,6 +330,8 @@ def _admit_chat_task(
     from supervisor import queue
 
     with queue._queue_lock, _pool()._repo_writer_gate_lock:
+        if admission_check is not None and not admission_check():
+            return None
         if not (wake_gate_open() if quiet else owner_conversation_admitted(chat_id, client_msg_id)):
             return None
         if agent_restart_pending() and queue.RETURNS_NAMED:
@@ -338,6 +343,7 @@ def _admit_chat_task(
             task["id"], chat_id,
             client_message_id=client_msg_id,
             project_id=str((task_metadata or {}).get("project_id") or ""),
+            consciousness_cause=str((task_metadata or {}).get("consciousness_cause") or ""),
             kind=kind, origin_message_ref=(task_metadata or {}).get("origin_message_ref"),
             actor=agent, reply_expected=reply_expected({"metadata": task_metadata or {}}),
         )
@@ -455,6 +461,13 @@ def _admit_chat_task(
                     task["text"] = f"{task.get('text') or ''}\n\n[ATTACHMENTS]\n{rendered}\n[END_ATTACHMENTS]"
                 task.pop("image_base64", None)
                 task.pop("image_mime", None)
+        # Required opportunity binding precedes durable project/start publication.
+        if required_bind is not None:
+            try:
+                required_bind(task)
+            except Exception:
+                registry.unregister(task["id"])
+                return None
         # A rejected initial UI task must leave no partial project assignment.
         # Bind only after all declared attachments have passed admission.
         pid = str(task.get("project_id") or "").strip()
@@ -487,7 +500,8 @@ def _admit_chat_task(
         attach_task_contract(task)
         from ouroboros.tool_access_roots import freeze_tool_profile
         freeze_tool_profile(task)
-        name_wake_on_admission(_pool().DRIVE_ROOT, task)
+        if not defer_wake_name:
+            name_wake_on_admission(_pool().DRIVE_ROOT, task)
 
         if deferred:
             _defer_chat_for_restart(task, chat_id, task_metadata)
@@ -515,6 +529,8 @@ def _admit_chat_task(
         _report_direct_chat_error(admitted, e)
         registry.unregister(task["id"])
         return None
+    from ouroboros.project_attention import note_admission
+    note_admission(_pool().DRIVE_ROOT, task)
     return admitted
 
 
@@ -709,6 +725,7 @@ def handle_wake_direct(
     task_metadata: Optional[dict],
     on_finished: Optional[Callable[[str, bool], None]] = None,
     bind_input: Optional[Callable[[Dict[str, Any]], None]] = None,
+    *, bind_required: bool = False, admission_check: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Start a self-initiated Main turn (a consciousness wake-up) as an
     ordinary direct turn, and answer with a typed receipt.
@@ -744,21 +761,34 @@ def handle_wake_direct(
         return {"admitted": False, "task_id": "", "reason": "cost_accounting_unavailable"}
     if remaining <= 0:
         return {"admitted": False, "task_id": "", "reason": "budget_exhausted"}
+    binding_failed = False
+    def required(task):
+        nonlocal binding_failed
+        try:
+            if bind_input is not None:
+                bind_input(task)
+        except Exception:
+            binding_failed = True
+            raise
     admitted = _admit_chat_task(
         None, int(chat_id), str(text or ""), None,
         task_constraint=None, task_metadata=dict(task_metadata or {}),
+        admission_check=admission_check, defer_wake_name=bind_required,
+        required_bind=required if bind_required else None,
     )
     if admitted is None:
         # The gate can close between the check above and the registration — a silent
         # refusal, nothing in the chat; every other None the lane already reported.
-        reason = "repo_writer_gate_closed" if not wake_gate_open() else "admission_failed"
+        reason = "input_binding_failed" if binding_failed else "repo_writer_gate_closed" if not wake_gate_open() else "admission_failed"
         return {"admitted": False, "task_id": "", "reason": reason}
     task_id = str(admitted["task"]["id"])
-    if bind_input is not None:
+    if bind_input is not None and not bind_required:
         try:
             bind_input(admitted["task"])
         except Exception:
             log.warning("wake %s input binding failed; the complete text stays its input", task_id, exc_info=True)
+    if bind_required:
+        name_wake_on_admission(_pool().DRIVE_ROOT, admitted["task"])
 
     def _run() -> None:
         ok = False

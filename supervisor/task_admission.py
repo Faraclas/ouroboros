@@ -418,6 +418,8 @@ def enqueue_with_admission_receipt(task: Dict[str, Any], *, receipt_required: bo
             return admitted
         if (stored.get("status") == STATUS_SCHEDULED and (stored.get("host_admission") or {}).get("token") == token
                 or not receipt_required):
+            from ouroboros.project_attention import note_admission
+            note_admission(queue.DRIVE_ROOT, admitted)
             return admitted
         queue.PENDING[:] = [row for row in queue.PENDING if row is not admitted]
         return {**admitted, "_admission_blocked": "scheduled_result_persist_failed", "_admission_never_admitted": True,
@@ -465,7 +467,10 @@ def project_dispatch_projection(task: dict) -> Optional[SimpleNamespace]:
                 or governing == "exact_pause" and not _exact_resume_granted(task, queue.DRIVE_ROOT, existing=current)
                 or source is not None and not _working_attempt_unstarted(task, current, source)):
             return None
+        from ouroboros.project_attention import consideration
         return {"admitted_dispatch": "possible", "admitted_dispatch_attempt": attempt,
+                **({"project_attention_admission": {"project_id": str(task.get("project_id") or ""), "attempt": attempt, "mark": mark}}
+                   if not consideration(task) else {}),
                 "admitted_dispatch_mark": mark, "status": current.get("status") or STATUS_REQUESTED}
 
     def verify(stored):
@@ -1291,6 +1296,9 @@ def enqueue_subagent_with_scheduled_result(
         return admitted
     if outcome == "admitted" and preparation is not None and not uncertain:
         preparation.close_admitted()
+    if outcome == "admitted" and not uncertain:
+        from ouroboros.project_attention import note_admission
+        note_admission(queue.DRIVE_ROOT, admitted)
     return admitted, "", "", False
 
 

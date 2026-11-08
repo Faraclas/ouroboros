@@ -119,7 +119,7 @@ export function wakeRowHtml(wake, { open = false } = {}) {
     const working = wake.phase === 'running' || wake.phase === 'working';
     const where = wake.cause === 'focus'
         ? `<span class="consciousness-wake-where" data-i18n-authored>${escapeHtml(wake.placeLabel)}</span>`
-        : `<span class="consciousness-wake-own"><span class="place-glyph" aria-hidden="true">${OWN_GLYPH}</span>${escapeHtml(tr('task.title.own_time', 'Own time'))}</span>`;
+        : `<span class="consciousness-wake-own"><span class="place-glyph" aria-hidden="true">${wake.cause === 'project_idle' ? controlIcon('projects', 14) : OWN_GLYPH}</span>${escapeHtml(wake.cause === 'project_idle' ? tr('task.title.project_attention', 'Project attention') : tr('task.title.own_time', 'Own time'))}</span>`;
     const duration = durationText(wake.startedAt, wake.endedAt);
     const sender = sendsAsHtml(wake.as);
     const counts = escapeHtml(wakeFactsText(wake));

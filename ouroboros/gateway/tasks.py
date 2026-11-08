@@ -307,6 +307,8 @@ def _enqueue_api_task_durably(
             if stored.get("api_admission") != result_fields["api_admission"]:
                 return {**admitted, "_admission_uncertain": str(exc)}
         queue.release_task_admission(task_id, admission_token)
+        from ouroboros.project_attention import note_admission
+        note_admission(drive_root, admitted)
         return admitted
 
 

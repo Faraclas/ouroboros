@@ -185,8 +185,8 @@ def test_schema_gate_is_atomic_and_never_decodes_old_bodies(tmp_path, monkeypatc
     assert list(custody.health_runs(tmp_path)) == ["old-run"]
     upgrade = hot.upgrade
 
-    def fail_after_ddl(txn):
-        upgrade(txn)
+    def fail_after_ddl(txn, *, index_only=False):
+        upgrade(txn, index_only=index_only)
         raise RuntimeError("injected schema publication failure")
 
     with monkeypatch.context() as patch:
@@ -208,6 +208,40 @@ def test_schema_gate_is_atomic_and_never_decodes_old_bodies(tmp_path, monkeypatc
     assert hot.run_hot_facts(tmp_path)["state"] == "done"
     assert owner_pause.read_fence(tmp_path, "legacy")["state"] == "paused"
     assert custody.tree_task_ids(tmp_path, "tree") == ["legacy"]
+
+
+def test_launch_index_upgrade_is_atomic_without_reclassifying_schema_nine(tmp_path, monkeypatch):
+    from ouroboros.store_import import upgrade_current_schema
+
+    # Schema ten adds only this index to schema nine's already-derived columns.
+    with store.open_store(tmp_path, write=True) as txn:
+        _task(txn, "kept")
+        txn.conn.execute("DROP INDEX task_handoffs_launch")
+        txn.conn.execute("UPDATE meta SET value='9' WHERE key='schema_version'")
+        before = txn.body_text("kept")
+        job = txn.meta("job:" + hot.JOB)
+    upgrade = hot.upgrade
+
+    def fail_after_ddl(txn, *, index_only=False):
+        assert index_only is True
+        upgrade(txn, index_only=index_only)
+        raise RuntimeError("injected index publication failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(hot, "upgrade", fail_after_ddl)
+        with pytest.raises(RuntimeError, match="index publication"):
+            upgrade_current_schema(tmp_path)
+    with store.open_store(tmp_path, write=False) as txn:
+        assert txn.meta("schema_version") == 9
+        assert txn.conn.execute("SELECT 1 FROM sqlite_master WHERE name='task_handoffs_launch'").fetchone() is None
+    with monkeypatch.context() as patch:
+        patch.setattr(store.Txn, "body_text", lambda *_: pytest.fail("index upgrade decoded a task body"))
+        upgrade_current_schema(tmp_path)
+    with store.open_store(tmp_path, write=False) as txn:
+        assert txn.meta("schema_version") == store.SCHEMA_VERSION == 10
+        assert txn.conn.execute("SELECT 1 FROM sqlite_master WHERE name='task_handoffs_launch'").fetchone()
+        assert txn.body_text("kept") == before
+        assert txn.meta("job:" + hot.JOB) == job
 
 
 def test_first_custody_publication_upgrades_an_old_child_store(tmp_path, monkeypatch):

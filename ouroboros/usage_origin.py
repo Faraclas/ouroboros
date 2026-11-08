@@ -64,6 +64,8 @@ def task_usage_scope(task: dict, *, drive_root, root_task_id: str, parent_task_i
 
 
 def cause_label(cause: str, places=()) -> str:
+    if cause == "project_idle":
+        return "project attention"
     if cause == "own":
         return "own thoughts"
     if cause == "started":
@@ -105,7 +107,7 @@ def stamp_root_cause(txn, row: dict) -> None:
         return
     cause = root_cause(txn, root_id) or str(row.get("consciousness_cause") or
                                         _CATEGORY_CAUSES.get(row.get("category"), ""))
-    if cause in {"own", "started"} or cause.startswith("place:") and cause[6:]:
+    if cause in {"own", "started", "project_idle"} or cause.startswith("place:") and cause[6:]:
         row["consciousness_cause"] = cause
 
 

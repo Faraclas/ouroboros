@@ -20,6 +20,7 @@ OWN = wake_task_metadata("act", "heartbeat")
 FOCUS = {**OWN, "wake_cause": "focus", "consciousness_cause": "place:mail"}
 STARTED = {"initiator": "consciousness", "work_kind": "consciousness", "consciousness_cause": "started"}
 OWNER = {"work_kind": "owner"}
+IDLE = {**OWN, "wake_cause": "project_idle", "consciousness_cause": "project_idle"}
 
 
 def _task(task_id, metadata, **extra):
@@ -34,7 +35,7 @@ def _direct(monkeypatch, turns):
     monkeypatch.setattr(workers, "direct_chat_turn", turns.get)
 
 
-@pytest.mark.parametrize("order", list(itertools.permutations(["own", "focus", "child"])))
+@pytest.mark.parametrize("order", list(itertools.permutations(["own", "focus", "child", "idle"])))
 def test_only_admitted_clock_actor_finishes_once_in_any_order(clock, monkeypatch, order):
     _launched(clock)
     boundary = clock.store[OBSERVATION_STATE_KEY]
@@ -42,7 +43,7 @@ def test_only_admitted_clock_actor_finishes_once_in_any_order(clock, monkeypatch
     monkeypatch.setattr(clock_module.time, "time", lambda: T0 + 5000)
     for cause in order:
         task_id, metadata = {"own": ("wake0001", OWN), "focus": ("focus1", FOCUS),
-                             "child": ("kid1", STARTED)}[cause]
+                             "child": ("kid1", STARTED), "idle": ("idle1", IDLE)}[cause]
         clock.clock._wake_finished(task_id, False, metadata=metadata)
         assert clock.clock.next_wake_at == (T0 + 5000 + DEFAULT * 2 if "own" in order[:order.index(cause) + 1] else before)
         assert clock.store[OBSERVATION_STATE_KEY] == boundary
@@ -107,7 +108,7 @@ def test_pool_callback_filters_cause_before_calling_the_clock():
     calls = []
     ctx = SimpleNamespace(consciousness=SimpleNamespace(_wake_finished=lambda *args, **kwargs: calls.append((args, kwargs))))
     pooled = {"execution_owner": {"kind": "pooled"}, "status": "completed"}
-    for metadata in (FOCUS, STARTED, OWNER):
+    for metadata in (FOCUS, STARTED, IDLE, OWNER):
         finish_pooled_wake(ctx, "other", {**pooled, "metadata": metadata})
     finish_pooled_wake(ctx, "own", {**pooled, "metadata": OWN, "execution_owner": {"kind": "direct"}})
     assert calls == []
@@ -167,7 +168,7 @@ def test_stop_reaches_direct_pool_children_and_lent_focus_but_leaves_owner(clock
     assert clock.clock.enabled is False
 
 
-@pytest.mark.parametrize("metadata", [OWN, FOCUS, STARTED])
+@pytest.mark.parametrize("metadata", [OWN, FOCUS, STARTED, IDLE])
 def test_recovered_autonomous_work_rechecks_off_and_panic_at_assignment(tmp_path, monkeypatch, metadata):
     from supervisor import state
     from supervisor.worker_assignment import _choose_candidate

@@ -45,7 +45,14 @@ TASK_UNDERIVED = " OR ".join(f"{name} IS NULL" for name in (*TASK_COLUMNS, "root
 CUSTODY_UNDERIVED = "facts_derived IS NULL"
 REQUEST_SETS = ("custody_open", "custody_refused")
 REQUEST_UNDERIVED = "set_name IN ('custody_open','custody_refused') AND request_root_task_id IS NULL"
+LAUNCH_INDEX_VERSION = 10
+LAUNCH_CURRENT = ("kind='launch_handoffs' AND (coalesce(state,'') NOT IN ('returned','owner_dead') "
+                  "OR coalesce(json_extract(facts,'$.host_unconfirmed'),0)<>0 "
+                  "OR coalesce(json_extract(facts,'$.external_pending'),0) NOT IN (0,'','{}','[]') "
+                  "OR coalesce(json_array_length(facts,'$.control_receipts'),0)>0)")
+LAUNCH_INDEX = f"CREATE INDEX IF NOT EXISTS task_handoffs_launch ON task_handoffs(task_id) WHERE {LAUNCH_CURRENT}"
 INDEXES = (
+    LAUNCH_INDEX,
     f"CREATE INDEX IF NOT EXISTS tasks_underived_hot ON tasks(task_id) WHERE {TASK_UNDERIVED}",
     "CREATE INDEX IF NOT EXISTS tasks_list_stable ON tasks(list_stable, status, ts, task_id)",
     "CREATE INDEX IF NOT EXISTS tasks_underived_root ON tasks(task_id) WHERE root_task_id IS NULL",
@@ -78,8 +85,11 @@ SCHEMA = ";\n".join([
 ]) + ";\n"
 
 
-def upgrade(txn) -> None:
+def upgrade(txn, *, index_only: bool = False) -> None:
     """Schema-only addition inside the existing schema-version publication gate."""
+    if index_only:
+        txn.conn.execute(LAUNCH_INDEX)
+        return
     for table, columns in (("tasks", TASK_COLUMNS), ("custody_runs", CUSTODY_COLUMNS)):
         present = {row["name"] for row in txn.conn.execute(f"PRAGMA table_info({table})")}
         for name, kind in columns.items():

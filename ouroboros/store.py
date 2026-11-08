@@ -35,7 +35,7 @@ LOCK_NAME = "current.lock"  # the name-tier lock around every access
 IMPORT_LOCK_NAME = "current_import.lock"
 GENERATION = 8  # the lifecycle generation that owns the store
 GENERATION_KEY = "current_store_generation"  # in state/migrations.json
-SCHEMA_VERSION = 9  # 6: hot facts; 7: task cards; 8: root windows, terminal_seq; 9: filtered-list selection
+SCHEMA_VERSION = 10  # schema 10 adds indexed current launch claims for project attention
 STORE_WAIT_SEC = 10.0
 JOURNAL_SIZE_LIMIT = 64 << 20  # retain at most 64 MiB of an idle rollback journal (PERSISTENCE.md: what it bounds)
 TIER_ENFORCED, TIER_NAME = "enforced", "name"
@@ -1368,9 +1368,8 @@ class Txn:
         # schema step's addition runs once, with the version, never on a passive read.
         if key == "schema_version":
             held = int(self.meta(key) or 1)
-            if (int(value) >= store_hot_facts.VERSION > held
-                    or int(value) >= store_hot_facts.LIST_VERSION > held):
-                store_hot_facts.upgrade(self)
+            if any(int(value) >= version > held for version in (store_hot_facts.VERSION, store_hot_facts.LIST_VERSION, store_hot_facts.LAUNCH_INDEX_VERSION)):
+                store_hot_facts.upgrade(self, index_only=held >= store_hot_facts.LIST_VERSION)
             if int(value) >= store_task_cards.VERSION > held:
                 store_task_cards.upgrade(self)
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, machine_json(value)))
@@ -1426,7 +1425,7 @@ class Txn:
         self.sync_handoffs(task_id, document)
         store_task_cards.merge(self, task_id, document)  # the same monotonic rule: a stale document regresses no card
         from ouroboros.obligations import task_written
-        task_written(self, task_id, columns)
+        task_written(self, task_id, columns, document=document, current=current)
 
     def touch(self, task_id: str) -> None:
         """A row-only write still moves the task's signature (the memos re-read)."""

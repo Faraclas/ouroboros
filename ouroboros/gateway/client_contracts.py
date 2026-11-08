@@ -331,7 +331,7 @@ class RecentWake(_RecentWakeIdentity):
 
     task_id: str
     chat_id: Optional[int]
-    cause: Literal["own", "focus"]
+    cause: Literal["own", "focus", "project_idle"]
     place_label: str
     conversation: str
     started_at: Optional[str]

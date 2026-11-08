@@ -449,9 +449,10 @@ def test_stall_row_carries_the_loop_threads_stack(monkeypatch, journal):
     assert row["phase"] == "maintenance"  # the coarse phase still rides beside the exact line
 
 
-def test_the_watched_thread_defaults_to_the_one_that_started_the_watchdog(monkeypatch, journal):
+@pytest.mark.parametrize('observe_before_start_returns', [False, True])
+def test_the_watched_thread_defaults_to_the_one_that_started_the_watchdog(monkeypatch, journal, observe_before_start_returns):
     """The loop thread starts its own watchdog (startup phase included), so the
-    default identity is the CALLER: this test thread, caught in its own wait."""
+    default identity is the CALLER, even if sampling precedes its wait helper."""
     import server
     from ouroboros import server_liveness
 
@@ -459,6 +460,24 @@ def test_the_watched_thread_defaults_to_the_one_that_started_the_watchdog(monkey
     liveness = _live_liveness("startup")
     clock = _Clock(mono=liveness[0] + 100.0)
     monkeypatch.setattr(server_liveness, "time", clock)
+    caller = threading.get_ident()
+    observed = []
+    stack = server_liveness._loop_thread_stack
+    def capture(ident, **kwargs):
+        observed.append(ident)
+        return stack(ident, **kwargs)
+    monkeypatch.setattr(server_liveness, '_loop_thread_stack', capture)
+    if observe_before_start_returns:
+        start = threading.Thread.start
+        def early(thread, *args, **kwargs):
+            result = start(thread, *args, **kwargs)
+            if thread.name == 'supervisor-liveness-watchdog':
+                end = time.monotonic() + 6
+                while not journal and time.monotonic() < end:
+                    time.sleep(.01)
+                assert journal, 'watchdog never observed the early scheduling control'
+            return result
+        monkeypatch.setattr(threading.Thread, 'start', early)
     stop = threading.Event()
     try:
         server._start_supervisor_liveness_watchdog(liveness, stop)
@@ -467,7 +486,9 @@ def test_the_watched_thread_defaults_to_the_one_that_started_the_watchdog(monkey
         _stop_watchdog(stop)
     row = next(row for _p, row in journal if row["type"] == "supervisor_loop_stall")
     assert row["phase"] == "startup"
-    assert any("_wait_until" in frame for frame in row["stack"]), row["stack"]
+    assert observed and set(observed) == {caller}
+    assert any('in test_the_watched_thread_defaults_to_the_one_that_started_the_watchdog' in frame
+               for frame in row['stack']), row['stack']
 
 
 def test_a_gone_thread_yields_no_stack_rather_than_an_invented_one():

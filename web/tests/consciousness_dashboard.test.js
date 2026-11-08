@@ -610,3 +610,13 @@ test('Safety chips name what they checked in sentence case, keeping raw tool ids
     assert.equal(wakeCheckText({ chip: 'not_checked', tool: '' }), 'Not checked');
     assert.equal(wakeCheckText({ chip: 'unknown', tool: 'x' }), '');
 });
+
+
+test('project idle wake is labelled Project attention, not Own time or a place', () => {
+    const row = normalizeWake({ task_id: 'attention', cause: 'project_idle', chat_id: 42,
+        started_at: '2026-11-07T23:00:00Z', phase: 'completed', checks: [], summary: '', note: '' });
+    const html = wakeRowHtml(row);
+    assert.match(strip(html), /Project attention/);
+    assert.doesNotMatch(strip(html), /Own time/);
+    assert.doesNotMatch(html, /data-cx-open-room/);
+});
