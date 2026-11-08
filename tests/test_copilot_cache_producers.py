@@ -61,9 +61,7 @@ def assert_producer(cache_wire, original, model):
         assert 0 < len(expected) <= 3
         assert 'prompt_cache_options' not in body and 'prompt_cache_key' not in body
     else:
-        assert [b['text'] for b in body['messages'][0]['content']] == texts
-        assert [b['text'] for b in body['messages'][0]['content'] if 'cache_control' in b] == [
-            b['text'] for b in blocks if 'cache_control' in b]
+        assert body['messages'][0] == {'role': 'system', 'content': ''.join(texts)}
         assert cache_wire.sent[-1]['path'] == '/chat/completions'
 
 
@@ -136,8 +134,8 @@ def test_actual_safety_producer(cache_wire, model):
                                         'prompt_cache_breakpoint': {'mode': 'explicit'}}]
         assert body['input'][1] == {'role': 'user', 'content': 'Read a fixture'}
     else:
-        assert body['messages'][0]['content'][0]['text'] == safety._get_safety_prompt()
-        assert 'cache_control' in body['messages'][0]['content'][0]
+        assert body['messages'][0] == {'role': 'system', 'content': safety._get_safety_prompt()}
+        assert usage['wire_layout']['copilot_system_string']['cache_markers_omitted'] == 1
 
 
 def test_native_review_user_assignment_remains_unrepresented(cache_wire):

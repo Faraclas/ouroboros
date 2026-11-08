@@ -106,6 +106,37 @@ def _copilot_chat_blocks_route(target: Dict[str, Any]) -> bool:
         return False
 
 
+def _project_copilot_system_strings(target: Dict[str, Any], messages: List[Dict[str, Any]]) -> None:
+    """Normalize only the observed Copilot Chat SYSTEM send copy.
+
+    The November 8 Opus/Sonnet controls read ordered string SYSTEM text but
+    could not recall the same code from arrays. Keep the tested exact join,
+    never filter unknown content or demote instruction roles. Block-level
+    cache positions cannot survive a single string: disclose their omission,
+    rather than invent support for multiple SYSTEM rows or a native marker.
+    The caller computes affinity before this fold; other cache hints remain.
+    """
+    from ouroboros.copilot_responses import uses_copilot_responses
+
+    if not _copilot_chat_blocks_route(target) or uses_copilot_responses(
+            target.get("base_url"), target.get("resolved_model")):
+        return
+    counts = {"messages": 0, "blocks": 0, "cache_markers_omitted": 0}
+    for message in messages:
+        blocks = message.get("content")
+        if (message.get("role") != "system" or not isinstance(blocks, list) or not blocks
+                or not all(isinstance(block, dict) and block.get("type") == "text"
+                           and isinstance(block.get("text"), str)
+                           and set(block) <= {"type", "text", "cache_control"} for block in blocks)):
+            continue
+        message["content"] = "".join(block["text"] for block in blocks)
+        counts["messages"] += 1
+        counts["blocks"] += len(blocks)
+        counts["cache_markers_omitted"] += sum(isinstance(b.get("cache_control"), dict) for b in blocks)
+    if counts["messages"]:
+        target["wire_layout"] = {**target.get("wire_layout", {}), "copilot_system_string": counts}
+
+
 def _copilot_block_choice(resp_dict: Dict[str, Any], target: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Project Copilot's unindexed complete blocks into one Chat assistant turn.
 
@@ -304,6 +335,7 @@ class _OpenAICompatibleLaneMixin:
                     # its caller-declared affinity instead.
                     kwargs["prompt_cache_key"] = cache_identity
             requested_effort = normalize_reasoning_effort(reasoning_effort)
+            _project_copilot_system_strings(target, clean_messages)
             if provider not in {"deepseek", "zai"}:
                 # Every Chat Completions route carries the owner's effort in the
                 # standard field: direct OpenAI, MiniMax, Cloud.ru and any
