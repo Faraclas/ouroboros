@@ -46,6 +46,18 @@ UNCAUGHT_LOGGER_NAME = "ouroboros.uncaught"
 _configured = False
 
 
+def log_observation_gap(message: str, *args, logger=None, level=logging.WARNING, stacklevel=2, **kwargs) -> None:
+    """Keep optional diagnostics below model imports; BaseException controls escape.
+
+    Accounting and memory import this stdlib owner without loading a model surface.
+    The default logger preserves the observation callers' existing record identity.
+    """
+    try:
+        (logger if logger is not None else logging.getLogger("ouroboros.llm_observability")).log(level, message, *args, stacklevel=stacklevel, **kwargs)
+    except Exception:
+        pass  # An unavailable handler cannot replace the primary response/control.
+
+
 def configure_process_logging(*, drive_logs: pathlib.Path | None) -> None:
     """Attach this process's local handlers once and install the exception hooks.
 

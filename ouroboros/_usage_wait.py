@@ -18,6 +18,7 @@ import time
 import uuid
 
 from ouroboros.usage_ledger import UsageLockUnavailable, USAGE_LOCK_TIMEOUT_SEC
+from ouroboros.process_logging import log_observation_gap
 
 log = logging.getLogger(__name__)
 _CANCEL = contextvars.ContextVar("usage_presend_cancel", default=None)
@@ -192,7 +193,7 @@ def _hold(owner, phase: str, started: float, episode_id: str) -> None:
             **({"chat_id": owner.task["chat_id"]} if "chat_id" in owner.task else {}),
         })
     except Exception:
-        log.debug("Could not disclose accounting wait", exc_info=True)
+        log_observation_gap("Could not disclose accounting wait", logger=log, level=logging.DEBUG, exc_info=True)
 
 
 def send_acquisition(check=None):
@@ -501,13 +502,13 @@ def late_settler(reservation, request, extractor, manifest_ref, capture, late_ow
                 ua._account_response(reservation, request, result, extractor, manifest_ref)
                 retain(result, ua.last_physical_attempt_capture() or capture)
         except Exception:
-            log.exception("Late settlement or retention of abandoned attempt %s failed; inspect durable attempt state",
-                          reservation.attempt_id)
+            log_observation_gap("Late settlement or retention of abandoned attempt %s failed; inspect durable attempt state",
+                                reservation.attempt_id, logger=log, level=logging.ERROR, exc_info=True)
         if late_owner is not None:
             try:
                 late_owner(result, error)
             except Exception:
-                log.exception("Late transport custody of abandoned attempt %s failed", reservation.attempt_id)
+                log_observation_gap("Late transport custody of abandoned attempt %s failed", reservation.attempt_id, logger=log, level=logging.ERROR, exc_info=True)
     return settle_late
 
 
@@ -551,13 +552,13 @@ async def model_send_async(reservation, complete, *, retain_on_cancel, retain_on
                 if "error" not in outcome:
                     await asyncio.to_thread(retain_on_abandon, outcome["response"], outcome["capture"])
             except Exception:
-                log.exception("Failed to retain abandoned paid response")
+                log_observation_gap("Failed to retain abandoned paid response", logger=log, level=logging.ERROR, exc_info=True)
             finally:
                 if late_owner is not None:
                     try:
                         await asyncio.to_thread(late_owner, outcome.get("response"), outcome.get("error"))
                     except Exception:
-                        log.exception("Failed to close abandoned model transport")
+                        log_observation_gap("Failed to close abandoned model transport", logger=log, level=logging.ERROR, exc_info=True)
         else:
             outcome["taken"] = True
         return outcome.get("response")  # Preserve exception identity in outcome.

@@ -7,6 +7,7 @@ import logging
 import socket
 from typing import Any
 from urllib.parse import urlsplit
+from ouroboros.process_logging import log_observation_gap
 
 log = logging.getLogger(__name__)
 
@@ -281,7 +282,7 @@ def release_pre_dispatch_attempt(reservation: Any, exc: BaseException, *, expect
             reason=f"before_dispatch_failed:{type(exc).__name__}",
         )
     except Exception:
-        log.exception("Failed to release pre-dispatch physical attempt")
+        log_observation_gap("Failed to release pre-dispatch physical attempt", logger=log, level=logging.ERROR, exc_info=True)
         return False
     return True
 

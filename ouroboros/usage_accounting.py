@@ -24,6 +24,7 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable, Dict, Iterator, Literal, Optional, Tuple, get_args
 
 from ouroboros.physical_attempt_context import PhysicalAttemptContext
+from ouroboros.process_logging import log_observation_gap
 from ouroboros.pricing import estimate_cost_optional
 from ouroboros._usage_response import (
     _normalized_input_token_usage, _reported_token_count, processing_receipt, observed_processing_mode, usage_from_response,
@@ -192,7 +193,7 @@ def refresh_root_accounting(
         )
         return last_root_accounting(root_task_id)
     except Exception:
-        log.debug("root accounting refresh failed for %s", root_task_id, exc_info=True)
+        log_observation_gap("root accounting refresh failed for %s", root_task_id, logger=log, level=logging.DEBUG, exc_info=True)
         return cached
 
 def _known_spend_text(summary: Dict[str, Any]) -> str:
@@ -1089,7 +1090,7 @@ def mark_dispatched(
             with bounded_cleanup():
                 release_attempt(reservation, "physical_attempt_limit", candidate_manifest_ref=candidate_manifest_ref)
         except Exception:
-            log.exception("Failed bounded release after physical attempt limit")
+            log_observation_gap("Failed bounded release after physical attempt limit", logger=log, level=logging.ERROR, exc_info=True)
         raise
     fields = {"candidate_manifest_ref": candidate_manifest_ref} if candidate_manifest_ref else {}
     if local_answer_owner_pid:
@@ -1241,14 +1242,14 @@ def _retain_physical_failure(reservation, *, exc=None, response=None):
                 if stream_receipt.get("conflicting_generation_id"):
                     bind_provider_generation(stream_receipt["conflicting_generation_id"], reservation=reservation)
             except Exception:
-                log.exception("Failed to bind provider generation: %s", reservation.attempt_id)
+                log_observation_gap("Failed to bind provider generation: %s", reservation.attempt_id, logger=log, level=logging.ERROR, exc_info=True)
         facts = physical_failure_evidence(reservation.drive_root, reservation.attempt_id, payload=payload, exc=exc, response=response)
         if facts is not None:
             with _locked(reservation.drive_root) as view:
                 row = view.attempt(reservation.attempt_id)
                 view.record_evidence(reservation.attempt_id, {"physical_failure": facts}, expected_revision=row["revision"])
     except Exception:
-        log.exception("Failed to retain physical failure evidence: %s", reservation.attempt_id)
+        log_observation_gap("Failed to retain physical failure evidence: %s", reservation.attempt_id, logger=log, level=logging.ERROR, exc_info=True)
     return payload
 
 
@@ -1449,7 +1450,7 @@ def _pre_dispatch_failure(
                             candidate_manifest_ref=manifest_ref, proven_unsent=True)
         capture_state = "released"
     except Exception:
-        log.exception("Failed to release pre-dispatch attempt: %s", reservation.attempt_id)
+        log_observation_gap("Failed to release pre-dispatch attempt: %s", reservation.attempt_id, logger=log, level=logging.ERROR, exc_info=True)
     failure = exc if isinstance(exc, (PhysicalAttemptPreparationFailed, PhysicalAttemptLimitExceeded, BudgetExceeded,
                                       BillingAuthorityUnavailable, ControlAuthorityUnavailable, asyncio.CancelledError)) else PhysicalAttemptPreparationFailed(
         f"physical candidate preparation failed: {type(exc).__name__}: {exc}",
@@ -1494,7 +1495,7 @@ def execute_physical_attempt(
         try:
             terminal_state = _terminalize_failed_attempt(reservation, exc, request)
         except Exception:
-            log.exception("Failed to mark provider attempt unresolved: %s", reservation.attempt_id)
+            log_observation_gap("Failed to mark provider attempt unresolved: %s", reservation.attempt_id, logger=log, level=logging.ERROR, exc_info=True)
         _record_attempt_capture(
             reservation, request, terminal_state, candidate_manifest_ref=manifest_ref, exc=exc,
         )
@@ -1518,13 +1519,13 @@ def _account_response(reservation, request, response, extractor, manifest_ref):
         _observe_token_density(request, usage)
     except Exception as exc:
         # Preserve a paid/useful response; accounting failure leaves an open bound.
-        log.exception("Failed to account paid provider response: %s", reservation.attempt_id)
+        log_observation_gap("Failed to account paid provider response: %s", reservation.attempt_id, logger=log, level=logging.ERROR, exc_info=True)
         terminal_state = "dispatched"
         try:
             mark_unresolved(reservation, f"post_response_accounting_failed:{type(exc).__name__}")
             terminal_state = "unresolved"
         except Exception:
-            log.exception("Failed to mark post-response accounting failure unresolved")
+            log_observation_gap("Failed to mark post-response accounting failure unresolved", logger=log, level=logging.ERROR, exc_info=True)
     _record_attempt_capture(reservation, request, terminal_state, candidate_manifest_ref=manifest_ref)
     return response
 
@@ -1568,7 +1569,7 @@ async def execute_physical_attempt_async(
             try:
                 terminal_state = await presend_off_loop(_terminalize_failed_attempt, reservation, exc, request)
             except Exception:
-                log.exception("Failed to mark provider attempt unresolved: %s", reservation.attempt_id)
+                log_observation_gap("Failed to mark provider attempt unresolved: %s", reservation.attempt_id, logger=log, level=logging.ERROR, exc_info=True)
             _record_attempt_capture(
                 reservation, request, terminal_state, candidate_manifest_ref=manifest_ref, exc=exc,
             )

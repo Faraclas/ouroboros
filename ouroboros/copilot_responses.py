@@ -222,6 +222,8 @@ def _copilot_responses_to_chat_completion(rjson: Dict[str, Any], requested_model
     if not isinstance(rjson, dict):
         raise CopilotRejectedResponse(rjson, "Copilot Responses body is not an object")
     status = rjson.get("status")
+    if status is not None and not isinstance(status, str):
+        raise CopilotRejectedResponse(rjson, "Copilot Responses status is not a string")
     if status in {"failed", "cancelled"} or rjson.get("error"):
         raise CopilotRejectedResponse(rjson, "Copilot Responses generation did not complete successfully")
     if status not in {"completed", "incomplete"}:
@@ -234,17 +236,31 @@ def _copilot_responses_to_chat_completion(rjson: Dict[str, Any], requested_model
     refusal_parts = []
     reasoning_parts = []
     tool_calls = []
-    for idx, item in enumerate(rjson.get("output") or []):
+    output = rjson.get("output")
+    if output is not None and not isinstance(output, list):
+        raise CopilotRejectedResponse(rjson, "Copilot Responses output is not an array")
+    for idx, item in enumerate(output or []):
         if not isinstance(item, dict):
-            continue
+            raise CopilotRejectedResponse(rjson, "Copilot Responses output item is not an object")
         itype = item.get("type")
+        if itype is not None and not isinstance(itype, str):
+            raise CopilotRejectedResponse(rjson, "Copilot Responses output type is not a string")
         if not exhausted and itype in {"message", "function_call"} and item.get("status") not in (None, "completed"):
             raise CopilotRejectedResponse(rjson, "Copilot Responses output item is not complete")
         if itype == "message":
-            for c in item.get("content") or []:
-                if isinstance(c, dict) and c.get("type") in ("output_text", "text"):
+            content = item.get("content")
+            if content is not None and not isinstance(content, list):
+                raise CopilotRejectedResponse(rjson, "Copilot Responses message content is not an array")
+            for c in content or []:
+                if not isinstance(c, dict):
+                    raise CopilotRejectedResponse(rjson, "Copilot Responses content part is not an object")
+                if c.get("type") is not None and not isinstance(c["type"], str):
+                    raise CopilotRejectedResponse(rjson, "Copilot Responses content type is not a string")
+                if c.get("type") in ("output_text", "text"):
+                    if c.get("text") is not None and not isinstance(c["text"], str):
+                        raise CopilotRejectedResponse(rjson, "Copilot Responses text is not a string")
                     text_parts.append(str(c.get("text") or ""))
-                elif isinstance(c, dict) and c.get("type") == "refusal":
+                elif c.get("type") == "refusal":
                     refusal = str(c.get("refusal") or "")
                     refusal_parts.append(refusal)
         elif itype == "function_call" and not exhausted:
@@ -264,8 +280,15 @@ def _copilot_responses_to_chat_completion(rjson: Dict[str, Any], requested_model
                 raise CopilotRejectedResponse(rjson, f"Copilot Responses function call {problem}")
             tool_calls.append(call)
         elif itype == "reasoning":
-            for s in item.get("summary") or []:
-                if isinstance(s, dict) and s.get("text"):
+            summary = item.get("summary")
+            if summary is not None and not isinstance(summary, list):
+                raise CopilotRejectedResponse(rjson, "Copilot Responses reasoning summary is not an array")
+            for s in summary or []:
+                if not isinstance(s, dict):
+                    raise CopilotRejectedResponse(rjson, "Copilot Responses summary part is not an object")
+                if s.get("text") is not None and not isinstance(s["text"], str):
+                    raise CopilotRejectedResponse(rjson, "Copilot Responses summary text is not a string")
+                if s.get("text"):
                     reasoning_parts.append(str(s["text"]))
 
     content_text = "".join(text_parts) if text_parts else None
@@ -287,10 +310,18 @@ def _copilot_responses_to_chat_completion(rjson: Dict[str, Any], requested_model
         message.pop("tool_calls", None)
     finish_reason = "length" if exhausted else "tool_calls" if tool_calls else "stop"
 
+    created_at = rjson.get("created_at")
+    if created_at is not None and not isinstance(created_at, (int, float, str)):
+        raise CopilotRejectedResponse(rjson, "Copilot Responses created_at is not a number")
+    try:
+        created = int(created_at or time.time())
+    except (ValueError, TypeError, OverflowError) as error:
+        raise CopilotRejectedResponse(rjson, "Copilot Responses created_at is not a number") from error
+
     return {
         "id": str(rjson.get("id") or "chatcmpl-copilot-responses"),
         "object": "chat.completion",
-        "created": int(rjson.get("created_at") or time.time()),
+        "created": created,
         "model": str(rjson.get("model") or requested_model),
         "choices": [{
             "index": 0,

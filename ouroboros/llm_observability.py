@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pathlib
-import logging
 import contextlib
 import contextvars
 import copy
@@ -12,6 +11,7 @@ from typing import Any, Dict, Tuple
 from ouroboros.observability import new_call_id, persist_call
 from ouroboros.anthropic_native_custody import public_custody_projection
 from ouroboros.utils import sanitize_tool_result_for_log
+from ouroboros.process_logging import log_observation_gap  # noqa: F401 — public observation helper; accounting imports its stdlib owner
 
 
 def retain_cancelled_response(request, response, capture, *, control_reason: str = "caller_cancelled") -> dict:
@@ -71,7 +71,7 @@ def retain_received_response(request, response, *, capture=None, control_reason=
                          task_id=request.task_id or (scope.task_id if scope else ""))
         return _retain_physical_response(target, response, capture, control_reason=control_reason)
     except Exception as exc:
-        logging.getLogger(__name__).warning(
+        log_observation_gap(
             "Physical response retention gap (%s); useful response preserved", type(exc).__name__,
             exc_info=True,
         )
@@ -88,7 +88,7 @@ def persist_observed_call(root: Any, *, payload: Any, writer: Any = None, **iden
     try:
         return (writer or persist_call)(root, payload=public_custody_projection(payload), **identity)
     except Exception:
-        logging.getLogger(__name__).warning("Failed to persist LLM observability payload", exc_info=True)
+        log_observation_gap("Failed to persist LLM observability payload", exc_info=True)
         return {}
 
 
@@ -184,7 +184,7 @@ def note_http_projection(request: Any) -> None:
         try:
             observations.append(http_projection(request))
         except Exception:
-            logging.getLogger(__name__).warning("HTTP projection observation gap", exc_info=True)
+            log_observation_gap("HTTP projection observation gap", exc_info=True)
 
 
 def bind_http_observations(response: Any) -> Any:
@@ -194,7 +194,7 @@ def bind_http_observations(response: Any) -> Any:
             object.__setattr__(response, "_ouroboros_http_projection",
                                (_HTTP_OBSERVATION_TOKEN, observations[-1]))
         except Exception:
-            logging.getLogger(__name__).warning("HTTP projection attachment gap", exc_info=True)
+            log_observation_gap("HTTP projection attachment gap", exc_info=True)
     return response
 
 
@@ -288,5 +288,5 @@ def retain_http_observation(kind: str, request: Any, *, response: Any = None, bo
                                       "sdk_candidate_sha256": capture.candidate_raw_sha256,
                                       "observation_sha256": identity})
     except Exception:
-        logging.getLogger(__name__).warning("HTTP observation retention gap", exc_info=True)
+        log_observation_gap("HTTP observation retention gap", exc_info=True)
         return {}

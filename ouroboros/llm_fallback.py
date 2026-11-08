@@ -38,7 +38,7 @@ from ouroboros.llm_attempt import (
 )
 from ouroboros.deadline_utils import physical_dispatch_timeout
 from ouroboros.llm_stream import consume_stream, consume_stream_async
-from ouroboros.llm_observability import http_observation_scope, bind_http_observations
+from ouroboros.llm_observability import http_observation_scope, bind_http_observations, log_observation_gap
 from ouroboros.transport_custody import ProviderNotDispatched
 from ouroboros.copilot_responses import copilot_response_failure
 from ouroboros.copilot_native_custody import native_output_scope, bind_native_output, has_native_replay
@@ -133,10 +133,11 @@ class _RecoveryLadderMixin:
                 retry_extra.pop(param, None)
             if not retry_extra:
                 retry_payload.pop("extra_body", None)
-        log.warning(
+        log_observation_gap(
             "Retrying %s once without unsupported cache parameter %s",
             str(target.get("usage_model") or target.get("resolved_model") or "(unknown model)"),
             param,
+            logger=log,
         )
         return retry_payload
 
@@ -203,12 +204,13 @@ class _RecoveryLadderMixin:
         retry_payload = copy.deepcopy(payload)
         retry_routing = retry_payload.setdefault("extra_body", {}).setdefault("provider", {})
         retry_routing.update({"allow_fallbacks": False, **({"only": providers} if providers else {})})
-        log.warning(
+        log_observation_gap(
             "OpenRouter final status %s is not among its upstream attempts' statuses %s; "
             "re-asking %s once on %s without provider fallbacks",
             status, sorted(statuses),
             str(target.get("usage_model") or target.get("resolved_model") or "(unknown model)"),
             ", ".join(providers) or "its own choice of provider",
+            logger=log,
         )
         return retry_payload
 
@@ -231,7 +233,7 @@ class _RecoveryLadderMixin:
             return None
         retry_kwargs = self._reroute_same_model_kwargs(target, kwargs)
         if retry_kwargs is not None:
-            log.warning("OpenRouter 400: retrying once without the replayed reasoning")
+            log_observation_gap("OpenRouter 400: retrying once without the replayed reasoning", logger=log)
         return retry_kwargs
 
     @staticmethod
@@ -364,13 +366,14 @@ class _RecoveryLadderMixin:
         )
         if reroute is None:
             return None
-        log.warning(
+        log_observation_gap(
             "OpenRouter same-model reroute after transient provider body-error "
             "(code=%s); reasoning_continuity_%s",
             err.get("code"),
             "preserved"
             if self._has_replayed_reasoning_metadata(reroute.get("messages") or [])
             else "dropped",
+            logger=log,
         )
         return reroute
 
@@ -398,8 +401,8 @@ class _RecoveryLadderMixin:
             return None
         stripped = self._reroute_same_model_kwargs(target, kwargs)
         if stripped is not None:
-            log.warning(
-                "OpenRouter strip-and-retry after encrypted-reasoning body error (code=400)"
+            log_observation_gap(
+                "OpenRouter strip-and-retry after encrypted-reasoning body error (code=400)", logger=log
             )
         return stripped
 
