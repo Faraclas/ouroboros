@@ -56,7 +56,37 @@ def _release_review_evidence_if_settled(ctx: ToolContext) -> None:
         release_commit_review_session_view(getattr(ctx, "_commit_review_evidence", None) or {})
 
 
-def _fingerprint_staged_diff(repo_dir: pathlib.Path) -> Dict[str, Any]:
+def _merge_heads(repo_dir: pathlib.Path) -> List[str]:
+    """Read resolved merge parents for staging and the final commit binding."""
+    path = pathlib.Path(_git().run_cmd(["git", "rev-parse", "--git-path", "MERGE_HEAD"], cwd=repo_dir).strip())
+    if not path.is_absolute():
+        path = repo_dir / path
+    try:
+        rows = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    return list(dict.fromkeys(
+        _git().run_cmd(["git", "rev-parse", f"{row.strip()}^{{commit}}"], cwd=repo_dir).strip()
+        for row in rows if row.strip()
+    ))
+
+
+def _accepted_merge_refs(ctx: ToolContext) -> List[str]:
+    """Compare with current serving content only for an accepted-history merge."""
+    from ouroboros import body_candidate
+
+    if not body_candidate.is_bound(ctx):
+        return []
+    parents = _merge_heads(pathlib.Path(ctx.repo_dir))
+    if not parents:
+        return []
+    serving = _git().run_cmd(["git", "rev-parse", "HEAD"], cwd=body_candidate.serving_repo_dir_for(ctx)).strip()
+    return [serving] if any(not _git().run_cmd(
+        ["git", "rev-list", "--max-count=1", parent, "--not", serving], cwd=ctx.repo_dir,
+    ).strip() for parent in parents) else []
+
+
+def _fingerprint_staged_diff(repo_dir: pathlib.Path, accepted_merge_refs=()) -> Dict[str, Any]:
     """Bind review to the exact commit material, not only a textual diff.
 
     ``git write-tree`` is the staged snapshot Git will commit. HEAD plus every
@@ -72,27 +102,17 @@ def _fingerprint_staged_diff(repo_dir: pathlib.Path) -> Dict[str, Any]:
         patch, diff_sha256 = staged_patch(repo_dir)
         tree_sha = _git().run_cmd(["git", "write-tree"], cwd=repo_dir).strip()
         head_sha = _git().run_cmd(["git", "rev-parse", "HEAD^{commit}"], cwd=repo_dir).strip()
-        merge_heads: list[str] = []
-        git_path = _git().run_cmd(["git", "rev-parse", "--git-path", "MERGE_HEAD"], cwd=repo_dir).strip()
-        merge_head_path = pathlib.Path(git_path)
-        if not merge_head_path.is_absolute():
-            merge_head_path = repo_dir / merge_head_path
-        if merge_head_path.exists():
-            for raw_sha in merge_head_path.read_text(encoding="utf-8").splitlines():
-                raw_sha = raw_sha.strip()
-                if not raw_sha:
-                    continue
-                resolved = _git().run_cmd(
-                    ["git", "rev-parse", f"{raw_sha}^{{commit}}"], cwd=repo_dir
-                ).strip()
-                if resolved and resolved not in merge_heads and resolved != head_sha:
-                    merge_heads.append(resolved)
+        merge_heads = [sha for sha in _merge_heads(repo_dir) if sha != head_sha]
         version_staged = bool(
             _git().run_cmd(
                 ["git", "diff", "--cached", "--name-only", "--", "VERSION"],
                 cwd=repo_dir,
             ).strip()
         )
+        # A merge carries its parent's release; only a distinct VERSION is authored here.
+        version_staged = version_staged and all(_git().run_cmd(
+            ["git", "diff", "--cached", parent, "--", "VERSION"], cwd=repo_dir,
+        ).strip() for parent in accepted_merge_refs)
         try:
             staged_version = _git().run_cmd(["git", "show", ":VERSION"], cwd=repo_dir).strip()
         except Exception:
@@ -348,7 +368,7 @@ def _finalize_blocked_review(
         degraded_reasons=list(getattr(ctx, "_review_degraded_reasons", []) or []),
     )
     try:
-        _git().run_cmd(["git", "reset", "HEAD"], cwd=ctx.repo_dir)
+        _git().run_cmd(["git", "reset", "HEAD", "--", ":/"], cwd=ctx.repo_dir)
     except Exception as e:
         warning = f"⚠️ GIT_WARNING (reset): {_sanitize_git_error(str(e))}"
         return f"{combined_msg}\n\n---\n{warning}"
@@ -393,9 +413,22 @@ def _stage_candidate_for_review(
         if paths:
             try:
                 safe_paths = [_git().safe_relpath(path) for path in paths if str(path).strip()]
-            except ValueError as exc:
+                required = set()
+                for parent in _merge_heads(pathlib.Path(ctx.repo_dir)):
+                    required.update(_git().run_cmd(
+                        ["git", "diff", "--no-renames", "--name-only", "-z", f"HEAD...{parent}"],
+                        cwd=ctx.repo_dir,
+                    ).split("\0"))
+                missing = required - {""} - set(safe_paths)
+                if missing:
+                    return [], None, _git()._review_cycle_infra_failure(
+                        ctx, commit_message, commit_start,
+                        "⚠️ GIT_PARTIAL_MERGE_BLOCKED: include all merged paths in paths before committing: "
+                        + ", ".join(sorted(missing)),
+                    )
+            except Exception as exc:
                 error = _git()._review_cycle_infra_failure(
-                    ctx, commit_message, commit_start, f"⚠️ PATH_ERROR: {exc}"
+                    ctx, commit_message, commit_start, f"⚠️ PATH_ERROR: {_sanitize_git_error(str(exc))}"
                 )
                 return [], None, error
             add_cmd = ["git", "add"] + safe_paths
@@ -616,6 +649,17 @@ def _reviewed_stage_cycle(
         return stage_error
     protected_staged_paths = _git().protected_paths_in(classification_paths)
     runtime_mode = _git()._current_runtime_mode()
+    try:
+        accepted_merge_refs = _accepted_merge_refs(ctx)
+        for parent in accepted_merge_refs if protected_staged_paths and not _git().mode_allows_protected_write(runtime_mode) else []:
+            changed = _git().run_cmd(
+                ["git", "diff", "--cached", "--name-only", "-z", parent, "--", *(item.path for item in protected_staged_paths)],
+                cwd=ctx.repo_dir,
+            ).split("\0")
+            protected_staged_paths = [item for item in protected_staged_paths if item.path in changed]
+    except Exception as exc:
+        return _git()._review_cycle_infra_failure(ctx, commit_message, commit_start, f"⚠️ GIT_MERGE_CLASSIFICATION_FAILED: {_sanitize_git_error(str(exc))}")
+    fingerprint_args = (pathlib.Path(ctx.repo_dir), accepted_merge_refs) if accepted_merge_refs else (pathlib.Path(ctx.repo_dir),)
     if (
         protected_staged_paths
         and not _git().mode_allows_protected_write(runtime_mode)
@@ -628,7 +672,7 @@ def _reviewed_stage_cycle(
         )
         try:
             if not bool(getattr(ctx, "_review_resume_pending", False)):
-                _git().run_cmd(["git", "reset", "HEAD"], cwd=ctx.repo_dir)
+                _git().run_cmd(["git", "reset", "HEAD", "--", ":/"], cwd=ctx.repo_dir)
         except Exception:
             pass
         if not bool(getattr(ctx, "_review_resume_pending", False)):
@@ -647,7 +691,7 @@ def _reviewed_stage_cycle(
             "message": msg,
             "block_reason": "core_protection_blocked",
         }
-    pre_fingerprint = _git()._fingerprint_staged_diff(pathlib.Path(ctx.repo_dir))
+    pre_fingerprint = _git()._fingerprint_staged_diff(*fingerprint_args)
     if not pre_fingerprint.get("ok"):
         if bool(getattr(ctx, "_review_resume_pending", False)):
             return {
@@ -746,7 +790,7 @@ def _reviewed_stage_cycle(
         _release_review_evidence_if_settled(ctx)
         return preflight_gate_outcome
     if not bool(getattr(ctx, "_review_reconcile_only", False)):
-        after_preflight = _git()._fingerprint_staged_diff(pathlib.Path(ctx.repo_dir))
+        after_preflight = _git()._fingerprint_staged_diff(*fingerprint_args)
         changed = compute_snapshot_hash(pathlib.Path(ctx.repo_dir), commit_message, paths=snapshot_paths) != prepared_snapshot
         revalidation = _revalidation_outcome(
             ctx, commit_message, commit_start, pre_fingerprint, after_preflight, worktree_changed=changed,
@@ -793,7 +837,7 @@ def _reviewed_stage_cycle(
     settle_commit_review_ledger(ctx, commit_message, goal=goal, scope=scope, pre_fingerprint=pre_fingerprint,
                                 blocked=blocked, block_reason=block_reason,
                                 combined_findings=combined_findings, author_source=author_source, advisory_replay=advisory_replay)
-    post_fingerprint = _git()._fingerprint_staged_diff(pathlib.Path(ctx.repo_dir))
+    post_fingerprint = _git()._fingerprint_staged_diff(*fingerprint_args)
     from ouroboros.config import get_review_enforcement
     # Nonblocking application (ordinary Advisory; Cyber either way) returns every committing outcome, PASS and
     # pending too, before Git; the review-only cycle keeps Advisory's material handback; Blocking keeps authority.
@@ -974,7 +1018,7 @@ def _run_non_committing_review_cycle(
             if not (_git()._review_custody_pending(ctx)
                     or (bool(getattr(ctx, "_review_resume_pending", False))
                         and (locals().get("outcome") or {}).get("status") != "passed")):
-                _git().run_cmd(["git", "reset", "HEAD"], cwd=ctx.repo_dir)
+                _git().run_cmd(["git", "reset", "HEAD", "--", ":/"], cwd=ctx.repo_dir)
         except Exception as exc:
             unstage_warning = f"⚠️ GIT_WARNING (reset): {_sanitize_git_error(str(exc))}"
         _git()._release_git_lock(lock)

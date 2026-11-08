@@ -509,7 +509,9 @@ def _shown_low(main_call, monkeypatch, tmp_path, cut):
         actor = dataclasses.replace(actor, room={**actor.room, "legacy": syn.room("1", legacy=23, legacy_chars=40_000)[
             "legacy"]})
     ctx, _gateway, tools, events, plan, windows = _native(main_call, monkeypatch, tmp_path, view=snapshot_json(actor))
-    windows.update({"account-a": 150_000 if cut == "window" else 1_000_000, "account-b": 100_000})
+    # A Low-cut starting window must fit the fixed core/tool catalog. Its exact
+    # size is incidental; keep the actual 100K Nano/deficit/tail oracles below.
+    windows.update({"account-a": 151_000 if cut == "window" else 1_000_000, "account-b": 100_000})
     built = plan(windows["account-a"])
     assert built.initial_mode == "low" and built.low_projection.memory_facts["floor"]["by_budget"] > 0
     ctx.tools, ctx.context_fit_plan, ctx.active_context_mode = tools, built, "low"
@@ -653,8 +655,8 @@ def test_an_owner_max_task_in_task_local_low_rebinds_a_fallback_and_its_return_f
 
     ctx, gateway, tools, events, plan, windows = _native(main_call, monkeypatch, tmp_path, owner_mode="max",
                                                          view=snapshot_json(syn.actor("main")))
-    windows.update({"account-a": 150_000, "account-b": {"roomy": 900_000, "tight": 100_000}[fallback]})
-    built = dataclasses.replace(plan(150_000), initial_mode="low")  # the owner's Max plan, task-local Low shown
+    windows.update({"account-a": 151_000, "account-b": {"roomy": 900_000, "tight": 100_000}[fallback]})
+    built = dataclasses.replace(plan(151_000), initial_mode="low")  # the owner's Max plan, task-local Low shown
     low = built.messages_for("low")[0]
     assert built.preferred_mode == "max" and low != built.messages_for("max")[0]
     ctx.messages[:] = [*built.messages_for("low"), result()["message"],

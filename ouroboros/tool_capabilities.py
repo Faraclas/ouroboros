@@ -476,7 +476,7 @@ OBSERVE_WORLD_MUTATION_TOOLS: frozenset[str] = frozenset({
     # repository refs the catalog marks mutates_worktree
     "vcs_pull_ff", "vcs_restore", "vcs_revert",
     "fetch_pr_ref", "create_integration_branch", "cherry_pick_pr_commits",
-    "stage_adaptations", "stage_pr_merge",
+    "stage_adaptations", "stage_pr_merge", "candidate_merge",
     # disposing a captured patch — into a Git root, or LIVE into an installed
     # skill payload; an orphan capture may belong to an unrelated earlier task,
     # so a read-only-children rule alone does not cover this path

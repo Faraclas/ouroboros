@@ -20,6 +20,7 @@ _PR_BRANCH_PREFIX = "integrate/pr-"
 # author runs them in its body candidate (``body_candidate.authoring_seam``).
 BODY_WORKTREE_TOOLS = frozenset({
     "create_integration_branch", "cherry_pick_pr_commits", "stage_adaptations", "stage_pr_merge",
+    "candidate_merge",
 })
 
 
@@ -613,8 +614,81 @@ def _stage_pr_merge(
     )
 
 
+def _candidate_merge(ctx: ToolContext, action: str = "stage") -> str:
+    """Stage accepted serving history without moving HEAD or rewriting commits.
+
+    Git owns conflicts and overwrite refusals. No automatic reset or stash hides
+    a conflict. Abort has Git's ordinary limitation for post-start edits; the
+    author preserves those before aborting. Existing reviewed-commit parent
+    binding and post-commit baseline advancement finish the staged merge.
+    """
+    from ouroboros import body_candidate
+
+    if action not in {"stage", "abort"}:
+        return "⚠️ CANDIDATE_MERGE_ARGUMENT_BLOCKED: action must be stage or abort."
+    refusal = body_candidate._refusal_before_prepare(ctx)
+    if refusal is not None:
+        from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+
+        return _publish_tool_result(ctx, ToolResult(
+            status="blocked", code=refusal.code, text=f"{refusal.code}: {refusal}"))
+    bound = body_candidate.descriptor(ctx)
+    if not body_candidate.is_bound(ctx) or not bound.get("path"):
+        return "⚠️ CANDIDATE_MERGE_UNBOUND_BLOCKED: prepare_self_change first; an owned candidate is required."
+    repo = pathlib.Path(ctx.repo_dir)
+    if repo.resolve() != pathlib.Path(bound["path"]).resolve():
+        return "⚠️ CANDIDATE_MERGE_UNBOUND_BLOCKED: body root does not match the owned candidate."
+    lock = _acquire_git_lock(ctx)
+    try:
+        branch = _g(["symbolic-ref", "-q", "--short", "HEAD"], repo)
+        if branch.returncode or branch.stdout.strip() != bound.get("branch"):
+            return "⚠️ CANDIDATE_MERGE_BRANCH_BLOCKED: return to the owned candidate branch before merging."
+        if action == "abort":
+            if _g(["rev-parse", "-q", "--verify", "MERGE_HEAD"], repo).returncode:
+                return "⚠️ CANDIDATE_MERGE_NOT_STARTED_BLOCKED: no merge is in progress; nothing was reset."
+            result = _g(["-c", "merge.autostash=false", "merge", "--abort"], repo)
+            if result.returncode:
+                return "⚠️ CANDIDATE_MERGE_FAILED: abort failed; preserve and inspect the merge state.\n" + _sanitize_git_error(result.stderr + result.stdout)
+            return "Candidate merge aborted by Git; HEAD unchanged. No hard reset or stash drop performed."
+        for name in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"):
+            location = _g(["rev-parse", "--git-path", name], repo)
+            if location.returncode:
+                return "⚠️ CANDIDATE_MERGE_FAILED: Git operation state is unavailable."
+            path = pathlib.Path(location.stdout.strip())
+            if (path if path.is_absolute() else repo / path).exists():
+                return "⚠️ CANDIDATE_MERGE_IN_PROGRESS_BLOCKED: finish or explicitly abort the existing Git operation first."
+        target = _g(["rev-parse", "--verify", "HEAD^{commit}"], body_candidate.serving_repo_dir_for(ctx))
+        if target.returncode:
+            return "⚠️ CANDIDATE_MERGE_FAILED: serving HEAD is unavailable.\n" + _sanitize_git_error(target.stderr)
+        sha = target.stdout.strip()
+        result = _g(["-c", "merge.autostash=false", "merge", "--no-ff", "--no-commit", sha], repo)
+        if result.returncode:
+            return ("⚠️ CANDIDATE_MERGE_FAILED: merge not completed; inspect vcs_read status/diff. "
+                    "Conflicts remain for resolution or candidate_merge(action='abort'); no automatic reset.\n"
+                    + _sanitize_git_error(result.stdout + result.stderr))
+        if _g(["rev-parse", "-q", "--verify", "MERGE_HEAD"], repo).returncode:
+            return f"Candidate already contains accepted serving HEAD {sha}; no merge or tests performed."
+        return (f"Staged accepted serving HEAD {sha} into {bound['branch']} (NOT committed). "
+                "Original HEAD and commit SHAs remain; serving files are untouched. "
+                "Continue here, check interactions proportionately and finish the combined candidate through "
+                "commit_reviewed. Synchronization ran no tests, review, fetch or adoption. "
+                "Preserve post-start edits before aborting.")
+    finally:
+        _release_git_lock(lock)
+
+
 def get_tools() -> List[ToolEntry]:
     return [
+        ToolEntry("candidate_merge", {
+            "name": "candidate_merge",
+            "description": (
+                "Merge accepted serving HEAD into your owned candidate, same task. stage: --no-ff --no-commit; "
+                "no tests/review/fetch/adoption. Disjoint unstaged edits survive; Git refuses overwrites, keeps conflicts. "
+                "abort: native merge --abort, preserve post-start edits first. Serving stays untouched. Finish with commit_reviewed."),
+            "parameters": {"type": "object", "properties": {
+                "action": {"type": "string", "enum": ["stage", "abort"], "default": "stage"},
+            }},
+        }, _candidate_merge, is_code_tool=True, mutates_worktree=True, safety_policy="check"),
         ToolEntry("fetch_pr_ref", {
             "name": "fetch_pr_ref",
             "description": (
