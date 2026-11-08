@@ -198,7 +198,10 @@ empty or short owner list is not reported as absence. Module-path and dotted
 lookups read only the manifest. The existing import-text and
 relative-import helpers remain available to their architecture/review consumers.
 Restricted/scoped, path-only and name-prepared views never overwrite the shared
-inventory cache. A bounded full-source refresh keeps unvisited prior facts only in
+inventory cache. Explicit-file views parse fresh admitted bytes without loading
+the full cache; a named view may therefore report `name_absent` rather than reuse
+an indexed fact. Directory/root views retain hash-checked reuse and its load cost.
+A bounded full-source refresh keeps unvisited prior facts only in
 that disposable cache, never in current returned rows. Reuse checks current
 path/hash; a complete refresh removes deleted files. This avoids needless
 reparsing, not a new freshness guarantee. Retention/reset: [PERSISTENCE](PERSISTENCE.md).

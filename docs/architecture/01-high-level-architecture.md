@@ -564,7 +564,7 @@ ouroboros/ — agent core and shared runtime (§6)
 
 ### Code navigation
 
-`query_code` returns source evidence and local syntax facts, never semantic binding; its cache (`code_intelligence.py`) holds only local facts and every query rechecks current bytes and paths, so a moved target leaves no stale cross-file join. Operations, limits and rationale: [code navigation contract](../code-navigation.md).
+`query_code` returns syntax evidence, not binding. `code_intelligence.py` reparses explicit files without hydrating unrelated cache facts; directory/root views retain hash-checked reuse. Current paths and bytes decide evidence. Operations, limits and rationale: [code navigation contract](../code-navigation.md).
 
 ### Devtools boundary
 

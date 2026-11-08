@@ -817,13 +817,12 @@ def build_code_inventory(
     files whose current bytes cannot hold that outline name unparsed (``name_absent``), likewise uncached."""
     root = pathlib.Path(repo_root).resolve(strict=False)
     deadline = time.monotonic() + _MAX_ENUMERATION_SECONDS
-    cached = load_cached_inventory(root, drive_root) if drive_root is not None and parse else None
-    cached_by_path = {file.path: file for file in (cached.files if cached else [])}
     excluded_paths = [
         pathlib.Path(path).expanduser().resolve(strict=False)
         for path in (exclude_paths or [])
     ]
-    filtered = pathlib.PurePosixPath(str(scope or "").replace("\\", "/")) != pathlib.PurePosixPath(".")
+    scoped = pathlib.PurePosixPath(str(scope or "").replace("\\", "/"))
+    filtered = scoped != pathlib.PurePosixPath(".")
 
     def visible(path: pathlib.Path) -> bool:
         nonlocal filtered
@@ -833,6 +832,11 @@ def build_code_inventory(
         return allowed
 
     paths, nested_roots, enumeration_limits = _enumerate_files(root, scope=scope, path_allowed=visible)
+    # A selected file (or empty scoped result) needs no unrelated cached facts.
+    # Decide after admission/enumeration: a one-file directory still reuses cache.
+    file_scope = scoped != pathlib.PurePosixPath(".") and (not paths or paths == [root / scoped])
+    cached = load_cached_inventory(root, drive_root) if drive_root is not None and parse and not file_scope else None
+    cached_by_path = {file.path: file for file in (cached.files if cached else [])}
     walked = None if any("limit" in note for note in enumeration_limits) else {
         path.relative_to(root).as_posix() for path in paths}
     files = []
