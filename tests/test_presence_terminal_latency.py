@@ -19,6 +19,14 @@ from tests.test_presence_runner import _admission, _event
 
 @pytest.fixture
 def agent_bootstrap(tmp_path, monkeypatch):
+    # Direct task admission consults the supervisor wallet, not Env.drive_root.
+    # Keep that real reader on this harness's data, at the same limit; another
+    # test's depleted ledger must not stop the producer before the barrier.
+    from supervisor import state
+    for name in ("DRIVE_ROOT", "STATE_PATH", "STATE_LAST_GOOD_PATH", "STATE_LOCK_PATH",
+                 "TOTAL_BUDGET_LIMIT", "_OPENROUTER_DIAGNOSTIC"):
+        monkeypatch.setattr(state, name, getattr(state, name))
+    state.init(tmp_path, state.TOTAL_BUDGET_LIMIT)
     # These tests exercise task completion, not installation boot. A cold worker
     # otherwise scans host processes/Git and profiles the machine inside the
     # synthesis barrier's timeout, depending on earlier tests' boot-log state.

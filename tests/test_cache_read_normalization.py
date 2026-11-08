@@ -289,7 +289,6 @@ def test_real_responses_search_producer_keeps_normalized_cache_fact(tmp_path, mo
     monkeypatch.setattr(nt, 'web_search_openai_client', lambda **kw: SimpleNamespace(
         responses=SimpleNamespace(create=create)))
     monkeypatch.setattr(search, '_resolve_openai_client_settings', lambda: ('fixture', None, 'openai', 'openai'))
-    monkeypatch.setattr(search, '_estimate_openai_cost', lambda *args: None)
     monkeypatch.setattr(ua, '_reservation_cost', lambda request: 0.)
     ctx = SimpleNamespace(task_id='search-fixture', task_metadata={}, pending_events=[])
     scope = ua.UsageScope(drive_root=config.DATA_DIR, task_id=ctx.task_id, non_task_operation=True)

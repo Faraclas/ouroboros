@@ -162,3 +162,5 @@ def test_public_helpers_preserve_explicit_standard_and_native_tool_payload(helpe
     assert "thinking" not in state.sent[0] and "output_config" not in state.sent[0]
     assert ledger(root)[-1]["processing"]["requested"] == "standard"
     assert ledger(root)[-1]["source"] == f"web_search.{provider}"
+    if provider == "anthropic":
+        assert ledger(root)[-1]["model"] == "anthropic/same-model"

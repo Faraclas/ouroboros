@@ -9,7 +9,7 @@ import time
 from dataclasses import replace
 from typing import Any, Dict, List, Optional
 
-from ouroboros.pricing import estimate_cost_optional
+from ouroboros.pricing import normalize_usage_cost
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.usage_accounting import (
     PhysicalAttemptCapture,
@@ -123,14 +123,6 @@ def _accounting_scope(ctx: ToolContext, source: str) -> UsageScope:
         parent_task_id=(str(raw_parent_task_id) if isinstance(raw_parent_task_id, (str, int)) else ""),
         category="web_search",
         source=source,
-    )
-
-
-def _estimate_openai_cost(model: str, input_tokens: int, output_tokens: int) -> Optional[float]:
-    """Direct OpenAI Responses cost is unknown without provider-reported cost."""
-    pricing_model = model if "/" in str(model or "") else f"openai/{model}"
-    return estimate_cost_optional(
-        pricing_model, input_tokens, output_tokens, provider="openai",
     )
 
 
@@ -284,19 +276,14 @@ def _emit_simple_usage(
     if not isinstance(metadata, dict):
         metadata = {}
     try:
-        from ouroboros._usage_response import observed_processing_mode, provider_cost_value
         from ouroboros.event_usage import event_token_counts
 
-        mode = observed_processing_mode(provider, usage or {})
-        cost = provider_cost_value((usage or {}).get("cost"))
-        if cost is None:
-            cost = estimate_cost_optional(
-                model if "/" in str(model) else f"{provider}/{model}",
-                int(prompt_tokens or 0),
-                int(completion_tokens or 0),
-                provider=provider,
-                **({"processing_mode": mode} if mode else {}),
-            )
+        # Price the same normalized split as settlement. Host identity wins on
+        # the ephemeral pricing copy; raw diagnostic facts remain unchanged.
+        priced = {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+                  **(usage or {}), "provider": provider,
+                  "resolved_model": model if "/" in str(model) else f"{provider}/{model}"}
+        cost, _, _, estimated = normalize_usage_cost(priced, model=model, provider=provider, use_local=False)
         ctx.pending_events.append({
             "type": "llm_usage",
             "task_id": str(getattr(ctx, "task_id", "") or ""),
@@ -309,8 +296,10 @@ def _emit_simple_usage(
             "model_category": "websearch",
             # #1578: an unreported counter stays null, never a measured zero.
             **event_token_counts(usage, {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}),
-            "usage": usage or {},
+            "usage": {**(usage or {}), **{key: priced[key] for key in
+                      ("cost", "cost_estimated", "cost_final", "cost_invalid") if key in (usage or {})}},
             "cost": cost,
+            "cost_estimated": estimated,
             "source": "web_search",
             "ts": utc_now_iso(),
             "category": "task",
@@ -350,7 +339,9 @@ def _web_search_openrouter(ctx: ToolContext, query: str, model: str = "", search
         from ouroboros._usage_response import usage_from_response
         from ouroboros.llm_attempt import attach_processing_receipt
 
-        usage, _cost, _final = usage_from_response(response)
+        usage, reported_cost, reported_cost_final = usage_from_response(response)
+        usage.update(cost=reported_cost, cost_final=reported_cost_final,
+                     cost_estimated=reported_cost is not None and not reported_cost_final)
         attach_processing_receipt({"provider": "openrouter", "usage_model": active_model}, usage)
         # Guard: an exotic (non-dict) usage object must not crash the leg with a
         # successful paid answer in hand — mirror the Anthropic leg's isinstance
@@ -409,22 +400,25 @@ def _web_search_anthropic(ctx: ToolContext, query: str, model: str = "",
             for block in blocks:
                 if isinstance(block, dict) and str(block.get("type") or "") == "text":
                     text_parts.append(str(block.get("text") or ""))
-        usage = _obj_to_plain(getattr(response, "usage", None))
-        if not isinstance(usage, dict):
-            usage = {}
+        from ouroboros._usage_response import usage_from_response
+
+        raw_usage = _obj_to_plain(getattr(response, "usage", None))
+        usage, reported_cost, reported_cost_final = usage_from_response(response)
+        usage.update(cost=reported_cost, cost_final=reported_cost_final,
+                     cost_estimated=reported_cost is not None and not reported_cost_final)
         from ouroboros.llm_attempt import attach_processing_receipt
 
-        attach_processing_receipt({"provider": "anthropic", "usage_model": active_model}, usage)
+        attach_processing_receipt({"provider": "anthropic", "usage_model": f"anthropic/{active_model}"}, usage)
         usage["ledger_attempt_ids"] = list(attempt_ids)
         from ouroboros.event_usage import REPORTED_TOKENS_KEY, anthropic_token_counts
 
-        usage[REPORTED_TOKENS_KEY] = anthropic_token_counts(usage)  # native input_tokens is not the total (#1578)
+        usage[REPORTED_TOKENS_KEY] = anthropic_token_counts(raw_usage)  # preserve partial diagnostic totals (#1578)
         _emit_simple_usage(
             ctx,
             provider="anthropic",
             model=active_model,
-            prompt_tokens=(usage or {}).get("input_tokens") if isinstance(usage, dict) else None,
-            completion_tokens=(usage or {}).get("output_tokens") if isinstance(usage, dict) else None,
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
             usage=usage if isinstance(usage, dict) else {},
         )
         return json.dumps({
@@ -581,7 +575,7 @@ def _web_search_openai(
         return json.dumps({"error": "; ".join(previous_errors or ["Official OpenAI search is unavailable"]),
                            "backend": "openai_responses", "ledger_attempt_ids": attempt_ids})
     attempt_ids = []
-    api_key, base_url, provider, api_key_type = _resolve_openai_client_settings(*((connection,) if connection else ()))
+    api_key, base_url, provider, _api_key_type = _resolve_openai_client_settings(*((connection,) if connection else ()))
     if not api_key:
         return _fallbacks()
     active_model = model or runtime_setting("OUROBOROS_WEBSEARCH_MODEL", DEFAULT_SEARCH_MODEL)
@@ -682,8 +676,6 @@ def _web_search_openai(
                     sources = _extract_sources_from_response(resp_obj)
 
         text = "".join(text_parts)
-        input_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
-        output_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
         usage["ledger_attempt_ids"] = [reservation.attempt_id]
         try:
             if response_completed:
@@ -719,36 +711,9 @@ def _web_search_openai(
                 "ledger_attempt_ids": attempt_ids,
             }, ensure_ascii=False, indent=2)
 
-        # Track web search cost (estimate from tokens — OpenAI usage has no total_cost)
-        if usage and hasattr(ctx, "pending_events"):
-            cost = _estimate_openai_cost(active_model, input_tokens, output_tokens)
-            metadata = getattr(ctx, "task_metadata", {})
-            if not isinstance(metadata, dict):
-                metadata = {}
-            try:
-                from ouroboros.event_usage import event_token_counts
-
-                ctx.pending_events.append({
-                    "type": "llm_usage",
-                    "task_id": str(getattr(ctx, "task_id", "") or ""),
-                    "root_task_id": str(metadata.get("root_task_id") or ""),
-                    "parent_task_id": str(metadata.get("parent_task_id") or ""),
-                    "delegation_role": str(metadata.get("delegation_role") or ""),
-                    "provider": provider,
-                    "model": active_model,
-                    "api_key_type": api_key_type,
-                    "model_category": "websearch",
-                    **event_token_counts(usage),  # the cost estimate above alone reads unknown as 0
-                    "usage": usage,
-                    "cost": cost,
-                    "source": "web_search",
-                    "ts": utc_now_iso(),
-                    "category": "task",
-                    "accounting_authority": "physical_attempt_ledger",
-                    "ledger_attempt_ids": [reservation.attempt_id],
-                })
-            except Exception:
-                log.debug("Failed to emit web_search cost event", exc_info=True)
+        usage.update(cost=reported_cost, cost_final=reported_cost_final,
+                     cost_estimated=reported_cost is not None and not reported_cost_final)
+        _emit_simple_usage(ctx, provider=provider, model=active_model, usage=usage)
 
         if text.strip() or sources:
             return json.dumps({"answer": text or "(no answer)", "answer_type": "summary", "sources": sources, "backend": "openai_responses", "model": active_model, "reported_model": getattr(resp_obj, "model", None), "ledger_attempt_ids": attempt_ids}, ensure_ascii=False, indent=2)

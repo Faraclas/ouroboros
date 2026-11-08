@@ -315,7 +315,7 @@ def normalize_usage_cost(usage: Dict[str, Any], *, model: str, use_local: bool,
     cost = provider_cost_value(raw_cost)
     display_model = str(usage.get("resolved_model") or model)
     provider = "local" if use_local else str(usage.get("provider") or provider)
-    estimated = bool(usage.get("cost_estimated"))
+    estimated = cost is not None and bool(usage.get("cost_estimated"))
     if use_local:
         cost, estimated = 0.0, False
         display_model = f"{model} (local)"
@@ -324,7 +324,9 @@ def normalize_usage_cost(usage: Dict[str, Any], *, model: str, use_local: bool,
         log.warning("Provider reported an invalid cost (type=%s) for %s; keeping unknown, skipping estimation",
                     type(raw_cost).__name__, display_model)
         usage["cost_invalid"] = True
-    elif cost is None and provider != "claudexor":
+    elif cost is None and provider != "claudexor" and (
+        (usage.get("prompt_tokens") or 0) or (usage.get("completion_tokens") or 0)
+    ):
         processing_mode = observed_processing_mode(provider, usage)
         cost = estimate_cost_optional(
             display_model, int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0),

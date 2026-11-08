@@ -228,7 +228,7 @@
         "physical_attempts": [
           {
             "source": "web_search.anthropic",
-            "model": "claude-sonnet-4-6",
+            "model": "anthropic/claude-sonnet-4-6",
             "provider": "anthropic",
             "candidate_raw_sha256": "2ee78765489f606716c6d5f6db21a846ed51617487267c3cc3d674c6186da417",
             "candidate_raw_size_bytes": 182,

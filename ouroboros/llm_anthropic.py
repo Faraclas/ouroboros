@@ -653,7 +653,7 @@ def anthropic_web_search_server_tool(
     from ouroboros.usage_accounting import current_usage_scope
     from dataclasses import replace
 
-    target = {"provider": "anthropic", "usage_model": model, "resolved_model": model,
+    target = {"provider": "anthropic", "usage_model": f"anthropic/{model}", "resolved_model": model,
               "processing_preference": resolve_processing_preference("websearch", override=processing_preference)}
 
     client_kwargs: Dict[str, Any] = {"api_key": api_key, "max_retries": 0}
