@@ -185,7 +185,7 @@ def _free_cycle_gate(
             log.debug("commit_review_free_replay event emission failed", exc_info=True)
         return {"advisory_replay": message, "replay_reason": reason}
     try:
-        run_cmd(["git", "reset", "HEAD"], cwd=ctx.repo_dir)
+        run_cmd(["git", "reset", "HEAD", "--", ":/"], cwd=ctx.repo_dir)
     except Exception:
         pass
     if _authorized_managed_update_resolver(ctx):
@@ -531,7 +531,7 @@ def _preflight_and_tests_gate(
         _handle_review_block_or_warning(ctx, True, message, "")
     elif message:
         try:
-            run_cmd(["git", "reset", "HEAD"], cwd=ctx.repo_dir)
+            run_cmd(["git", "reset", "HEAD", "--", ":/"], cwd=ctx.repo_dir)
         except Exception:
             pass
         # Preflight, not a review verdict: must neither inflate nor reset the
@@ -916,6 +916,21 @@ def _prepare_review_commit_worktree(
             f"⚠️ GIT_BRANCH_UNAVAILABLE: cannot verify local branch {ctx.branch_dev!r}. "
             f"Current branch, index and files were preserved. {_sanitize_git_error(str(exc))}"
         )
+    if current_branch == ctx.branch_dev:
+        # Checking out even the same branch clears MERGE_HEAD. Only skip it
+        # for an actual merge; other checkout/error contracts stay unchanged.
+        try:
+            merge_path = pathlib.Path(run_cmd(
+                ["git", "rev-parse", "--git-path", "MERGE_HEAD"], cwd=ctx.repo_dir).strip())
+            if not merge_path.is_absolute():
+                merge_path = pathlib.Path(ctx.repo_dir) / merge_path
+            if merge_path.is_file():
+                unmerged = run_cmd(["git", "diff", "--name-only", "--diff-filter=U"], cwd=ctx.repo_dir).strip()
+                if unmerged:
+                    return False, f"⚠️ GIT_ERROR (checkout): Repository has unmerged paths.\n{unmerged}"
+                return False, ""
+        except Exception as exc:
+            return False, f"⚠️ GIT_ERROR (checkout): Could not verify merge index state: {_sanitize_git_error(str(exc))}"
     try:
         if current_branch == "HEAD":
             run_cmd(["git", "checkout", "-B", ctx.branch_dev, "HEAD"], cwd=ctx.repo_dir)
@@ -1233,9 +1248,8 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
             require_release_tag=not bool(_managed_tx), preflight_reviewer=preflight_reviewer, panel=panel)
         if outcome.get("status") != "passed":
             if _managed_tx:
-                # A blocked review's index reset can clear the live MERGE_HEAD; re-establish it so
-                # the agent can fix the flagged issues and re-commit (precommit_verify needs it),
-                # rather than stranding the resolution until the watchdog / boot rollback.
+                # Keep the resolver's target parent available across recovery; its
+                # precommit verifier also serves interrupted older review attempts.
                 try:
                     from supervisor.update_merge import reestablish_merge_head
 

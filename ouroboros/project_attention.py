@@ -231,6 +231,7 @@ class ProjectAttention:
             raise
 
     def _pass(self) -> None:
+        signature = None
         try:
             from ouroboros import store
             from ouroboros.process_custody import owned_process_state
@@ -336,12 +337,15 @@ class ProjectAttention:
             from ouroboros.store import StoreBusy
             if isinstance(exc, StoreBusy):
                 log.debug("Project attention observation deferred: store busy")
+                self._signature = None
             else:
                 error = (type(exc), str(exc))
                 if error != self._observation_error:
                     log.warning("Project attention observation unavailable: %s", exc)
                 self._observation_error = error
-            self._signature = None  # unknown never proves empty
+                import time
+                self._signature = signature  # only a retry marker, never vacancy
+                self._retry_at = time.monotonic() + self.clock.floor
         finally:
             self._lock.release()
 

@@ -357,6 +357,16 @@ def _golden() -> dict[str, dict]:
 # unavailable. Keep the historical corpus intact and assert the new observed
 # outcome explicitly rather than manufacture old evidence (04-AGENCY S1/S3).
 CURRENT_PRODUCER_CONTRACTS = {"WORLD_SIZE_NOTICE": (False, "ok"),  # the map's size notice rides a successful update_world
+    # New synchronization refusals have no retired-loop golden; declare their
+    # current blocked/error contracts without rewriting historical answers.
+    "CANDIDATE_MERGE_ARGUMENT_BLOCKED": (True, "blocked"),
+    "CANDIDATE_MERGE_UNBOUND_BLOCKED": (True, "blocked"),
+    "CANDIDATE_MERGE_BRANCH_BLOCKED": (True, "blocked"),
+    "CANDIDATE_MERGE_NOT_STARTED_BLOCKED": (True, "blocked"),
+    "CANDIDATE_MERGE_IN_PROGRESS_BLOCKED": (True, "blocked"),
+    "CANDIDATE_MERGE_FAILED": (True, "error"),
+    "GIT_MERGE_CLASSIFICATION_FAILED": (True, "error"),
+    "GIT_PARTIAL_MERGE_BLOCKED": (True, "blocked"),
     # tools/tool_discovery.py `enable_tools`: a load none of which fits the route's schema ceiling;
     # the retired pair never saw it. A physical resource refusal: nothing loaded, every tool stays callable.
     "TOOL_SCHEMA_LIMIT": (True, "resource_constraint_blocked"),

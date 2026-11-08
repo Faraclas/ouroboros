@@ -154,8 +154,9 @@ def test_persistent_observation_fault_warns_once_and_recovers(runtime, monkeypat
     from ouroboros import projects_registry
     root, project, duty, queue, registry = runtime
     original = projects_registry.list_projects
-    fault = {'text': 'registry unavailable'}
+    fault = {'text': 'registry unavailable', 'reads': 0}
     def read(*args, **kwargs):
+        fault['reads'] += 1
         if fault['text']:
             raise ValueError(fault['text'])
         return original(*args, **kwargs)
@@ -165,14 +166,18 @@ def test_persistent_observation_fault_warns_once_and_recovers(runtime, monkeypat
     attention.note_admission(root, ordinary(project))
     for _ in range(4): lap(duty)
     assert not launches.called
+    assert fault['reads'] == 1, 'unchanged persistent error must not repeat expensive reads'
     warnings = lambda: [r for r in caplog.records if r.name == attention.log.name and r.levelname == 'WARNING']
     assert len(warnings()) == 1
     fault['text'] = 'different registry fault'
+    duty._retry_at = 1.0  # controlled shared-floor expiry
     lap(duty)
     assert len(warnings()) == 2
     fault['text'] = ''
+    attention.note_admission(root, ordinary(project, 'later'))  # changed facts bypass the floor
     lap(duty)
     assert launches.call_count == 1
     fault['text'] = 'registry unavailable'
+    duty._retry_at = 1.0
     lap(duty)
     assert len(warnings()) == 3

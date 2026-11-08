@@ -1196,7 +1196,7 @@ def _return_commit_feedback(ctx: ToolContext, message: str, started: float, befo
             note = (event + " while the reviewers ran: this call returned and their paid "
                     "work continues separately; a [Review settled] notice follows the whole wave. " + note)
     if not pending:
-        git_mod.run_cmd(["git", "reset", "HEAD"], cwd=ctx.repo_dir)
+        git_mod.run_cmd(["git", "reset", "HEAD", "--", ":/"], cwd=ctx.repo_dir)
     text = ("Review outcome returned before commit" + (": reviewers are still running. " if pending else ". ") + note + choice +
             "Current files are preserved; no commit, tag or push occurred.\n" + json.dumps({"review_reference": reference,
             "review_outcome": asdict(row) if row is not None else {}}, ensure_ascii=False, default=str))

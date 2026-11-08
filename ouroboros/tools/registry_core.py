@@ -129,6 +129,7 @@ _REPO_MUTATION_TOOLS = frozenset({
     "cherry_pick_pr_commits",
     "stage_adaptations",
     "stage_pr_merge",
+    "candidate_merge",
 })
 _SYSTEM_INTRINSIC_REPO_MUTATION_TOOLS = frozenset({
     "commit_reviewed",
@@ -140,6 +141,7 @@ _SYSTEM_INTRINSIC_REPO_MUTATION_TOOLS = frozenset({
     "cherry_pick_pr_commits",
     "stage_adaptations",
     "stage_pr_merge",
+    "candidate_merge",
 })
 
 

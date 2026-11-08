@@ -126,7 +126,7 @@ EXPECTED_TOOLS = [
     "commit_reviewed", "vcs_read",
     "vcs_pull_ff", "vcs_restore", "vcs_revert",
     "fetch_pr_ref", "create_integration_branch", "cherry_pick_pr_commits",
-    "stage_adaptations", "stage_pr_merge", "vcs_rollback",
+    "stage_adaptations", "stage_pr_merge", "candidate_merge", "vcs_rollback",
     "github_read", "github_write", "pr_merge",
     "codebase_health", "knowledge_read", "knowledge_write", "knowledge_list",
     "chronicle_write", "memory_read", "memory_mark",
