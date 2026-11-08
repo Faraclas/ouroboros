@@ -264,3 +264,45 @@ def test_advanced_merge_preserves_authored_protected_boundary(candidate, monkeyp
     outcome = owner._run_reviewed_stage_cycle(ctx, "Merge", time.time(), paths=["BIBLE.md"])
     assert outcome["block_reason"] == "core_protection_blocked" if authored_edit or not accepted_history or stale_serving else outcome == marker
     assert git(repo, "rev-parse", "MERGE_HEAD") == accepted
+
+
+@pytest.mark.parametrize("action", ["add", "status", "staged-status", "staged-names"])
+@pytest.mark.parametrize("resuming", [False, True])
+def test_staging_git_failure_keeps_publication_and_original_error(candidate, monkeypatch, action, resuming):  # noqa: F811
+    import time
+    from ouroboros.tools import git as owner
+    from ouroboros.tools import git_review_cycle as cycle
+
+    ctx = candidate
+    ctx._review_resume_pending = resuming
+    observed = []
+    monkeypatch.setattr(cycle, "_publish_git_error", lambda _ctx, text: observed.append("publish") or text)
+    monkeypatch.setattr(owner, "_record_commit_attempt", lambda *a, **kw: observed.append("record"))
+
+    def command(argv, **kw):
+        if argv[1] == "rev-parse":
+            return str(ctx.repo_dir / ".git" / "MERGE_HEAD")
+        if argv[1] == "add" and action == "add":
+            raise RuntimeError("primary")
+        if argv[1] == "status":
+            if action == "status":
+                raise RuntimeError("primary")
+            return "M change.py\n"
+        if "--name-status" in argv:
+            if action == "staged-status":
+                raise RuntimeError("primary")
+            return "" if action == "staged-names" else "M\tchange.py\n"
+        if "--name-only" in argv:
+            raise RuntimeError("secondary" if action == "staged-status" else "primary")
+        return ""
+
+    monkeypatch.setattr(owner, "run_cmd", command)
+    paths, snapshot, error = owner._stage_candidate_for_review(
+        ctx, "fixture", time.time(), paths=["change.py"], came_from_detached_checkout=False,
+    )
+    if resuming and action == "add":
+        assert error is None and paths == ["change.py"] and not observed
+    else:
+        assert paths == [] and snapshot is None and error["status"] == "failed"
+        assert error["message"] == f"⚠️ GIT_ERROR ({action}): primary"
+        assert observed == (["publish"] if resuming else ["publish", "record"])

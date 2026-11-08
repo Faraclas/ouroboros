@@ -365,6 +365,8 @@ CURRENT_PRODUCER_CONTRACTS = {"WORLD_SIZE_NOTICE": (False, "ok"),  # the map's s
     "CANDIDATE_MERGE_NOT_STARTED_BLOCKED": (True, "blocked"),
     "CANDIDATE_MERGE_IN_PROGRESS_BLOCKED": (True, "blocked"),
     "CANDIDATE_MERGE_FAILED": (True, "error"),
+    "GIT_MERGE_CLASSIFICATION_FAILED": (True, "error"),
+    "GIT_PARTIAL_MERGE_BLOCKED": (True, "blocked"),
     # tools/tool_discovery.py `enable_tools`: a load none of which fits the route's schema ceiling;
     # the retired pair never saw it. A physical resource refusal: nothing loaded, every tool stays callable.
     "TOOL_SCHEMA_LIMIT": (True, "resource_constraint_blocked"),

@@ -402,6 +402,15 @@ def _stage_candidate_for_review(
     came_from_detached_checkout: bool,
 ) -> tuple[List[str], Optional[List[str]], Optional[Dict[str, Any]]]:
     """Stage the candidate and return its paths without invoking any reviewer."""
+    def git_failure(action: str, exc: Exception):
+        message = _publish_git_error(
+            ctx, f"⚠️ GIT_ERROR ({action}): {_sanitize_git_error(str(exc))}",
+        )
+        error = _git()._review_cycle_infra_failure(
+            ctx, commit_message, commit_start, message,
+        )
+        return [], None, error
+
     if not bool(getattr(ctx, "_review_resume_pending", False)):
         from ouroboros.commit_admission import auto_sync_release_metadata_if_needed
 
@@ -438,16 +447,7 @@ def _stage_candidate_for_review(
         try:
             _git().run_cmd(add_cmd, cwd=ctx.repo_dir)
         except Exception as exc:
-            error = _git()._review_cycle_infra_failure(
-                ctx,
-                commit_message,
-                commit_start,
-                _publish_git_error(
-                    ctx,
-                    f"⚠️ GIT_ERROR (add): {_sanitize_git_error(str(exc))}",
-                ),
-            )
-            return [], None, error
+            return git_failure("add", exc)
         if not paths and not _git()._authorized_managed_update_resolver(ctx):
             removed = _git()._unstage_binaries(ctx.repo_dir)
             if removed:
@@ -455,16 +455,7 @@ def _stage_candidate_for_review(
     try:
         status = _git().run_cmd(["git", "status", "--porcelain"], cwd=ctx.repo_dir)
     except Exception as exc:
-        error = _git()._review_cycle_infra_failure(
-            ctx,
-            commit_message,
-            commit_start,
-            _publish_git_error(
-                ctx,
-                f"⚠️ GIT_ERROR (status): {_sanitize_git_error(str(exc))}",
-            ),
-        )
-        return [], None, error
+        return git_failure("status", exc)
     if not status.strip():
         if came_from_detached_checkout:
             message = (
@@ -489,16 +480,7 @@ def _stage_candidate_for_review(
                 ["git", "diff", "--cached", "--name-only"], cwd=ctx.repo_dir
             )
         except Exception:
-            error = _git()._review_cycle_infra_failure(
-                ctx,
-                commit_message,
-                commit_start,
-                _publish_git_error(
-                ctx,
-                f"⚠️ GIT_ERROR (staged-status): {_sanitize_git_error(str(exc))}",
-            ),
-            )
-            return [], None, error
+            return git_failure("staged-status", exc)
         classification_paths = [
             line.strip() for line in staged_names_raw.splitlines() if line.strip()
         ]
@@ -509,16 +491,7 @@ def _stage_candidate_for_review(
                 ["git", "diff", "--cached", "--name-only"], cwd=ctx.repo_dir
             )
         except Exception as exc:
-            error = _git()._review_cycle_infra_failure(
-                ctx,
-                commit_message,
-                commit_start,
-                _publish_git_error(
-                ctx,
-                f"⚠️ GIT_ERROR (staged-names): {_sanitize_git_error(str(exc))}",
-            ),
-            )
-            return [], None, error
+            return git_failure("staged-names", exc)
         snapshot_paths = [
             line.strip() for line in staged_names_raw.splitlines() if line.strip()
         ] or None

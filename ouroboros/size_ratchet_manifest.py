@@ -177,7 +177,6 @@ BAND_PATHS = {
     "ouroboros/tools/core.py": "D05 ledger split (rows 311-349): read/list and owner-chat delivery spans moved to core_file_tools/core_artifacts; facade re-enters the band from above (2283 -> 1373) and shrinks further when the residual catalog split lands",
     "ouroboros/tools/delegate_integration.py": "One custody binding owner validates delegated authority and retry identity, provisions snapshots, and captures their terminal evidence; the two-line investigation extension keeps that shared binding intact instead of splitting it into a cap-driven helper.",
     "ouroboros/tools/edit_ops.py": "Atomic edit validation, exact replacement and patch application share the same target resolution and mutation receipt.",
-    "ouroboros/tools/git_review_cycle.py": "One staged identity owns merge-content classification, review returns and final commit binding; splitting this pipeline would obscure the shared parent/index contract.",
     "ouroboros/tools/registry_core.py": "ToolRegistry owns the registry class behind the protected facade; guard and dispatch implementations live in sibling leaves.",
     "ouroboros/tools/registry_guards.py": "Keep diagnostic capability enforcement beside the existing shared registry guard; ten additional lines preserve one dispatch boundary without a cap-driven split.",
     "ouroboros/tools/review.py": "D06 F2.3a re-entry by extraction: the multi-model fan-out moved to review_multi_model.py (1550->1269); the remaining single-owner review cycle machinery lands in the 1001-1500 band with headroom",
