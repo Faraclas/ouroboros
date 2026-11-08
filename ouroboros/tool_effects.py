@@ -12,7 +12,8 @@ its arguments) is ``write``.
 
 Consumers: the Advises refusal (``place_guard``), Silent/Paused refusal of
 writes aimed at a place (``place_guard``), and the Supervisor (``safety``:
-declared reads skip Light/Full checks; ``message`` gets the speech semantics).
+declared reads skip checks; reviewed ``safety_policy`` may skip local writes,
+    never ``message`` checks or host controls).
 Built-in tools are governed by their own policy tables and answer ``""``.
 """
 
@@ -38,6 +39,7 @@ class ToolEffect:
     to/cc/bcc. ``conversation``/``thread`` name the arguments that address a
     conversation, when the connector declared them. ``declared`` is False when
     the effect is the default (no declaration, MCP, unreadable manifest).
+    ``safety_policy`` is independent reviewed assessment policy, not access.
     """
 
     effect: str
@@ -47,6 +49,7 @@ class ToolEffect:
     declared: bool = False
     source: str = ""
     annotations: Mapping[str, Any] = field(default_factory=dict)
+    safety_policy: str = ""
 
 
 BUILTIN = ToolEffect(effect="", source="builtin")
@@ -137,6 +140,7 @@ def effect_of(name: str, *, ext_tool: Any = None, is_mcp: bool = False, ctx: Any
         targets=_argument_names(row.get("target")),
         conversation=row.get("conversation") if isinstance(row.get("conversation"), str) else "",
         thread=row.get("thread") if isinstance(row.get("thread"), str) else "",
+        safety_policy=row.get("safety_policy") if row.get("safety_policy") in ("skip", "check") else "",
     )
 
 

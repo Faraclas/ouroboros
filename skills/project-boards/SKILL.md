@@ -1,7 +1,7 @@
 ---
 name: project-boards
 title: Project Work Items
-version: 0.1.1
+version: 0.1.2
 type: extension
 plugin_api: '2.0'
 entry: plugin.py
@@ -19,10 +19,13 @@ tools:
     effect: read
   - name: board_capture
     effect: write
+    safety_policy: skip
   - name: board_update
     effect: write
+    safety_policy: skip
   - name: board_comment
     effect: write
+    safety_policy: skip
 ---
 
 # Project Work Items
@@ -31,7 +34,7 @@ Shared Work Items preserve ideas, intended outcomes, discussion and informationa
 
 Saving, commenting, editing or linking never starts, steers, pauses, resumes or reorders agent work. Existing durable inspectable workflow records establish execution reality. The skill stores task/row/HTTP references, not copied task results or live status; the personal client reads existing public workflow APIs under its own session. Other agents use their existing authorized workflow readers.
 
-Agent attribution uses the host's actual ToolContext task/project identity, not author arguments. HTTP mutations are labelled via Interface/API, not a separately authenticated person. Cross-project maintenance is intentional; source project is attribution, not an exclusive permission fence. Existing tool, actor, Presence, Safety and owner controls remain applicable.
+Agent attribution uses the host's actual ToolContext task/project identity, not author arguments. HTTP mutations are labelled via Interface/API, not a separately authenticated person. Cross-project maintenance is intentional; source project is attribution, not a permission fence. Reviewed capture/update/comment skip model Safety as local bookkeeping, retaining effect=write and actual actor/Place/grant/Stop guards. CAS edits may replace prose; Done records judgment, never reviewer PASS or execution.
 
 Data lives in the extension's private state directory, separately from project metadata and source files. Closing/reopening a project does not remove its items. Removing/uninstalling this skill may remove its state; export the board first. The export route and exact API/verification instructions are documented in BACKEND.md.
 

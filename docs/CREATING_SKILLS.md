@@ -955,10 +955,12 @@ contributes:
     settings: connection       # optional id passed to api.register_settings_section
 ```
 
-- `effect` is one fact with three consumers: Advises (autonomy) refuses everything but a declared read; a Silent or
-  Paused place refuses `message` and `write` aimed at it; the Safety Supervisor skips declared reads at Light/Full and
-  gives `message` its speech semantics (a flagged message returns to the mind; the identical re-issue is sent and
-  recorded). A tool that reads or writes depending on its arguments is `write`. MCP tools are always `write`.
+- `effect` governs autonomy and place access: Advises permits only declared reads; Silent/Paused refuses targeted
+  messages/writes. Mixed tools are `write`; MCP always is. Safety skips declared reads and retains message checks.
+- Optional per-tool `safety_policy: skip | check` is reviewed with the payload; absent/invalid means ordinary checking.
+  `skip` suits local bookkeeping whose implementation needs no model assessment, not unreviewed network/destructive
+  effects. It never overrides message checks, Place/resource/readonly/Stop guards, grants or revision readiness.
+  Only the published handler generation supplies policy; edited files and MCP hints cannot grant it.
 - `target`/`conversation`/`thread` let the host attribute a call to one place; a write it cannot attribute is held
   while any place of that connector is Silent or Paused, and the refusal says so.
 - `icon` is reduced at staging to viewBox and geometry (path, circle, ellipse, line, polyline, polygon, rect, g),

@@ -575,7 +575,21 @@ def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, 
             _PRIOR_VERDICTS.move_to_end(root)
         earlier = list(history.values())
         omitted_safe = getattr(history, "omitted_safe", 0)
+    assignment = {"author": metadata.get("objective_author") or {"kind": "unknown"}, "authority": "intent_only"}
+    contract = getattr(ctx, "task_contract", None) or {}
+    for key in ("objective", "expected_output", "constraints", "context"):
+        value = contract.get(key)
+        if not isinstance(value, str):
+            continue
+        duplicate = next(({"occasion_source_index": i, "field": field}
+                          for i, row in enumerate(sources) if isinstance(row, dict)
+                          for field in ("content", "owner_text") if row.get(field) == value), None)
+        if duplicate is None:
+            assignment[key] = value
+        else:
+            assignment.setdefault("source_references", {})[key] = duplicate
     bundle = {
+        "assignment": assignment,
         "work": {"kind": kind, "label": "your work" if kind == "owner" else "consciousness",
                  "root_task_id": _root_id(ctx), "task_id": getattr(ctx, "task_id", ""), "runtime_mode": _runtime_mode(ctx),
                  "consciousness_autonomy": metadata.get("consciousness_autonomy")},
@@ -1223,6 +1237,7 @@ def check_safety(
     python_resolution: Optional[Any] = None,
     resolved_binding: Optional[Any] = None,
     declared_policy: str = "",
+    ext_tool: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, str]:
     """Return ``(allowed, warning_or_error)`` for one tool call.
 
@@ -1235,13 +1250,17 @@ def check_safety(
     policy = TOOL_POLICY.get(tool_name) or (declared if declared in POLICY_VALUES else DEFAULT_POLICY)
 
     from ouroboros.tool_effects import effect_of
-    effect = effect_of(tool_name, ctx=ctx, is_mcp=tool_name.startswith("mcp_"))
+    effect = effect_of(tool_name, ctx=ctx, ext_tool=ext_tool, is_mcp=tool_name.startswith("mcp_"))
     speech = tool_name == "place_reply" or effect.effect == "message"
     if tool_name == "manage_schedules" and arguments.get("action") in {"create", "update", "restore"}:
         policy = POLICY_CHECK
     if effect.declared and effect.effect == "read":
         _emit_durable_safety_event(ctx, {"type": "safety_declared_read_skip", "tool": tool_name,
                                         "reason": "reviewed tool declaration: read", "source": effect.source})
+        return True, ""
+    if effect.safety_policy == POLICY_SKIP and not speech:
+        _emit_durable_safety_event(ctx, {"type": "safety_declared_policy_skip", "tool": tool_name,
+                                       "reason": "reviewed tool declaration: skip", "source": effect.source})
         return True, ""
     if policy == POLICY_SKIP and not speech:
         return True, ""
