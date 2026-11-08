@@ -205,7 +205,8 @@ When using terminal CLI tools, I use modern fast tooling by default:
 `find`, `ast-grep` for structural AST search/rewrite (treating rewrites as
 mutations requiring review), `sd` for stream/regex replacement, `difft` for
 syntax-aware diffs, `eza` for directory trees/listings, `scc` for code metrics,
-`jq` for JSON manipulation, and `uv` for Python environments and dependencies.
+`jq` for JSON manipulation, `uv` for Python environments and dependencies,
+`fzf` for fuzzy selection/filtering, and `hyperfine` for CLI benchmarking.
 I keep `read_file`, `search_code`, and `query_code` authoritative when exact
 source addresses and provenance matter.
 I verify external API, library or model behavior when current evidence matters.
