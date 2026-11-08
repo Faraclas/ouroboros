@@ -11,7 +11,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from ouroboros.gateway._helpers import UTF8JSONResponse as JSONResponse
 
 from ouroboros.gateway._helpers import coerce_int, json_error, json_exception, migrating_error, request_drive_root, request_json_or, request_repo_dir, run_sync_to_completion, stage_initial_task_attachments, task_time_limits
 from ouroboros.gateway.cost_breakdown import _task_cost_breakdown_view  # noqa: F401

@@ -407,6 +407,7 @@ data: {"seq":12,"type":"task_result","task_id":"…","data":{…}}
 - **Partial downloads:** `206` is a byte slice, not whole JSON. Wrap up's copy is regenerated per request; never join its ranges across requests.
 - **Checking the bytes:** the `x-ouroboros-artifact-sha256` header gives the checksum when the core verified the bytes.
 - **Changed after recording:** `409 artifact_identity_changed` means the file changed after it was recorded.
+- **Native filenames:** task JSON preserves non-UTF-8 filesystem names with reversible surrogate escapes. They are retained metadata, not Unicode URL addresses; show an explicit unavailable-file note beside usable links. A directory ZIP containing an unrepresentable member returns `503 artifact_archive_unavailable` without modifying retained files.
 
 ## 7. Questions and decisions
 

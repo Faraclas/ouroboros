@@ -32,7 +32,7 @@ import pathlib
 import stat
 from typing import Any, Dict, List
 
-from ouroboros.utils import sanitize_tool_result_for_log, truncate_review_artifact
+from ouroboros.utils import json_dumps, sanitize_tool_result_for_log, truncate_review_artifact
 from ouroboros.observability import stamp_finalization_enqueue
 
 log = logging.getLogger(__name__)
@@ -486,7 +486,7 @@ def build_completion_observations(drive_root: Any, task: Dict[str, Any], trace: 
                   "skill_state_omitted": max(0, len(skills) - _COMPLETION_SKILL_PREVIEW_ROWS)}
     if not deliveries and not skills:
         return projection  # no full action record to store for an ordinary empty turn
-    raw = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    raw = json_dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     try:
         projection["source_ref"] = store_actor_source_bytes(
             task.get("budget_drive_root") or drive_root, str(task.get("id") or ""),
