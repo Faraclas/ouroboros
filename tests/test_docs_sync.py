@@ -219,6 +219,9 @@ PROMPT_NON_TOOL_IDENTIFIERS = frozenset({
     "cyber_pro",
     # package managers / interpreters named as acquisition or process choices
     "pip", "pip3", "uv", "brew", "apt", "python", "python3", "sudo", "grep", "env",
+    # Explicit terminal CLI choices, not ToolRegistry function names. Keep the
+    # lexical audit strict so an unclassified phantom still fails.
+    "rg", "rga", "fd", "find", "sd", "difft", "eza", "scc", "jq", "fzf", "hyperfine",
     # git branches / remotes / skill buckets / write surfaces named as policy
     "ouroboros", "main", "managed", "origin", "external", "genesis", "deliverables",
     # fenced-block languages the owner chat renders natively
@@ -248,6 +251,16 @@ def _prompt_bare_identifiers(text: str) -> set:
         m.group(1)
         for m in re.finditer(r"(?<![\w/.`-])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(?![\w/.`-])", text)
     }
+
+
+def test_shell_cli_classification_keeps_unknown_tools_visible():
+    cli = {"rg", "rga", "fd", "find", "sd", "difft", "eza", "scc", "jq", "fzf", "hyperfine"}
+    text = " ".join(f"`{name}`" for name in cli | {"phantom_tool", "phantom"})
+    assert _prompt_backticked_identifiers(text) - PROMPT_NON_TOOL_IDENTIFIERS == {"phantom_tool", "phantom"}
+
+
+def test_prompt_name_scan_preserves_paths_and_call_spellings():
+    assert _prompt_backticked_identifiers("`run_command(cmd)` `tools/phantom.py` `ast-grep` `unknown_tool`") == {"run_command", "unknown_tool"}
 
 
 def test_prompt_tool_names_resolve_to_registered_tools(tmp_path):
