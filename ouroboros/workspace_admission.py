@@ -327,16 +327,21 @@ def compose_workspace_block(
     memory_mode: str,
     workspace_preflight: dict,
 ) -> str:
-    """The ``[HEADLESS_WORKSPACE]`` guidance block both admission surfaces embed in the
-    task text (SSOT — previously gateway-only, so promoted room tasks ran with no
-    workspace context at all). Returns the inner lines WITHOUT the wrapper markers."""
+    """Workspace orientation shared by gateway, promotion and scheduled admission.
+
+    A folder supplies defaults, not task authority. Explicit scope stays in the
+    owner's words and task/resource contracts; this renderer neither widens nor
+    narrows it. Returns inner lines without the wrapper markers.
+    """
     from ouroboros.workspace_preflight import render_workspace_preflight_summary
 
     return (
         f"workspace_root: {workspace_root}\n"
         f"workspace_mode: {workspace_mode or 'external'}\n"
         f"memory_mode: {memory_mode}\n"
-        "Use read_file, write_file, list_files, search_code, vcs_read, and run_command against this target workspace, not the Ouroboros system repo.\n"
+        "This workspace is the default target for file, VCS and process tools. "
+        "Use explicit root/cwd selectors for other task-authorized resources, including system_repo for authorized Ouroboros self-maintenance. "
+        "A workspace binding does not grant access or override explicit owner, task or resource restrictions.\n"
         f"{render_workspace_preflight_summary(workspace_preflight)}\n"
         "Before editing, account for target-repo docs or root-level instructions if present.\n"
         "Project-local dependency installs are allowed in external workspace tasks; system/global installs are for runtime_mode=pro or cyber_pro and must be noninteractive.\n"

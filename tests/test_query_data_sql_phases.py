@@ -17,12 +17,12 @@ import time
 import pytest
 
 from ouroboros import query_data_sql as sql, store, store_import, usage_store
-from ouroboros.tools.registry import ToolContext, ToolRegistry
 
 
 @pytest.fixture
 def money(tmp_path, request, monkeypatch):
     from ouroboros import platform_layer
+    from ouroboros.tools.registry import ToolContext
     journal = getattr(request, "param", None)
     if journal == "name":
         monkeypatch.setattr(platform_layer, "kernel_file_locks_enforced", lambda *_a, **_k: False)
@@ -40,6 +40,8 @@ def money(tmp_path, request, monkeypatch):
 
 
 def call(ctx, query="SELECT count(*) FROM attempts", **kwargs):
+    from ouroboros.tools.registry import ToolRegistry
+
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry.set_context(ctx)
     result = registry.execute_result("query_data", dict(op="sql", db="money", query=query, **kwargs))
@@ -292,6 +294,8 @@ def test_parent_kills_uninterruptible_sql_at_operation_deadline(money, monkeypat
 
 
 def test_current_snapshot_copy_uses_source_bound_not_full_operation_budget(money, monkeypatch):
+    from ouroboros.tools.registry import ToolRegistry
+
     children, directories, trace = instrument(money, monkeypatch, "stall_copy")
     registry = ToolRegistry(repo_dir=money.repo_dir, drive_root=money.drive_root)
     registry.set_context(money)
@@ -332,6 +336,7 @@ def test_response_margin_follows_source_release_and_holds_nothing(money, monkeyp
 @pytest.mark.parametrize("journal", ["PERSIST", "name", "WAL"])
 def test_snapshot_query_releases_source_before_check_and_writer_progresses(tmp_path, monkeypatch, journal):
     from ouroboros import platform_layer
+    from ouroboros.tools.registry import ToolContext
     tier = store.TIER_NAME if journal == "name" else store.TIER_ENFORCED
     if journal == "WAL" and store._journal_mode(tmp_path, tier) != "WAL":
         pytest.skip("this SQLite/filesystem does not support the store's WAL policy")
@@ -363,6 +368,7 @@ def test_snapshot_query_releases_source_before_check_and_writer_progresses(tmp_p
 
 def test_real_name_lock_acquisition_deadline_releases_guard(tmp_path, monkeypatch):
     from ouroboros import platform_layer
+    from ouroboros.tools.registry import ToolContext
     monkeypatch.setattr(platform_layer, "kernel_file_locks_enforced", lambda *_a, **_k: False)
     usage_store.migrate_from_journal(tmp_path)
     store_import.ensure_current_store(tmp_path, with_children=False)
@@ -379,6 +385,8 @@ def test_real_name_lock_acquisition_deadline_releases_guard(tmp_path, monkeypatc
 
 
 def test_money_sql_preserves_limits_and_authorizer_before_outer_select(money):
+    from ouroboros.tools.registry import ToolRegistry
+
     for query in ("ATTACH DATABASE ':memory:' AS other", "DELETE FROM attempts", "PRAGMA query_only=OFF",
                   "SELECT load_extension('none')", "SELECT 1; SELECT 2"):
         result = call(money, query)
@@ -459,3 +467,14 @@ def test_money_admission_narrows_every_wait_to_remaining_operation_time(tmp_path
     finally:
         store.close_connections_under(tmp_path)
         usage_store.forget(tmp_path)
+
+
+def test_instrument_import_does_not_load_parent_registry():
+    """The timed SQL child imports only its instrument, not the parent registry."""
+    import subprocess
+
+    probe = subprocess.run([sys.executable, "-c",
+        "import sys; import tests.test_query_data_sql_phases; "
+        "assert 'ouroboros.tools.registry' not in sys.modules"],
+        cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, timeout=30)
+    assert probe.returncode == 0, probe.stderr

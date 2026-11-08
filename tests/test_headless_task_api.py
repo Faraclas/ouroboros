@@ -120,7 +120,8 @@ def test_task_api_enqueue_workspace_creates_child_drive(tmp_path, monkeypatch):
     assert result["metadata"]["workspace_preflight"]["git"]["head"] == ""
     assert any(item["kind"] == "workspace_preflight" for item in result["artifacts"])
     assert "workspace_preflight:" in captured[0]["text"]
-    assert "target workspace, not the Ouroboros system repo" in captured[0]["text"]
+    assert "default target" in captured[0]["text"]
+    assert "does not grant access or override" in captured[0]["text"]
 
 
 def test_task_api_admission_refusal_is_terminal_not_scheduled_phantom(tmp_path, monkeypatch):
