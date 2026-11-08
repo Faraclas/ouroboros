@@ -13,7 +13,7 @@ import {
     waitingModel,
 } from '../modules/project_activity.js';
 import { MARK_SHAPES } from '../modules/status_mark.js';
-import { clock } from '../modules/work_status.js';
+import { clock, roomStatusView } from '../modules/work_status.js';
 import { SERVER_CASES } from './work_fixture.js';
 
 // One server body whose case room is re-keyed to a Project chat id.
@@ -105,7 +105,7 @@ test('a complete ready body clears absent rooms; a partial, unready or unavailab
         const next = reconcileProjectRooms(first.rooms, data);
         assert.equal(next.complete, false, JSON.stringify(data));
         assert.deepEqual(next.rooms.get('42'), { mark: 'ring', owner: false, word: 'Activity unconfirmed', note: '',
-            label: 'Activity unconfirmed' }, 'kept, unconfirmed: a ring, never the owner\'s move it cannot see');
+            label: 'Activity unconfirmed', tone: 'unknown' }, 'kept, unconfirmed: a ring, never the owner\'s move it cannot see');
     }
     const empty = reconcileProjectRooms(first.rooms, { supervisor_ready: true, works: [], rooms: {}, works_complete: true });
     assert.equal(empty.rooms.size, 0);
@@ -169,4 +169,19 @@ test('model waits use the existing current-attempt rule (Activity reads it)', ()
     // A malformed wait row (no id, revision or reason) is dropped exactly as the chat card drops it.
     assert.deepEqual(waitingModel({ task_attempt: 1, model_waits: { w: { state: 'waiting', task_attempt: 1,
         requires_owner_action: true } } }), { waiting: false, ownerAction: false });
+});
+
+test('sidebar name tone follows the same room projection as the chat header', () => {
+    for (const [name, served] of Object.entries(SERVER_CASES)) {
+        const room = Object.values(served.rooms)[0];
+        assert.equal(summary(name).tone, roomStatusView({ room, works: served.works }).tone, name);
+    }
+    const first = reconcileProjectRooms(new Map(), body('held_continue'));
+    assert.equal(first.rooms.get('42').tone, 'live');
+    const paused = reconcileProjectRooms(first.rooms, body('paused_by_owner'));
+    assert.equal(paused.rooms.get('42').tone, 'held');
+    const missing = reconcileProjectRooms(paused.rooms, { rooms: {}, works: [], works_complete: false });
+    assert.equal(missing.rooms.get('42').tone, 'unknown');
+    const idle = reconcileProjectRooms(missing.rooms, { rooms: {}, works: [], works_complete: true, supervisor_ready: true });
+    assert.equal((idle.rooms.get('42') || IDLE_SUMMARY).tone, 'online');
 });

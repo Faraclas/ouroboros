@@ -83,7 +83,10 @@ def test_native_agent_returns_durable_result_before_synthesis_and_retry_reuses_i
             # Synthesis stays held until the test releases it: the first turn must answer
             # within 10 s of synthesis starting, so a turn that waits on it fails; the other
             # timeouts only bound a hung test (Windows needs over 3 s to reach `started`).
-            assert started.wait(30)
+            assert started.wait(30), (
+                f"synthesis did not enter; first_done={first_future.done()} stages={stages!r}; "
+                f"first_error={first_future.exception() if first_future.done() else 'still running'!r}"
+            )
             first = first_future.result(timeout=10)
             assert first.outcome == outcome
             assert first.text == ("Reply" if outcome == "message" else "")

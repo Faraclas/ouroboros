@@ -306,7 +306,7 @@ def test_direct_project_model_wait_census_reaches_js_and_resumes(
         assert work["because"][0]["code"] == ("model_access" if owner_acts else "model_wait")
         note = "Something here waits for you" if owner_acts else ""
         assert _js_project_summary(waiting_body, task["chat_id"]) == {
-            "mark": "still", "owner": owner_acts, "word": "Waiting", "note": note,
+            "mark": "still", "owner": owner_acts, "word": "Waiting", "note": note, "tone": "held",
             "label": " · ".join(filter(None, ["Waiting", work["because"][0]["text"], note])),
         }
 

@@ -376,8 +376,10 @@ test('the one mark after the word is the room\'s shape, the owner\'s amber dot i
         assert.deepEqual(paint(roomStatusView(inRoom('paused', action))), ['held', 'dot', 'owner', 'Something here waits for you']);
         // The word already says it: the amber dot beside the amber word, and no note repeats it.
         assert.deepEqual(paint(roomStatusView(inRoom('waiting', question))), ['wait', 'dot', 'owner', '']);
-        // At rest the room says Online beside its green dot; the client's own facts lay their marks over the room.
-        assert.deepEqual(paint(roomStatusView(emptyWorkState())), ['online', 'dot', 'ok', '']);
+        // Online is readiness in ordinary ink, not green computation; client facts still overlay the room.
+        assert.deepEqual(paint(roomStatusView(emptyWorkState())), ['online', 'dot', 'ink', '']);
+        assert.ok(readFileSync(new URL('../room_work.css', import.meta.url), 'utf8').includes(
+            '.rw-trigger[data-tone="online"] { color: var(--text-primary); }'));
         assert.deepEqual(paint(roomStatusView(inRoom('working', question), { connected: false })), ['offline', 'ring', 'ink', '']);
         assert.deepEqual(paint(roomStatusView(emptyWorkState(), { ready: false })), ['starting', 'hidden', 'ink', '']);
         assert.deepEqual(paint(roomStatusView(emptyWorkState(), { sending: true })), ['live', 'moving', 'ink', '']);

@@ -95,14 +95,14 @@ html[data-layout="docked"] .chat-page-header .app-page-title-row {
 .rw-trigger[data-word="off"] .status-badge { display: none; }
 /* (0,5,0) outranks the light theme's connection colours (0,4,0): the tone below owns the word's ink. */
 :root .rw-trigger[data-tone] .status-badge.status-badge { color: inherit; }
-/* Tones (one producer, work_status.roomStatusView): crimson is live work, amber only the owner's own question, green
-   the room at rest; a pause, an access wait, a hold, starting and reconnecting are neutral facts. The mark after the
-   word takes the word's ink. */
+/* roomStatusView owns tones; room_activity.css applies the owner's green live/amber wait treatment.
+   Idle Online means readiness, not computation, and keeps ordinary ink (owner 8 November 2026).
+   The mark after the word takes the word's ink. */
 .rw-trigger[data-tone="live"] { color: var(--accent-light); }
 .rw-trigger[data-tone="wait"] { color: var(--status-warn-fg); }
 .rw-trigger:is([data-tone="queued"], [data-tone="held"], [data-tone="starting"]) { color: var(--text-meta); }
 .rw-trigger[data-tone="unknown"] { color: var(--status-neutral-fg); }
-.rw-trigger[data-tone="online"] { color: var(--status-ok-fg); }
+.rw-trigger[data-tone="online"] { color: var(--text-primary); }
 .rw-trigger[data-tone="offline"] { color: var(--text-secondary); }
 /* The whole title capsule opens the work list; its state layer covers that same target. */
 .app-page-title-row:has(> .rw-trigger:not(:disabled):not([hidden])) { cursor: pointer; transition: var(--motion-tone); }

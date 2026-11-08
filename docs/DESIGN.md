@@ -802,7 +802,7 @@ Two shapes carry a tone, and they are not interchangeable:
 - **A status sentence** — `.ui-status[data-tone]`. Foreground only, rendered as
   dot + text. Filling it would turn every inline status into a badge and make
   "connected" the loudest thing on the panel. A room's status beside its title is
-  its word and status mark (the sentence's own green dot only at rest), with a caret
+  its word and status mark (a neutral dot at rest), with a caret
   when it opens, never a filled chip.
 - **A status chip** — `.ui-chip[data-tone]`. The full triple, because the chip
   *is* the status and has nothing else to carry it.
@@ -863,8 +863,8 @@ status sentence's or a composer chip's dot is its tone, §4).
   dots then stand at full strength, apart from the still ones. A mark that changes
   shape on a live chip keeps the moving dots' width, so the word beside it never
   moves. A status sentence's own dot (`.ui-status`, Settings sentences) is drawn by
-  its CSS at the same 7 px in the same hues; a room at rest says `Online` beside the
-  shared mark's green dot. Both speak only at rest.
+  its CSS at the same 7 px in the same hues; idle `Online` and its dot use ordinary
+  ink, not green work (owner 8 November 2026).
 - **Amber is the owner's attention and nothing else:** (1) the owner's move — a
   question, or what only the owner can do: sign in, a spending limit, Resume after a
   restart, crash or Panic, grant access, a skill review that must run first, local
@@ -1356,8 +1356,8 @@ working, then queued, waiting, paused, and its mark is the server's status mark
 (Status marks): moving dots while anything in it runs (a paused work's finishing review too), still dots while it queues or waits on
 something that ends by itself, two bars while paused, a faint ring when
 unconfirmed. While something waits for the owner the amber dot replaces that shape
-beside the room's word; a Pause is not the owner's turn. At rest `Online` keeps its
-green dot, a status sentence's own. Only what the client alone knows lies over the
+beside the room's word; a Pause is not the owner's turn. At rest `Online` and its
+dot keep ordinary ink. Only what the client alone knows lies over the
 server's mark: `Reconnecting…` (a ring), the owner's own unconfirmed send and the
 owner's own Stop press (moving), and `Starting…` with the boot phases that refine it
 (no mark). The transcript's typing bubble shows only while the room's work moves and

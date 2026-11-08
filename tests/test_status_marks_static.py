@@ -23,13 +23,15 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 WEB = REPO_ROOT / "web"
 CATEGORIES = ("owner", "warning", "system", "data", "palette", "activity")
 ACTIVITY_AMBER = {
+    '.nav-project-row:is([data-tone="queued"], [data-tone="held"], [data-tone="wait"]) > .nav-row-label',
     '.rw-trigger:is([data-tone="queued"], [data-tone="held"], [data-tone="wait"])',
     '.rw-row:is([data-activity="queued"], [data-activity="waiting"], [data-activity="paused"]) > .rw-main :is(.rw-name, .rw-state)',
 }
 
 # category | sheet | [at-rule context » ]selector | properties
 AMBER_REGISTRY = """
-# Owner-approved activity-list words; these are recorded waits, not owner-action marks or warnings.
+# Owner-approved activity words and matching sidebar names: recorded waits, not owner-action marks or warnings.
+activity | web/room_activity.css | .nav-project-row:is([data-tone="queued"], [data-tone="held"], [data-tone="wait"]) > .nav-row-label | color
 activity | web/room_activity.css | .rw-trigger:is([data-tone="queued"], [data-tone="held"], [data-tone="wait"]) | color
 activity | web/room_activity.css | .rw-row:is([data-activity="queued"], [data-activity="waiting"], [data-activity="paused"]) > .rw-main :is(.rw-name, .rw-state) | color
 # Account usage can paint warning through aliases; unknown/loading remains neutral.

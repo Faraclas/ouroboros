@@ -7,7 +7,7 @@
 // previous projection when reconciling an incomplete body.
 
 import { activeModelWaits, mergeModelWaits } from './model_wait.js';
-import { activityWord, amberNote, roomAmber, roomSpeaker, workLine } from './work_status.js';
+import { activityWord, amberNote, roomAmber, roomSpeaker, roomStatusView, workLine } from './work_status.js';
 import { tr } from './i18n.js';
 
 /** Whether a census row's own model waits are current, and whether one needs the owner (Activity reads the same rule). */
@@ -22,7 +22,7 @@ export function waitingModel(row) {
 }
 
 /** A room with nothing to show. */
-export const IDLE_SUMMARY = Object.freeze({ mark: 'none', owner: false, word: '', note: '', label: '' });
+export const IDLE_SUMMARY = Object.freeze({ mark: 'none', owner: false, word: '', note: '', label: '', tone: 'online' });
 // The shapes from the strongest: work that moves, a queue or a wait that ends by itself, a pause, an unconfirmed ring.
 export const MARK_RANK = Object.freeze(['moving', 'still', 'pause', 'ring', 'none']);
 
@@ -40,13 +40,14 @@ export function summarizeRoom(room, works = []) {
     const speaker = roomSpeaker(room, works, word);
     const line = speaker ? workLine(speaker, word) : '';
     const note = amberNote(roomAmber(room));
-    return { mark, owner: Boolean(room.amber), word, note, label: [word, line, note].filter(Boolean).join(' · ') };
+    const tone = roomStatusView({ room, works }).tone;
+    return { mark, owner: Boolean(room.amber), word, note, label: [word, line, note].filter(Boolean).join(' · '), tone };
 }
 
 // A room an incomplete or unavailable body did not list again: still shown, never as confirmed work.
 const unconfirmed = () => {
     const word = activityWord({ activity: 'unknown' });
-    return { mark: 'ring', owner: false, word, note: '', label: word };
+    return { mark: 'ring', owner: false, word, note: '', label: word, tone: 'unknown' };
 };
 
 /**

@@ -1,6 +1,9 @@
 /* On-demand colour/history treatment; host facts still own state and controls. */
 .rw-trigger[data-tone="live"] { color: var(--status-ok-fg); }
 .rw-trigger:is([data-tone="queued"], [data-tone="held"], [data-tone="wait"]) { color: var(--status-warn-fg); }
+/* Names share the header's room tone; selection, marks and unread keep their own channels. */
+.nav-project-row[data-tone="live"] > .nav-row-label { color: var(--status-ok-fg); }
+.nav-project-row:is([data-tone="queued"], [data-tone="held"], [data-tone="wait"]) > .nav-row-label { color: var(--status-warn-fg); }
 .rac-composition, .rac-history-note, .rac-gap { margin: 0; padding: var(--space-2) var(--space-3); font-size: var(--type-meta); line-height: var(--line-meta); color: var(--text-secondary); overflow-wrap: anywhere; }
 .rac-history-note { border-top: 1px solid var(--divider); }
 .rac-history-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-2) var(--space-3); }

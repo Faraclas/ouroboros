@@ -41,8 +41,8 @@ const clean = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
 const listOf = (value) => (Array.isArray(value) ? value : []);
 const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
 let sequence = 0;
-// A status sentence's own dot speaks only at rest: the room at rest says Online beside its green dot.
-const AT_REST = Object.freeze({ shape: 'dot', hue: 'ok' });
+// The at-rest dot and Online word use ordinary ink: readiness is not active computation.
+const AT_REST = Object.freeze({ shape: 'dot', hue: 'ink' });
 
 /** The latest represented root card: the newest unfinished one, else the newest of all. */
 export function latestRepresentedRoot(records = []) {
@@ -839,7 +839,7 @@ export function createRoomWork({
         // The work's shape in the word's ink; while something in the room waits for the owner (a question, or an action
         // only the owner takes) the amber dot takes its place and the word keeps its own ink: Working with a question
         // elsewhere stays Working. A pause by the owner or by Ouroboros is not the owner's move. The room at rest says
-        // Online beside its green dot.
+        // Online beside its neutral dot.
         const owner = statusBadge.dataset.owner === '1';
         const reshaped = paintStatusMark(mark, tone === 'online' && !owner ? AT_REST : markView({ mark: statusBadge.dataset.mark, owner }));
         // The owner's move said in words too, where the word does not already say it.

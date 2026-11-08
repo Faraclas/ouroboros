@@ -1078,6 +1078,7 @@ function patchProjectActivityMarkers(activityIndex = projectActivityIndex) {
         for (const button of buttons.get(String(row.id)) || []) {
         const summary = activityIndex.byChat.get(String(row.chat_id)) || IDLE_SUMMARY;
         const deleting = String(row.lifecycle || 'active') === 'deleting';
+        button.dataset.tone = deleting ? 'unknown' : summary.tone;
         const unreadRow = Boolean(row._unread) && !deleting;
         button?.toggleAttribute('data-unread', unreadRow);
         // A deleting row draws only `Deleting…`; its census fact stays in its name.
