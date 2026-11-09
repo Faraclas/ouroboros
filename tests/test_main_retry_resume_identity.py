@@ -47,7 +47,7 @@ def _project_retry(host, tmp_path, monkeypatch, clock, reaper):
     return retry
 
 
-def _park_retry(host, monkeypatch, *, reason="budget", child=True):
+def _park_retry(host, monkeypatch, *, reason="budget", child=True, maintenance=False):
     [running] = _assign(host, monkeypatch)
     if child:
         member = queue.enqueue_task({"id": "held-child", "type": "task", "text": "child work",
@@ -65,7 +65,8 @@ def _park_retry(host, monkeypatch, *, reason="budget", child=True):
     if reason == "owner":
         from supervisor.owner_pause_control import request_owner_pause
 
-        assert request_owner_pause(running["id"], request_id="retry-owner-pause")["ok"]
+        assert request_owner_pause(running["id"], request_id="retry-owner-pause",
+                                   resume_after_restart=maintenance)["ok"]
     with pytest.raises(budget_pause.BudgetPauseRequested) as raised:
         if reason == "owner":
             budget_pause.enter_owner_pause(limit)
@@ -208,3 +209,16 @@ def test_interrupted_member_resume_uses_the_existing_root_actor_boundary(
     expected = None if identity in {"child", "unreadable-chain"} else False
     assert interrupted_member_resume(host.root, "held", task_id, attempt=retry["_attempt"]) is expected
     assert reads == (["held-child"] if identity == "child" else [])
+
+
+def test_maintenance_return_selects_physical_retry_under_logical_root(host, tmp_path, monkeypatch, clock, reaper):
+    from supervisor import maintenance_return
+    retry = _project_retry(host, tmp_path, monkeypatch, clock, reaper)
+    parked = _park_retry(host, monkeypatch, reason="owner", child=False, maintenance=True)
+    assert parked["id"] == retry["id"] != "held"
+    monkeypatch.setattr(maintenance_return, "_PROCESS_GENERATION", "a-new-boot")
+    result = maintenance_return.resume_maintenance_pauses(host.root)
+    assert len(result) == 1 and result[0]["ok"], result
+    assert result[0]["task_id"] == retry["id"]
+    assert parked["_budget_pause_resume"]["pause"]["root_task_id"] == "held"
+    assert "_budget_pause" not in parked

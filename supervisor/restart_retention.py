@@ -927,6 +927,10 @@ def recover_saved_running(rows: Iterable[Dict[str, Any]], drive_root: Any, *,
 def hold_stopped_queue(task: Dict[str, Any], drive_root: Any, cause: str) -> Dict[str, Any]:
     """Boot after a holding stop: accepted, never-started work waits for Resume at any age."""
     from supervisor.events_budget import HOLD_SAVED_WORK, hold_budget_row
+    from supervisor.maintenance_return import pending_maintenance
+
+    if cause == "app_stop" and pending_maintenance(task, drive_root):
+        return task  # its explicit closed maintenance fence, not a NEW indefinite stop
 
     hold_budget_row(task, reason=HOLD_SAVED_WORK, result_root=pathlib.Path(task.get("budget_drive_root") or drive_root),
                     existing_result_only=True,

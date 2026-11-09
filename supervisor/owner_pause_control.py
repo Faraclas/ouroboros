@@ -164,7 +164,8 @@ def review_finishing(blocker: Any) -> bool:
             and blocker.get("kind") in {"delegated_run", "model_handoff"})
 
 
-def request_owner_pause(task_id: str, *, request_id: str, by: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def request_owner_pause(task_id: str, *, request_id: str, by: Optional[Dict[str, Any]] = None,
+                        resume_after_restart: bool = False) -> Dict[str, Any]:
     """Accept the owner's Pause of ``task_id``'s tree (see module docstring); ``by``: the press's declared author."""
     from ouroboros.owner_pause import (
         OwnerPauseRefused, fence_closed, install_fence, launch_lock, read_fence,
@@ -193,6 +194,10 @@ def request_owner_pause(task_id: str, *, request_id: str, by: Optional[Dict[str,
         if refusal := release_refusal(observed_control_stop(
                 root_drive, task, budget=q.BUDGET_ROOT_FENCES), control_actor()):
             return refusal
+        if resume_after_restart:
+            from supervisor.maintenance_return import _independent_hold
+            if blocker := _independent_hold(task, read_fence(root_drive, str(task.get("root_task_id") or task_id))):
+                return {"ok": False, "error": "maintenance_independent_hold", "detail": blocker}
         root_id = lineage["root_task_id"] if lineage["is_retry_root_attempt"] else task_id
         from ouroboros.owner_pause import root_actor
         if not root_actor(root_drive, root_id, task_id):
@@ -215,7 +220,8 @@ def request_owner_pause(task_id: str, *, request_id: str, by: Optional[Dict[str,
 
     try:
         fence, created = install_fence(root_drive, root_id, request_id=request_id,
-                                      late_work=late_review, actor_id=task_id, by=by)
+                                      late_work=late_review, actor_id=task_id, by=by,
+                                      resume_after_restart=resume_after_restart)
     except OwnerPauseRefused as exc:
         return {"ok": False, "error": str(exc) or "pause_refused"}
     except Exception as exc:

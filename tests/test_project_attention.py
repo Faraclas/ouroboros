@@ -9,7 +9,7 @@ def observe(prior=None, *, ids=(), occupied=False, complete=True, witness=""):
                            complete=complete, witness_id=witness)
 
 
-def test_empty_boot_is_not_an_idle_opportunity():
+def test_empty_observation_without_admission_or_startup_is_not_an_opportunity():
     assert not observe().get("pending")
 
 
@@ -241,7 +241,7 @@ def test_natural_retained_service_exit_is_observed_without_store_write(runtime, 
     assert launches.call_count == (1 if state == "exited" else 0)
 
 
-def test_real_direct_lane_binds_project_before_no_work_body_and_does_not_recurse(runtime, monkeypatch):
+def test_startup_direct_lane_binds_without_chat_and_does_not_recurse(runtime, monkeypatch):
     root, project, duty, queue, registry = runtime
     from ouroboros import agent
     from tests.test_consciousness_wake_lane import _wait_for
@@ -254,7 +254,6 @@ def test_real_direct_lane_binds_project_before_no_work_body_and_does_not_recurse
             seed_result(root, task["id"], {"status": "completed", "chat_id": task["chat_id"], "metadata": task["metadata"]})
             return []
     monkeypatch.setattr(agent, "make_agent", lambda **kw: Actor())
-    attention.note_admission(root, ordinary(project))
     lap(duty)
     assert duty.last_result[project['id']]['admitted'], duty.last_result
     assert _wait_for(lambda: bool(seen) and not registry.actors())
@@ -267,10 +266,42 @@ def test_real_direct_lane_binds_project_before_no_work_body_and_does_not_recurse
     lap(duty)
     lap(duty)
     assert len(seen) == 1
+    replacement = attention.ProjectAttention(root, duty.clock)
+    lap(replacement)
+    assert len(seen) == 1, "same-process duty reconstruction is not a new boot"
     assert duty.clock._next_wake_at == 1234 and duty.clock._last_wake_at == 1000
     attention.note_admission(root, ordinary(project, "later"))
     lap(duty)
     assert _wait_for(lambda: len(seen) == 2 and not registry.actors())
+
+
+def test_new_generation_reconsiders_idle_project_but_never_resumes_held_work(runtime, monkeypatch):
+    root, project, duty, queue, registry = runtime
+    from ouroboros import delegate_recovery
+    with store.open_store(root, write=True) as txn:
+        txn.put_row(attention.EPISODES, project["id"], {
+            "eligible": False, "pending": False, "startup_generation": "old-generation",
+            "attention_task_id": "old-no-work"})
+    held = {**ordinary(project, "held-work"), "_owner_hold": {"reason": "intentional-pause"}}
+    queue.PENDING.append(held)
+    calls = []
+    def consume_start(p, signature):
+        with store.open_store(root, write=True) as txn:
+            attention.consume(txn, p["id"], "new-consideration")
+        calls.append(p["id"])
+        return {"admitted": True}
+    monkeypatch.setattr(duty, "launch", consume_start)
+    lap(duty)
+    assert calls == [] and queue.PENDING == [held]
+    assert held["_owner_hold"] == {"reason": "intentional-pause"}
+    queue.PENDING.clear()  # independently observed release, not attention Resume
+    lap(duty)
+    assert calls == [project["id"]]
+    monkeypatch.setattr(delegate_recovery, "_PROCESS_GENERATION", "next-boot")
+    replacement = attention.ProjectAttention(root, duty.clock)
+    monkeypatch.setattr(replacement, "launch", consume_start)
+    lap(replacement)
+    assert calls == [project["id"], project["id"]]
 
 
 @pytest.mark.parametrize("cause", ["project_idle", "started"])

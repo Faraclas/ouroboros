@@ -220,6 +220,7 @@ class ProjectAttention:
         self._observation_error = None
         self._processes = []
         self.last_result = {}
+        self._startup_pending = True
 
     def tick(self, *, ready: bool, pending_inputs: Any) -> None:
         if not ready or not isinstance(pending_inputs, (set, frozenset)) or pending_inputs or not self._lock.acquire(blocking=False):
@@ -298,6 +299,21 @@ class ProjectAttention:
                                if e.get("owner_task") or e.get("task_id")]
             with store.open_store(self.root, write=False) as txn:
                 episodes = txn.set_rows(EPISODES)
+            if self._startup_pending:
+                # Startup is one consideration opportunity, not an ordinary-work
+                # admission or a Resume. The normal complete-vacancy/admission
+                # checks below still decide whether a mind can actually start.
+                from ouroboros.delegate_recovery import _PROCESS_GENERATION
+                with store.open_store(self.root, write=True) as txn:
+                    for project in projects:
+                        pid = str(project["id"])
+                        prior = txn.get_row(EPISODES, pid) or {}
+                        if prior.get("startup_generation") != _PROCESS_GENERATION:
+                            prior = {**prior, "startup_generation": _PROCESS_GENERATION,
+                                     "eligible": True, "pending": False}
+                            txn.put_row(EPISODES, pid, prior)
+                        episodes[pid] = prior
+                self._startup_pending = False
             updates = {}
             for project in projects:
                 pid = str(project["id"])

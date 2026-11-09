@@ -14,7 +14,8 @@ def _continue_in_background(ctx, reason: str = "") -> str:
     return json.dumps(arm_detach(ctx, reason), ensure_ascii=False)
 
 
-def _request_control(ctx, action: str, task_id: str, reason: str, accept_unknown=None) -> str:
+def _request_control(ctx, action: str, task_id: str, reason: str, accept_unknown=None,
+                     resume_after_restart: bool = False) -> str:
     from ouroboros.task_results import validate_task_id
     from ouroboros.tool_call_log import current_tool_call_id
     from ouroboros.tools.control_events import _emit_control_event
@@ -43,6 +44,7 @@ def _request_control(ctx, action: str, task_id: str, reason: str, accept_unknown
         "type": "mind_task_control", "action": action, "task_id": target,
         "actor": "mind", "actor_task_id": actor, "action_nonce": nonce,
         "reason": str(reason or ""), "ts": utc_now_iso(),
+        **({"resume_after_restart": True} if resume_after_restart is True else {}),
         **({"accept_unknown": [str(value) for value in accept_unknown if value]}
            if isinstance(accept_unknown, list) and accept_unknown else {})})
     if emitted == "serialization_failed":
@@ -53,8 +55,8 @@ def _request_control(ctx, action: str, task_id: str, reason: str, accept_unknown
                                "The result will arrive in your task mailbox; this receipt is not completion."})
 
 
-def _pause_task(ctx, task_id: str, reason: str = "") -> str:
-    return _request_control(ctx, "pause_task", task_id, reason)
+def _pause_task(ctx, task_id: str, reason: str = "", resume_after_restart: bool = False) -> str:
+    return _request_control(ctx, "pause_task", task_id, reason, resume_after_restart=resume_after_restart)
 
 
 def _resume_task(ctx, task_id: str, reason: str = "", accept_unknown=None) -> str:
@@ -82,6 +84,15 @@ def _accepting_schema(schema: dict) -> dict:
     return schema
 
 
+def _maintenance_schema(schema: dict) -> dict:
+    schema["parameters"]["properties"]["resume_after_restart"] = {
+        "type": "boolean", "description": "True only for a temporary maintenance restart pause: "
+        "durably select this work for one automatic same-work Resume after the server/container returns. "
+        "Stop, Panic, other holds, money, identity and unknown-effect custody still apply. "
+        "Omitted/false keeps an indefinite pause. This does not restart the container."}
+    return schema
+
+
 def mind_tool_entries() -> list:
     from ouroboros.model_detach import LOST_HANDLES
 
@@ -94,11 +105,11 @@ def mind_tool_entries() -> list:
         "parameters": {"type": "object", "properties": {"reason": {"type": "string"}},
                        "required": ["reason"]},
     }, _continue_in_background),
-        ToolEntry("pause_task", _control_schema("pause_task",
+        ToolEntry("pause_task", _maintenance_schema(_control_schema("pause_task",
              "Request Pause of a listed work through the owner's tree-pause control. "
              "The owner reads your reason under the work's name: say plainly, in one short sentence without ids, "
              "why you paused it and whose decision it was. Started reviews may finish while the task pauses. "
-             "Self-pause is refused: sleep with await_messages or escalate. The outcome arrives in your task mailbox."),
+             "Self-pause is refused: sleep with await_messages or escalate. The outcome arrives in your task mailbox.")),
              _pause_task),
         ToolEntry("resume_task", _accepting_schema(_control_schema("resume_task",
              "Request Resume of listed paused work through the owner's existing grants. "
