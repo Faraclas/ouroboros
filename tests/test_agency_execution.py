@@ -91,7 +91,11 @@ def test_safety_keeps_full_task_sources_after_transcript_compaction(tmp_path, mo
     source_json = prompt.split("Host evidence (provenance is not consent):\n", 1)[1]
     facts, _ = json.JSONDecoder().raw_decode(source_json)
     assert facts["subject"]["physical_target"]["target_path"] == repr(work)
-    assert "Create the requested private repository" not in prompt  # task_contract is not retained source evidence
+    # Current assignment is useful intent, never a substitute for retained owner sources.
+    assert facts["assignment"] == {"author": {"kind": "unknown"}, "authority": "intent_only",
+                                    "objective": "Create the requested private repository"}
+    assert facts["occasion"]["sources"] == ctx._owner_directives
+    assert "Create the requested private repository" not in json.dumps(facts["occasion"]["sources"])
 
 
 @pytest.mark.parametrize("mode", ["advanced", "cyber_pro"])
