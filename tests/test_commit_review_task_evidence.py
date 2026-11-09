@@ -93,7 +93,7 @@ def test_large_task_selected_source_is_complete_and_native_readable(evidence_con
     registry, native_ctx, _ = inspection_registry(str(ctx.repo_dir), ctx.budget_drive_root, ctx.task_id)
     result = registry.execute_result("read_file", {"root": "artifact_store", "path": source["source_ref"]["path"], "max_lines": 12})
     assert result.status == "ok", result.text
-    assert "Selected browser/vision execution sources" in result.text
+    assert "Selected browser/vision and authorship execution sources" in result.text
     assert native_ctx.last_read_view["opened_root"] == "artifact_store"
 
 
