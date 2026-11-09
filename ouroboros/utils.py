@@ -322,9 +322,20 @@ def write_text_atomic(path: pathlib.Path, content: str, *, fsync: bool = False) 
     write_bytes_atomic(pathlib.Path(path), content.encode("utf-8"), fsync=fsync)
 
 
+def json_dumps(payload: Any, **options: Any) -> str:
+    """UTF-8 JSON with reversible escapes for filesystem surrogateescape names.
+
+    Escape only the serialized representation: decoded paths retain their native
+    spelling, while ordinary Unicode bytes and existing caller formatting stay
+    unchanged. Never encode surrogatepass bytes into a UTF-8 document.
+    """
+    text = json.dumps(payload, **options)
+    return _re.sub(r"[\ud800-\udfff]", lambda match: f"\\u{ord(match[0]):04x}", text)
+
+
 def machine_json(payload: Any) -> str:
     """The one compact text of machine JSON state (files and the current store's task bodies)."""
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return json_dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def atomic_write_json(path: pathlib.Path, payload: Any, *, trailing_newline: bool = False,
@@ -547,7 +558,7 @@ def append_jsonl(
         raise TypeError(f"append_jsonl: path must be pathlib.Path, got {type(path).__name__}")
     assert_test_data_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(obj, ensure_ascii=False)
+    line = json_dumps(obj, ensure_ascii=False)
     data = (line + "\n").encode("utf-8")
 
     write_retries = 3

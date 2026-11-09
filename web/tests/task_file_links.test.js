@@ -40,3 +40,11 @@ test("Wrap up's saved work is the task file route with the detail's name and Sto
     }
     assert.equal(taskWrapUpDocumentUrl('other/task', { name, request_id: 'ci_1' }), '');
 });
+
+
+test('unaddressable native filenames do not throw or acquire fake download URLs', () => {
+    assert.equal(taskArtifactDownloadUrl('task', 'fixture_\udcff.dat'), '');
+    assert.equal(taskArtifactDownloadUrl('task', 'okay.txt', 'evidence_\udcff/okay.txt'), '');
+    assert.equal(taskArtifactArchiveUrl('task', 'evidence_\udcff'), '');
+    assert.equal(taskArtifactDownloadUrl('task', '蛇🐍.txt'), '/api/tasks/task/artifacts/%E8%9B%87%F0%9F%90%8D.txt');
+});

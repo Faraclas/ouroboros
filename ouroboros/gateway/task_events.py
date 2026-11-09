@@ -47,7 +47,7 @@ from ouroboros.store import StoreError
 from ouroboros.task_store import task_facts
 from ouroboros.gateway.contracts import TaskEventsRequest
 from ouroboros.gateway.schema import validate_ingress
-from ouroboros.utils import jsonl_archive_segments, jsonl_chain_handles
+from ouroboros.utils import json_dumps, jsonl_archive_segments, jsonl_chain_handles
 
 
 def _tasks_namespace():
@@ -891,7 +891,7 @@ def _is_workspace_result(result: Dict[str, Any]) -> bool:
 
 
 def _sse(event: Dict[str, Any], *, event_id: int) -> str:
-    payload = json.dumps(event, ensure_ascii=False)
+    payload = json_dumps(event, ensure_ascii=False)
     return f"id: {event_id}\nevent: task_event\ndata: {payload}\n\n"
 
 

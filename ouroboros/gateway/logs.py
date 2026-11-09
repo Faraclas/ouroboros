@@ -16,7 +16,7 @@ import pathlib
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from ouroboros.gateway._helpers import UTF8JSONResponse as JSONResponse
 
 from ouroboros import dialogue_store as ds
 from ouroboros.dialogue_positions import ordinals_of

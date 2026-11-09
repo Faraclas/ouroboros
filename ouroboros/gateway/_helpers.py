@@ -14,7 +14,15 @@ import anyio
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from ouroboros.utils import iter_jsonl_objects
+from ouroboros.utils import iter_jsonl_objects, json_dumps
+
+
+class UTF8JSONResponse(JSONResponse):
+    """Preserve native path strings through UTF-8 JSON without changing Unicode text."""
+
+    def render(self, content: Any) -> bytes:
+        return json_dumps(content, ensure_ascii=False, allow_nan=False,
+                          indent=None, separators=(",", ":")).encode("utf-8")
 
 
 _TRUE_LITERALS = frozenset({"1", "true", "yes", "on"})
@@ -141,7 +149,7 @@ def json_error(message: str, status: int = 500, **extra: Any) -> JSONResponse:
     """``JSONResponse({"error": message, **extra}, status_code=status)``."""
     payload: dict[str, Any] = {"error": message}
     payload.update(extra)
-    return JSONResponse(payload, status_code=status)
+    return UTF8JSONResponse(payload, status_code=status)
 
 
 def migrating_error(drive_root: Any) -> JSONResponse | None:

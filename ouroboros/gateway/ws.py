@@ -16,7 +16,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from ouroboros import chat_uploads
 from ouroboros.config import DATA_DIR
 from ouroboros.gateway._helpers import run_sync_to_completion, settle_to_completion
-from ouroboros.utils import utc_now_iso
+from ouroboros.utils import json_dumps, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ async def close_all_ws(*, code: int = 1012, reason: str = "Server restarting") -
 
 async def broadcast_ws(msg: dict) -> None:
     """Send a message to all connected WebSocket clients."""
-    data = json.dumps(msg, ensure_ascii=False, default=str)
+    data = json_dumps(msg, ensure_ascii=False, default=str)
     msg_type = str(msg.get("type", "unknown"))
     with _ws_lock:
         clients = list(_ws_clients)

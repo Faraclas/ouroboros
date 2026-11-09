@@ -420,6 +420,9 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
             for (const artifact of data.artifacts || []) {
                 const url = taskArtifactDownloadUrl(id, artifact.name, artifact.relpath || '');
                 if (url) addFile({ filename: artifact.name, mime: '', download_url: url, task_id: id }, host);
+                else if ([artifact.name, artifact.relpath].some(value => typeof value === 'string' && !value.isWellFormed())) {
+                    host.append(el('p', 'pm-note', `Retained file cannot be directly downloaded: ${JSON.stringify(artifact.relpath || artifact.name)}`));
+                }
             }
         } catch (error) { if (validSelection(project.id) && current === detailRequest) errorIn(host, `Result unavailable: ${message(error)}`, () => readResult(id, host, project)); }
         finally { host.removeAttribute('aria-busy'); }
