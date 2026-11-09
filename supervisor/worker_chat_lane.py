@@ -559,7 +559,8 @@ def _defer_chat_for_restart(task: dict, chat_id: int, metadata: Optional[dict]) 
     meta = metadata or {}
     ack = host_operation_reply_kwargs(meta.get("origin_message_ref") if meta.get("_host_operation") else None,
                                      client_message_id=str(meta.get("client_message_id") or ""))
-    _pool().send_with_budget(chat_id, "Saved for execution after Restart.",
+    _pool().send_with_budget(chat_id, "Saved for execution after Restart or release of the pending restart. "
+                            "To change the installation before it proceeds, use the requester's Stop control.",
                             **ack, role="system", system_type="restart_notice")
 
 

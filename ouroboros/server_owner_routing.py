@@ -214,6 +214,22 @@ def _route_project_chat_to_running_task(
             attachment_note, staged_manifest, attachment_report = _stage_mailbox_attachments(
                 ctx, task_drive, tid, task_metadata, image_data,
             )
+            # Serialize the last routing decision with restart acceptance. Input
+            # admitted before intent remains mail; later ordinary input uses the
+            # existing durable fresh-turn deferral, never reopening the requester.
+            # Attachment staging stays outside Q on both carriers.
+            _queue_lock.acquire()
+            queue_lock_held = True
+            from ouroboros.server_restart import agent_restart_defers_room_input
+
+            if direct_lock_held:
+                context = getattr(getattr(direct_agent, "tools", None), "_ctx", None)
+                attempt = int(getattr(context, "task_attempt", None) or 1)
+            else:
+                live_meta = getattr(ctx, "RUNNING", {}).get(tid)
+                attempt = int((live_meta or {}).get("attempt") or 1)
+            if agent_restart_defers_room_input(tid, attempt):
+                return ""
             if direct_lock_held:
                 from ouroboros.room_reader import is_reading
                 if not is_reading(task_drive, tid, task_obj or candidate, running=True):
@@ -229,9 +245,6 @@ def _route_project_chat_to_running_task(
                     _drop_staged_inputs()
                     return ""
             if not direct_lock_held:
-                _queue_lock.acquire()
-                queue_lock_held = True
-                live_meta = getattr(ctx, "RUNNING", {}).get(tid)
                 if isinstance(live_meta, dict):
                     task_obj = live_meta.get("task") if isinstance(live_meta.get("task"), dict) else live_meta
                 from ouroboros.room_reader import is_reading
