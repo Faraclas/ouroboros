@@ -197,7 +197,9 @@ const encodeSegment = (text) => encodeURIComponent(text).replace(/[!'()*]/g, cha
  */
 export function taskArtifactDownloadUrl(taskId, name, relpath = '') {
     if (!TASK_ID_RE.test(String(taskId || ''))
-        || typeof name !== 'string' || !name || name.startsWith('.') || /[/\\]/.test(name)) return '';
+        || typeof name !== 'string' || !name || !name.isWellFormed()
+        || typeof relpath !== 'string' || !relpath.isWellFormed()
+        || name.startsWith('.') || /[/\\]/.test(name)) return '';
     const url = `/api/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeSegment(name)}`;
     if (!relpath || relpath === name) return url;
     if (!plainSegments(relpath) || relpath.split('/').at(-1) !== name) return '';
@@ -210,7 +212,7 @@ export function taskArtifactDownloadUrl(taskId, name, relpath = '') {
  * directory the route would refuse.
  */
 export function taskArtifactArchiveUrl(taskId, directory) {
-    if (!TASK_ID_RE.test(String(taskId || '')) || !plainSegments(directory)) return '';
+    if (!TASK_ID_RE.test(String(taskId || '')) || !plainSegments(directory) || !directory.isWellFormed()) return '';
     const name = `${directory.split('/').at(-1)}.zip`;
     return `/api/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeSegment(name)}?archive=${encodeURIComponent(directory)}`;
 }

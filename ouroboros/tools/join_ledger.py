@@ -34,7 +34,7 @@ from ouroboros.task_tree_ledger import (
     tree_ledger_append,
 )
 from ouroboros.tools.registry import ToolContext, ToolEntry
-from ouroboros.utils import utc_now_iso
+from ouroboros.utils import json_dumps, utc_now_iso
 
 log = logging.getLogger("ouroboros.tools.join_ledger")
 
@@ -112,7 +112,7 @@ def _child_result_sha256(result: Dict[str, Any]) -> str:
     notice = terminal_host_notice_text(semantic_result)
     if "terminal_host_notice" in semantic_result or notice:
         payload["terminal_host_notice"] = notice
-    encoded = json.dumps(
+    encoded = json_dumps(
         payload,
         ensure_ascii=False,
         sort_keys=True,

@@ -263,7 +263,14 @@ def test_supported_command_is_stopped_even_when_another_owner_fails(tmp_path, mo
     try:
         incoming.put({"id": "pooled", "type": "task"})
         # The published-child guarantee: the child's own marker can precede its registry entry.
-        child_pid = _await_published_command_child(proc, outgoing, tmp_path / "workspace", seen)
+        try:
+            child_pid = _await_published_command_child(proc, outgoing, tmp_path / "workspace", seen)
+        except AssertionError as exc:
+            # Preserve the failed precondition before cleanup discards the observer socket.
+            trace = (_stop_trace(trace_parent, seen.get("pid", 0))
+                     if trace_parent is not None else {"platform": "windows"})
+            raise AssertionError({"publication_failure": str(exc), "worker_pid": proc.pid,
+                                  "worker_alive": proc.is_alive(), "trace": trace}) from exc
         if os.name != "nt":
             assert os.getpgid(child_pid) == child_pid != os.getpgid(proc.pid)
         parent_events.append({"event": "parent_request", "t_ns": time.monotonic_ns()})

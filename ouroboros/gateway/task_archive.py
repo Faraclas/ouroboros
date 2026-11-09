@@ -291,6 +291,10 @@ def serve_directory_archive(drive_root: Any, task_id: str, name: str, directory:
                               404, reason_code="artifact_archive_unverified", task_id=task_id, artifact=name,
                               directory=directory, member=member)
         return json_error("archive could not be built", 503, member=member, **unavailable)
+    except UnicodeEncodeError:
+        spool.close()
+        return json_error("archive member filename is not valid UTF-8; retained files are unchanged",
+                          503, member=ascii(member), **unavailable)
     except BaseException:
         spool.close()
         raise

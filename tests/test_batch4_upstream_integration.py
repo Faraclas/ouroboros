@@ -128,7 +128,9 @@ def test_sent_review_settles_after_pause_and_author_close_with_original_group(en
     class SentModel:
         @model_waitable
         def chat(self, messages, model, model_poll_control=None, **kwargs):
-            require_physical_dispatch_window()
+            from ouroboros._usage_wait import retry_presend
+            # Match the real sender's unsent strict-read contention wait.
+            retry_presend(require_physical_dispatch_window, check=False)
             reservation = ua.reserve_attempt(ua.AttemptRequest(model=model, provider="test", reservation_usd=1.2))
             ua.mark_dispatched(reservation)
             sent.set()
@@ -206,3 +208,22 @@ def test_new_physical_clocks_preserve_group_and_sealed_bytes(transport, ticking)
         client.chat(messages=[{"role": "user", "content": "no group remainder"}],
                     model="openai::test-model", model_role="main", max_tokens=123)
     assert len(sent) == 2, "repreparation cannot give a successor a fresh group budget"
+
+
+def test_sent_review_waits_for_unsent_strict_read_contention(env, monkeypatch):
+    """A strict current-read miss is retried before the fake sender reserves once."""
+    from ouroboros import llm_attempt
+    from ouroboros.store import StoreBusy
+    original = llm_attempt.require_physical_dispatch_window
+    failures = []
+    def gate():
+        import threading
+        if threading.current_thread() is not threading.main_thread() and not failures:
+            failures.append('unsent')
+            error = StoreBusy('injected current read contention', reason='contention')
+            error.rollback_confirmed = True
+            raise error
+        return original()
+    monkeypatch.setattr(llm_attempt, 'require_physical_dispatch_window', gate)
+    test_sent_review_settles_after_pause_and_author_close_with_original_group(env, monkeypatch)
+    assert failures == ['unsent']
