@@ -110,11 +110,13 @@ def test_run_chat_task_tracks_direct_turn_for_its_duration(tmp_path, monkeypatch
 
 def test_run_chat_task_tracks_direct_turn_with_project_id(tmp_path, monkeypatch):
     workers, bridge = _patch_workers(monkeypatch, tmp_path)
+    from ouroboros.projects_registry import create_project
+    project = create_project(workers.DRIVE_ROOT, 'proj-x')
 
     agent = _RegistryProbeAgent()
     workers._run_chat_task(
         agent,
-        3,
+        project['chat_id'],
         "decide",
         None,
         task_metadata={
@@ -130,6 +132,7 @@ def test_run_chat_task_tracks_direct_turn_with_project_id(tmp_path, monkeypatch)
     # Flat metadata key is the fallback when origin_message_ref is absent.
     assert turn["client_message_id"] == "cmid-flat"
     assert turn["project_id"] == "proj-x"
+    assert agent.task['_project_admission']['project']['chat_id'] == project['chat_id']
     assert get_direct_activity_registry().snapshot() == []
     announces = [c for c in bridge.calls if c["action"] == "typing"]
     assert len(announces) == 1

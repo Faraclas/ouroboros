@@ -44,6 +44,10 @@ TRUTHY_ROUTE = re.compile(
 
 # (repo-relative path, exact stripped line) -> (occurrences, why it stays)
 ALLOWED = {
+    ("supervisor/project_reauthorization.py", "if not source or source_chat != task.get('chat_id'):"): (
+        1, "Coarse mapping-read regex false positive: exact source/target address inequality, not truthiness; zero compares as a value."),
+    ("supervisor/project_reauthorization.py", "if basis != project_basis or basis['project']['chat_id'] != task.get('chat_id'):"): (
+        1, "Coarse mapping-read regex false positive: exact current-basis/address inequality, not truthiness; zero is retained."),
     ("supervisor/terminal_delivery.py", "if not chat_id:"): (
         2,
         "lineage_chat_id() answers with the task's OWN chat: a project-homed run "

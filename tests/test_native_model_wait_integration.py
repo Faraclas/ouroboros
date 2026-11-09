@@ -99,6 +99,8 @@ def test_native_post_task_wait_remains_addressable_after_dialogue_closes(phase, 
     from tests.test_llm_claudexor import MODEL
 
     f = phase
+    from ouroboros.projects_registry import create_project
+    project = create_project(f.root, 'room') if project_id else None
     monkeypatch.setattr(workers, "DRIVE_ROOT", f.root)
     monkeypatch.setattr(workers, "WORKERS", {})
     monkeypatch.setattr(workers, "get_event_q", lambda: f.events)
@@ -139,7 +141,7 @@ def test_native_post_task_wait_remains_addressable_after_dialogue_closes(phase, 
             return pending
 
     actor = Actor()
-    thread = _native_chat_thread(monkeypatch, actor, 7 if project_id else 1, phases,
+    thread = _native_chat_thread(monkeypatch, actor, project['chat_id'] if project_id else 1, phases,
                                  project_id=project_id, text="Already answered")
     release_stop, stop_observed = threading.Event(), threading.Event()
     try:
