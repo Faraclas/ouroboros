@@ -162,8 +162,17 @@ def test_the_loop_reads_quota_at_boundaries_reports_ageing_and_never_a_newer_dat
 # -- one real switch: engine refusal, the API fallback's own money, the next input -------------
 
 
+def _assert_private_quota_values_absent(observed):
+    # The host observation timestamp may legitimately contain the digits 0.42.
+    # Inspect the evidence, not a numeric substring inside that separate clock.
+    evidence = {key: value for key, value in observed.items() if key != "observed_at"}
+    for private in ("Pro plan", "five hour window", "0.42", "99.0", "balances"):
+        assert private not in json.dumps(evidence), private
+
+
+@pytest.mark.parametrize("stamp", ["2026-11-09T00:33:30.426452+00:00", "2026-11-09T00:33:30.000001+00:00"])
 def test_a_real_engine_refusal_reaches_the_next_input_with_its_reset_the_prior_engine_call_and_pool_facts(
-        main_call, monkeypatch):
+        main_call, monkeypatch, stamp):
     from copy import deepcopy
 
     from ouroboros import fallback_cooldown
@@ -177,6 +186,7 @@ def test_a_real_engine_refusal_reaches_the_next_input_with_its_reset_the_prior_e
     from ouroboros import context
 
     ctx, gateway, owner, events, _decide, _observations = main_call
+    monkeypatch.setattr("ouroboros.utils.utc_now_iso", lambda: stamp)
     shared_route = context._context_fit_route
 
     def fallback_holds_its_input(task, **kwargs):
@@ -233,10 +243,17 @@ def test_a_real_engine_refusal_reaches_the_next_input_with_its_reset_the_prior_e
     assert quota["availability"] == {"state": "exhausted", "resets_at": RESET, "execution_guaranteed": False,
                                      "scope": "quota_only"}
     assert [row["subject_id"] for row in quota["snapshots"]] == ["account-a", "account-b"]
-    for private in ("Pro plan", "five hour window", "0.42", "99.0", "balances"):
-        assert private not in json.dumps(seen), private
+    assert seen["observed_at"] == stamp
+    _assert_private_quota_values_absent(seen)
     [read] = [kwargs for name, kwargs in engine.calls if name == "quota"]
     assert read["model"] == "exact-model" and 0 < read["timeout_sec"] <= 3
+
+
+@pytest.mark.parametrize("private", ["Pro plan", "five hour window", "0.42", "99.0", "balances"])
+def test_privacy_assertion_still_rejects_each_actual_evidence_leak(private):
+    observed = {"observed_at": "2026-11-09T00:33:30.426452+00:00", "facts": {"leaked": private}}
+    with pytest.raises(AssertionError):
+        _assert_private_quota_values_absent(observed)
 
 
 # -- the round consumer: exact binding, aliases, failures and the shared budget ----------------
