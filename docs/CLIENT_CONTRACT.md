@@ -450,6 +450,7 @@ Private Presence contacts carry `presence_contact` source facts separately from 
 - **Continue:** `POST /api/tasks/{id}/continue` takes exactly `{action_nonce}`. A timeout does not mean it failed: retry with the same nonce. The successor task's id is derived from the nonce, so it cannot start twice.
 - **Resume:** `POST /api/tasks/{id}/resume` returns saved work from a budget, owner or technical pause (`TaskResumeResponse`), after fresh control and money checks. Unreadable billing conditions refuse with HTTP 409, `code=billing_authority_unavailable`, the cause in `reason_code`, and explanatory `error`; this is not a missing task or exhausted money. It is not idempotent: a repeat is refused (409 or 404). After an unclear answer, read the task.
 - **Hurry:** `POST /api/tasks/{id}/hurry` takes exactly `{request_id}`.
+- **New Project authorization:** `POST /api/tasks/{id}/project-authorization` takes `ProjectAuthorizationRequest`: stable request ID, issuer's retained origin reference or own answered quiz, exact checkpoint hash and expected current Project basis. Source membership is checked; the caller interprets the owner's exact words for this target. It records NEW scope, preserving old provenance. Identical retries return the decision; changed requests conflict. `resumed:false` grants no Resume; `dispatch_may_proceed:true` warns that existing restart-return or Resume selection may dispatch after normal revalidation. Independent controls remain.
 
 ## 9. Settings
 

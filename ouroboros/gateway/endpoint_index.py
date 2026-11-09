@@ -65,6 +65,7 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "POST /api/tasks/{task_id}/cancel",
     "POST /api/tasks/{task_id}/hurry",
     "POST /api/tasks/{task_id}/pause",
+    "POST /api/tasks/{task_id}/project-authorization",
     "POST /api/tasks/{task_id}/continue",
     "POST /api/tasks/{task_id}/resume",
     "POST /api/decisions",
@@ -337,6 +338,9 @@ HTTP_SHAPES: dict[str, Shape] = {
         note="stop_action_id identifies one Stop; an exact retry joins a pending Stop; after teardown it may return 404; 202 = the Stop is recorded and still pending (graceful, or an immediate teardown not yet confirmed)"),
     "POST /api/tasks/{task_id}/hurry": Shape(f"200:TaskHurryResponse {_TASK_ERRORS}", "TaskHurryRequest"),
     "POST /api/tasks/{task_id}/pause": Shape(f"200,202:TaskPauseResponse {_TASK_ERRORS}", "TaskPauseRequest"),
+    "POST /api/tasks/{task_id}/project-authorization": Shape(
+        "200:ProjectAuthorizationResponse 400,409,503:ErrorResponse", "ProjectAuthorizationRequest",
+        note="new source-bound Project authority for the exact saved checkpoint; does not Resume"),
     "POST /api/tasks/{task_id}/continue": Shape(f"200:TaskContinueResponse {_TASK_ERRORS}", "TaskContinueRequest",
                                                 note="a timeout is not a refusal: retry with the same action_nonce"),
     "POST /api/tasks/{task_id}/resume": Shape("200:TaskResumeResponse 400,404,409,503:ErrorResponse", "TaskResumeRequest",

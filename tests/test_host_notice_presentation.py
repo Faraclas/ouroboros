@@ -403,7 +403,11 @@ def test_each_fallback_notice_reaches_the_card_in_its_own_routes_words(tmp_path,
     monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
     # A bare loop has no agent-built context core, as in the chain's own tests.
     monkeypatch.setattr(loop, "_rebind_context_fit_plan", lambda *a, **k: (None, "max"))
-    monkeypatch.setattr("ouroboros.loop_llm_call.time.sleep", lambda _s: pytest.fail("a refusal is not retried"))
+    import time
+    ordinary_sleep = time.sleep
+    monkeypatch.setattr("ouroboros.loop_llm_call._sleep_within_deadline",
+                        lambda *a, **kw: pytest.fail("a refusal is not retried"))
+    assert time.sleep is ordinary_sleep, 'the retry trap must not intercept unrelated storage/control waits'
     secret = "sk-or-" + "fixture" * 6
     refusals = {
         "test-model": _BodyError("Error code: 400", status_code=400,

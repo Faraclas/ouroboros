@@ -543,6 +543,7 @@ class OuroborosAgent:
                 # api, ...): ``dialogue_provenance.run_origin`` reads it from this record.
                 source=task.get("source"),
                 project_id=str(task.get("project_id") or ""),
+                **{key: task[key] for key in ("_project_admission", "_project_scope_none") if key in task},
                 role=task.get("role"),
                 description=task.get("description"),
                 objective=task.get("objective") or task.get("description"),

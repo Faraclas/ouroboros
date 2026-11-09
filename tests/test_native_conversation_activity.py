@@ -245,11 +245,14 @@ def test_native_post_task_retains_activity_and_delivers_answer_early(monkeypatch
 
     # Both ordinary Main and ordinary Project conversation shapes must use
     # the same lifetime; neither has a headless workspace/task marker.
+    from ouroboros.projects_registry import create_project
+    project = create_project(tmp_path, "room")
     for project_id in ("", "room"):
         release.clear()
         synthesis_threads.clear()
         actor = Actor()
-        thread = _native_chat_thread(monkeypatch, actor, 1, phases, project_id=project_id)
+        chat_id = project['chat_id'] if project_id else 1
+        thread = _native_chat_thread(monkeypatch, actor, chat_id, phases, project_id=project_id)
         try:
             thread.start()
             _next_native_phase(phases, "synthesis")
@@ -303,7 +306,7 @@ def test_first_working_tool_call_names_a_main_turn_once(monkeypatch, tmp_path):
     from ouroboros import agent as agent_module, project_naming
 
     _lane(monkeypatch, tmp_path)
-    calls = []
+    calls, handled = [], []
     monkeypatch.setattr(project_naming, "spawn_turn_namer", lambda *a, **kw: calls.append((a, kw)))
 
     class Actor:
@@ -311,6 +314,7 @@ def test_first_working_tool_call_names_a_main_turn_once(monkeypatch, tmp_path):
             self._owner_message_admission_lock = threading.Lock()
 
         def handle_task(self, task):
+            handled.append(task)
             frames = self._event_queue
             frames.put_nowait({"type": "log_event", "data": {
                 "type": "tool_call_started", "task_id": task["id"], "tool": "promote_chat_to_task",
@@ -329,5 +333,8 @@ def test_first_working_tool_call_names_a_main_turn_once(monkeypatch, tmp_path):
     assert callable(kwargs["broadcast"])
 
     calls.clear()
-    workers.handle_chat_direct(1, "и в комнате проекта", task_metadata={"project_id": "room"})
+    from ouroboros.projects_registry import create_project
+    project = create_project(tmp_path, 'room')
+    workers.handle_chat_direct(project['chat_id'], "и в комнате проекта", task_metadata={"project_id": "room"})
+    assert len(handled) == 2, 'both Main and Project reached the actual actor'
     assert calls == [], "a Project-room turn is named by its room"
