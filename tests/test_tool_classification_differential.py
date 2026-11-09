@@ -357,6 +357,8 @@ def _golden() -> dict[str, dict]:
 # unavailable. Keep the historical corpus intact and assert the new observed
 # outcome explicitly rather than manufacture old evidence (04-AGENCY S1/S3).
 CURRENT_PRODUCER_CONTRACTS = {"WORLD_SIZE_NOTICE": (False, "ok"),  # the map's size notice rides a successful update_world
+    # Current-byte authorship refusal has no retired producer or historical golden.
+    "GIT_AUTHORSHIP_BLOCKED": (True, "blocked"),
     # New synchronization refusals have no retired-loop golden; declare their
     # current blocked/error contracts without rewriting historical answers.
     "CANDIDATE_MERGE_ARGUMENT_BLOCKED": (True, "blocked"),
