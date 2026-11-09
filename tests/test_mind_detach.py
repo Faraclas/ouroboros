@@ -35,6 +35,25 @@ def test_ready_detach_arms_then_parks_same_id_and_sleep_grant_is_single_use(tmp_
     monkeypatch.setattr(state, "budget_remaining", lambda *_a, **_k: 5.0)
     ctx, limit, result = _arm(tmp_path, monkeypatch)
     assert result["ok"] and result["status"] == "detach_armed"
+    # A direct author has already edited its candidate when the cold boundary
+    # saves it. Attribution is canonical task state, not a local loop variable.
+    from ouroboros import body_candidate
+    from ouroboros.agent import OuroborosAgent
+    from ouroboros.tools import git as git_tools
+    from tests.body_candidate_support import make_ctx, make_serving
+
+    serving = make_serving(tmp_path / "toy")
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "pro")
+    monkeypatch.setenv("OUROBOROS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("OUROBOROS_SUBAGENT_WORKTREE_ROOT", str(tmp_path.with_name(tmp_path.name + "-candidates")))
+    ctx.repo_dir = ctx.system_repo_dir = serving
+    ctx.task_metadata.update(root_task_id="head", work_kind="owner")
+    agent = SimpleNamespace(env=SimpleNamespace(repo_dir=serving, drive_root=tmp_path,
+                                               budget_drive_root=tmp_path))
+    OuroborosAgent._capture_mutation_baseline(agent, {"id": "head", "_is_direct_chat": True}, {})
+    body_candidate.prepare(ctx)
+    (ctx.repo_dir / "ouroboros/mod_a.py").write_text("GEN = 'OWN'\n", encoding="utf-8")
+    baseline = load_task_result(tmp_path, "head")["mutation_evidence"]
     assert "browser" in result["note"] and "REPL" in result["note"]
     assert ctx._model_sleep["intent"] == "continue_in_background"
     _fast_hold(monkeypatch, budget_pause)
@@ -67,6 +86,15 @@ def test_ready_detach_arms_then_parks_same_id_and_sleep_grant_is_single_use(tmp_
     assert q.restore_pending_from_snapshot() == 1
     restored = workers.PENDING[0]
     assert restored["id"] == "head" and restored["_is_direct_chat"]
+    pooled_ctx = make_ctx(serving, tmp_path, "head", task_metadata=dict(ctx.task_metadata))
+    bound = body_candidate.restore(pooled_ctx)
+    assert bound.get("path") == str(ctx.repo_dir), bound
+    assert load_task_result(tmp_path, "head")["mutation_evidence"] == baseline
+    OuroborosAgent._capture_mutation_baseline(agent, {**restored, "_execution_owner": {"kind": "pooled"}}, {})
+    body_candidate.reattribute(pooled_ctx)
+    selected, _evidence, error, _binding = git_tools._task_attributed_commit_paths(pooled_ctx, None)
+    assert error == "" and selected == ["ouroboros/mod_a.py"], (_evidence, pooled_ctx.repo_dir, (pooled_ctx.repo_dir / "ouroboros/mod_a.py").read_text(encoding="utf-8"))
+    assert load_task_result(tmp_path, "head")["mutation_evidence"] == baseline
     assert restored["detached_at"] == durable["detached_at"]
     assert restored["tool_profile"] == "operator_control"
     woke = [outcome for outcome in wake_ready_sleepers(q) if outcome.get("ok")]

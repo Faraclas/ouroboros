@@ -622,12 +622,12 @@ class OuroborosAgent:
 
     def _capture_mutation_baseline(self, task: Dict[str, Any], task_metadata: Dict[str, Any]) -> None:
         """Mutation-attribution baseline: snapshot the system repo's clean/dirty
-        state once, when a queued ROOT task starts. Evidence only — a capture
+        state once, before a ROOT task's first effects, regardless of carrier.
+        Direct-to-pooled handoff keeps the same baseline. Evidence only — a capture
         failure never blocks the task; commit staging then simply has no
         attributed candidate set to consume."""
         if (
             str(task.get("id") or "").strip()
-            and not inline_execution(task)
             and str(task_metadata.get("delegation_role") or "").lower() != "subagent"
         ):
             try:

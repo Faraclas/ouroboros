@@ -15,7 +15,7 @@ import logging
 import os
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
-from ouroboros.utils import run_cmd, utc_now_iso
+from ouroboros.utils import json_dumps, run_cmd, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -57,10 +57,14 @@ def _evolution_restart_block_reason(ctx: ToolContext) -> str:
     return "commit_reviewed must create a local reviewed commit before evolution restart"
 
 
-def _prepare_self_change(ctx: ToolContext, resume: str = "", in_place: bool = False) -> str:
+def _prepare_self_change(ctx: ToolContext, resume: str = "", in_place: bool = False, authorship: dict = None) -> str:
     """Prepare (or deliberately resume) this task's body candidate before authoring or testing."""
     from ouroboros import body_candidate
 
+    if authorship is not None and (in_place or not isinstance(authorship, dict) or set(authorship) != {
+            'baseline_hash', 'paths', 'reason', 'evidence'}):
+        return _publish_tool_result(ctx, ToolResult(status='error', code='TOOL_ARG_ERROR',
+            text='Authorship requires a bound candidate and baseline_hash, paths, reason and evidence; not in_place.'))
     if in_place:
         from ouroboros.config import get_runtime_mode
         from ouroboros.consciousness_authority import effective_runtime_mode
@@ -81,6 +85,35 @@ def _prepare_self_change(ctx: ToolContext, resume: str = "", in_place: bool = Fa
     except body_candidate.CandidateRefused as exc:
         return _publish_tool_result(ctx, ToolResult(
             status="blocked", code=exc.code, text=f"⚠️ {exc.code}: {exc.text}"))
+    decision = None
+    if authorship is not None:
+        try:
+            import hashlib
+            from ouroboros.artifacts import store_actor_source_bytes
+            from ouroboros.mutation_authorship import record_authorship
+            from ouroboros.tools.query_data import _read_refusal
+            from ouroboros.tool_access import build_resolved_resource_binding
+
+            if (body_candidate.owner_id(ctx) != ctx.task_id or set(authorship) != {
+                    'baseline_hash', 'paths', 'reason', 'evidence'}):
+                raise ValueError('only the acting root may decide its own candidate authorship')
+            refs = []
+            for entry in authorship['evidence']:
+                binding = build_resolved_resource_binding(ctx, root='artifact_store', operation='read', path=entry['path'])
+                if refusal := _read_refusal(ctx, binding.target_path):
+                    raise ValueError(refusal)
+                raw = binding.target_path.read_bytes()
+                if hashlib.sha256(raw).hexdigest() != entry['sha256']:
+                    raise ValueError('authorship evidence changed')
+                refs.append(store_actor_source_bytes(body_candidate._results_root(ctx), ctx.task_id,
+                    category='tool_results', source_id='authorship-evidence', data=raw, extension='txt'))
+                refs[-1]['task_id'] = ctx.task_id
+            decision = record_authorship(body_candidate._results_root(ctx), ctx.task_id, ctx.repo_dir,
+                baseline_hash=authorship['baseline_hash'], paths=authorship['paths'], reason=authorship['reason'],
+                evidence_refs=refs)
+        except (ValueError, TypeError, KeyError, OSError, RuntimeError) as exc:
+            return _publish_tool_result(ctx, ToolResult(status='blocked', code='LEGACY_BLOCKED',
+                text=f'⚠️ GIT_AUTHORSHIP_BLOCKED: candidate remains bound at {bound["path"]}; attribution was not changed: {exc}'))
     from ouroboros.tools.tool_resolution import active_repo_dir_for
     from ouroboros.workspace_copies import same_directory
 
@@ -97,6 +130,8 @@ def _prepare_self_change(ctx: ToolContext, resume: str = "", in_place: bool = Fa
         "an exact reviewed commit is adopted with request_restart(adopt_commit=...), or published through the Git/PR tools."
         + (f" The earlier checkout of this task was gone; its commits remain on branch {bound['previous_branch']}."
            if bound.get("previous_branch") else "")
+        + (" Current-byte authorship recorded (author judgment, not historical cleanliness): "
+           + json_dumps(decision, ensure_ascii=False) if decision else "")
     )
 
 
@@ -224,6 +259,11 @@ def self_change_tool_entries() -> list:
             "parameters": {"type": "object", "properties": {
                 "resume": {"type": "string", "description": "Exact retained candidate to continue; omit for this task's own."},
                 "in_place": {"type": "boolean", "description": "Cyber Pro only: author the serving checkout directly."},
+                "authorship": {"type": "object", "description": "Explicitly attribute exact current bytes of selected preexisting paths in YOUR bound candidate, with hash-checked retained evidence. Historical baseline stays unchanged; this is author judgment for reviewers, not proof of past cleanliness, review approval or permission over foreign work. Changed bytes/modes require a new decision.", "properties": {
+                    "baseline_hash": {"type": "string"}, "paths": {"type": "array", "items": {"type": "string"}},
+                    "reason": {"type": "string"}, "evidence": {"type": "array", "items": {"type": "object", "properties": {
+                        "path": {"type": "string"}, "sha256": {"type": "string"}}, "required": ["path", "sha256"]}},
+                }, "required": ["baseline_hash", "paths", "reason", "evidence"]},
             }, "required": []},
         }, _prepare_self_change),
         ToolEntry("request_restart", {

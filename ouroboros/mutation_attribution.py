@@ -451,13 +451,22 @@ def _predecessor_git_changes(
                      or fingerprint.get("git_mode") in {"100644", "100755", "120000"})
                 and fingerprint == (git.get("dirty_fingerprints") or {}).get(path)):
             adoption["paths"].append(path)
+    if retained.get("authorship_decisions"):
+        adoption["authorship_decisions"] = retained["authorship_decisions"]
     return adoption
 
 
-def _foreign_dirty_paths(git: Mapping[str, Any]) -> set[str]:
+def _foreign_dirty_paths(git: Mapping[str, Any], evidence, baseline, root) -> set[str]:
     """Keep the observed dirty set intact while recognizing explicit custody."""
+    from ouroboros.mutation_authorship import matching_authorship
+
     adoption = git.get("predecessor_adoption") or {}
-    return set(git.get("dirty_paths") or []) - set(adoption.get("paths") or [])
+    dirty = set(git.get("dirty_paths") or []) - set(adoption.get("paths") or [])
+    named = {p for row in evidence.get("authorship_decisions") or []
+             if row.get("baseline_hash") == baseline.get("baseline_hash") and row.get("canonical_root") == str(root)
+             for p in row.get("fingerprints", {})}
+    return dirty - (matching_authorship(evidence, baseline, root, _git_path_fingerprints(root, dirty & named))
+                    if evidence.get("authorship_decisions") else set())
 
 
 def mutation_evidence_projection(evidence: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -563,6 +572,9 @@ def mutation_evidence_projection(evidence: Mapping[str, Any] | None) -> dict[str
         "known_path_count": known_path_count,
         "preexisting_dirty_count": preexisting_dirty_count,
         **({"adopted_predecessor_path_count": adopted_path_count} if adopted_path_count else {}),
+        **({"authored_path_count": len({p for row in evidence["authorship_decisions"]
+             if row.get("baseline_hash") == baseline_hash for p in row["fingerprints"]})}
+           if evidence.get("authorship_decisions") else {}),
         "terminal_snapshot_present": isinstance(terminal, Mapping),
         "terminal_candidate_count": terminal_candidate_count,
         "terminal_excluded_count": terminal_excluded_count,
@@ -648,7 +660,7 @@ def attributed_git_candidates(
         changed = []
     if current_head != str(git.get("base_commit") or ""):
         blockers.append("baseline_stale")
-    dirty = _foreign_dirty_paths(git)
+    dirty = _foreign_dirty_paths(git, evidence, baseline, root)
     fingerprints = git.get("dirty_fingerprints") or {}
     excluded = sorted(path for path in changed if path in dirty)
     candidates = sorted(path for path in changed if path not in dirty)
@@ -672,6 +684,10 @@ def attributed_git_candidates(
         "base_commit": str(git.get("base_commit") or ""),
         "base_tree": str(git.get("base_tree") or ""),
         "canonical_root": str(root),
+        **({"authorship_decisions": [row for row in evidence["authorship_decisions"]
+                                    if row.get("baseline_hash") == baseline.get("baseline_hash")
+                                    and row.get("canonical_root") == str(root)]}
+           if evidence.get("authorship_decisions") else {}),
         **({"predecessor_adoption": dict(git["predecessor_adoption"])} if git.get("predecessor_adoption") else {}),
     }
 
@@ -771,14 +787,16 @@ def record_terminal_mutation_candidates(
                 uncommitted = []
                 changed = []
                 blockers.append("candidate_scan_failed")
-            dirty = _foreign_dirty_paths(git)
+            dirty = set(git.get("dirty_paths") or []) - set((git.get("predecessor_adoption") or {}).get("paths") or [])
             fingerprints = git.get("dirty_fingerprints") or {}
-            excluded = sorted(path for path in changed if path in dirty)
             try:
-                current_fingerprints = _git_path_fingerprints(root, changed)
+                if current_head:
+                    dirty = _foreign_dirty_paths(git, evidence, baseline, root)
+                current_fingerprints = _git_path_fingerprints(root, changed) if current_head else {}
             except OSError:
                 current_fingerprints = {}
                 blockers.append("candidate_fingerprint_unavailable")
+            excluded = sorted(path for path in changed if path in dirty)
             if any(
                 not _foreign_fingerprint_matches(fingerprints.get(path), current_fingerprints.get(path))
                 for path in excluded
@@ -797,6 +815,8 @@ def record_terminal_mutation_candidates(
             row.update({
                 "candidates": candidates,
                 "candidate_fingerprints": candidate_fingerprints,
+                **({"authorship_decisions": evidence["authorship_decisions"]}
+                   if evidence.get("authorship_decisions") else {}),
                 "base_commit": current_head,
                 "excluded_preexisting_dirty": excluded,
                 "blockers": sorted(dict.fromkeys(blockers)),
@@ -909,13 +929,8 @@ def advance_mutation_baseline(
     *,
     reason: str = "attributed_commit",
 ) -> dict[str, Any]:
-    """Open a new baseline epoch after the task's own attributed commit.
-
-    The committed content is now part of HEAD, so a fresh capture re-marks the
-    surviving foreign dirt as pre-existing and the next attributed staging
-    window opens from the new commit instead of failing ``baseline_stale``.
-    An unexplained HEAD move (no advance) still surfaces as a stale baseline.
-    """
+    """Advance after an attributed commit; retain foreign dirt and byte-bound
+    author decisions. Unexplained HEAD moves still surface as stale baselines."""
     root = _canonical_root(repo_root)
     current = load_task_result(results_drive_root, str(task_id or "")) or {}
     evidence = dict(current.get("mutation_evidence") or {})
@@ -931,7 +946,7 @@ def advance_mutation_baseline(
         # dirty set with what is still dirty now. A blind re-capture would
         # re-mark the task's own not-yet-committed leftovers as foreign
         # pre-existing dirt and wedge their follow-up commit.
-        prior_dirty = {str(path) for path in row["git"].get("dirty_paths") or []}
+        prior_dirty = set(row["git"].get("dirty_paths") or [])
         still_dirty = sorted(prior_dirty & set(_git_status_paths(root)))
         new_row = dict(row)
         new_row["captured_at"] = utc_now_iso()
@@ -951,6 +966,7 @@ def advance_mutation_baseline(
         raise RuntimeError("no git baseline surface matches the committed root")
     epochs = [dict(r) for r in baseline.get("epochs") or [] if isinstance(r, dict)]
     epochs.append({"advanced_at": utc_now_iso(), "reason": str(reason or "attributed_commit")})
+    old_hash = baseline.get("baseline_hash")
     baseline = dict(baseline)
     baseline.update({"surfaces": surfaces, "epochs": epochs})
     baseline.pop("baseline_hash", None)
@@ -960,6 +976,9 @@ def advance_mutation_baseline(
         "baseline": baseline,
         "effect_state": "observed_window",
     })
+    if evidence.get("authorship_decisions"):
+        from ouroboros.mutation_authorship import carry_authorship
+        evidence["authorship_decisions"] = carry_authorship(evidence, old_hash, baseline)
     # A terminal snapshot from the previous epoch must not linger as current.
     evidence.pop("terminal_candidate_snapshot", None)
     status = str(current.get("status") or STATUS_RUNNING)

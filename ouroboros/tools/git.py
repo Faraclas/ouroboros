@@ -1190,10 +1190,13 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
     if managed_resume:
         return _resume_managed_commit(ctx, _managed_tx, _commit_start)
     attribution_binding, attribution_error = None, ""
+    ctx._commit_authorship = None
     if _managed_tx:
         paths = None  # a managed merge always stages the WHOLE resolved tree (ignore paths)
     else:
         paths, _attribution, attribution_error, attribution_binding = _task_attributed_commit_paths(ctx, paths)
+        if _attribution and (_attribution.get("authorship_decisions") or (_attribution.get("predecessor_adoption") or {}).get("authorship_decisions")):
+            ctx._commit_authorship = _attribution
     for block_reason, error in (("mutation_attribution", attribution_error), ("overlap_guard", overlap_err)):
         if error:
             _record_commit_attempt(
