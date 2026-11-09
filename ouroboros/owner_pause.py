@@ -204,7 +204,8 @@ def _resume_outstanding(current: Dict[str, Any], fence: Dict[str, Any]) -> bool:
 
 def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
                   late_work: bool = False, requested_by: str = "owner",
-                  actor_id: str = "", by: Optional[dict] = None) -> Tuple[Dict[str, Any], bool]:
+                  actor_id: str = "", by: Optional[dict] = None,
+                  resume_after_restart: bool = False) -> Tuple[Dict[str, Any], bool]:
     """Close the root's fence durably; ``(fence, created)``.
 
     Idempotent by ``request_id`` across Resume and later Pause generations;
@@ -256,6 +257,12 @@ def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
         if current.get("status") in _TRULY_TERMINAL_STATUSES and not (late_work or late_open):
             raise OwnerPauseRefused("task_terminal")
         if fence_closed(old) and not _resume_outstanding(actor_current if actor_current is not None else current, old):
+            if resume_after_restart and not old.get("maintenance_return"):
+                raise OwnerPauseRefused("already_paused_indefinitely")
+            # A fresh plain Pause cancels a temporary return promise. It is not
+            # another fence, but the changed policy must survive exact-request replay.
+            if not resume_after_restart and old.get("maintenance_return"):
+                old = {**old, "maintenance_return": {**old["maintenance_return"], "state": "cancelled"}}
             requests[request_id] = {**attribution, "fence_id": old["fence_id"], "generation": old.get("generation")}
             fence = {**old, **({} if pause_author(old)["actor"] else attribution), "requests": requests}
             outcome.update(fence=fence, created=False)
@@ -272,6 +279,9 @@ def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
         }
         requests[request_id] = {**attribution, "fence_id": fence["fence_id"], "generation": fence["generation"]}
         fence["requests"] = requests
+        if resume_after_restart:
+            from ouroboros.delegate_recovery import _PROCESS_GENERATION
+            fence["maintenance_return"] = {"state": "pending", "generation": _PROCESS_GENERATION}
         outcome.update(fence=fence, created=True)
         return stamp_task_result_schema({**current, "owner_pause": fence})
 

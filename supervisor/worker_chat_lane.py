@@ -847,6 +847,12 @@ def auto_resume_after_restart() -> None:
             update_state(lambda state: state.update({PANIC_RECEIPT: identity}))
             remove_received_panic(root, identity)
             return
+        from supervisor.maintenance_return import resume_maintenance_pauses
+        try:
+            resume_maintenance_pauses(root)
+        except Exception as exc:
+            append_jsonl(root / "logs" / "supervisor.jsonl", {
+                "ts": utc_now_iso(), "type": "maintenance_return_unavailable", "error": str(exc)})
         if restart:
             return
 

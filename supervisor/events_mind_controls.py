@@ -36,6 +36,7 @@ def _apply(evt: dict) -> dict:
         if action == "pause_task":
             # The owner reads this declared author and sentence; like ``mind_control``, it grants no power.
             return request_owner_pause(task_id, request_id=nonce,
+                                       resume_after_restart=evt.get("resume_after_restart") is True,
                                        by={"actor": "ouroboros", "text": reason.strip(), "at": utc_now_iso()})
         if action == "resume_task":
             return resume_budget_paused_task(task_id)
