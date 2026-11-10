@@ -283,6 +283,13 @@ def _calls(source: str, target: str):
 
         def visit_Call(self, node):
             func = node.func
+            # A bound receipt remains a writer even when passed to store_gate.
+            # Read its original arguments, not partial's extra function operand.
+            if (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
+                    and func.value.id == "functools" and func.attr == "partial" and node.args):
+                func = node.args[0]
+                node = ast.copy_location(ast.Call(func=func, args=node.args[1:],
+                                                  keywords=node.keywords), node)
             name = (
                 func.id if isinstance(func, ast.Name)
                 else func.attr if isinstance(func, ast.Attribute) else ""
@@ -657,3 +664,16 @@ def sibling():
     assert [(qualname, _expression(source, node, 2, "status")) for qualname, node in found] == [
         ("refusal", "STATUS_FAILED"), ("sibling", "status"),
     ]
+
+
+def test_terminal_inventory_keeps_bound_writer_arguments():
+    source = '''
+def refuse():
+    writer = persist_never_admitted_refusal if never_admitted else write_task_result
+    receipt = functools.partial(writer, root, tid, **({} if never_admitted else {"status": status}))
+    unrelated = functools.partial(other_operation, root, tid, status="completed")
+'''
+    calls = _calls(source, "write_task_result")
+    assert len(calls) == 1 and calls[0][0] == "refuse"
+    assert _expression(source, calls[0][1], 2, "status") == "status"
+    assert _calls(source, "absent_writer") == []
