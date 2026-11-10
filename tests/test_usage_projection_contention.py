@@ -219,10 +219,6 @@ def test_display_reads_never_stall_under_64way_write_convoy(data_root, superviso
         for name, worst in durations.items():
             assert worst < _MAX_READ_SEC, f"{name} stalled {worst:.2f}s behind the convoy"
 
-        # The readers kept serving real data from the store.
-        projection = live_root_cost_projection("root", task, {}, data_root)
-        assert projection.get("cost_accounting_status") == "available"
-        assert projection.get("accounted_upper_bound_usd_with_children") is not None
     finally:
         stop.set()
         for thread in writers:
@@ -230,6 +226,13 @@ def test_display_reads_never_stall_under_64way_write_convoy(data_root, superviso
         assert not any(thread.is_alive() for thread in writers), "writer never stopped"
 
     assert not errors, errors[:5]
+
+    # Responsiveness is required during contention; successful data availability
+    # is checked after quiescence. A bounded display read may be unavailable
+    # during a commit (covered by the real exclusive-lock controls below).
+    projection = live_root_cost_projection("root", task, {}, data_root)
+    assert projection.get("cost_accounting_status") == "available"
+    assert projection.get("accounted_upper_bound_usd_with_children") is not None
 
     # A display read and a strict read agree once the convoy stops.
     final_calls = int(ua.usage_breakdown(data_root).get("physical_calls") or 0)

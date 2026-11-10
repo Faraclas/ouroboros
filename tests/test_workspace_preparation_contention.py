@@ -18,6 +18,68 @@ from tests.test_workspace_preparation import env as env, spy_provisions, _WAIT_S
 pytestmark = pytest.mark.serial
 
 
+@pytest.fixture(params=[False, True])
+def prior_admission_reader(env, monkeypatch, request):
+    """Keep the earlier child's real read transaction until the lock injector drains its lane."""
+    if not request.param:
+        yield
+        return
+    from supervisor import events_schedule_task as scheduling
+
+    reader_held, release_reader = threading.Event(), threading.Event()
+    record_finished, idle_entered, idle_returned = (threading.Event() for _ in range(3))
+    enqueue = task_admission.enqueue_subagent_with_scheduled_result
+    record = scheduling._record_delegation_constraint
+    lane_idle = env.gen.lane_idle
+
+    def enqueue_with_reader(ctx, task, **kwargs):
+        if task['id'] == 'blocker':
+            assert record_finished.wait(_WAIT_SEC)
+            with store.connection(env.data / 'state/current.sqlite', store.TIER_ENFORCED) as conn:
+                conn.execute('BEGIN')
+                try:
+                    conn.execute('SELECT count(*) FROM meta').fetchone()
+                    reader_held.set()
+                    assert release_reader.wait(_WAIT_SEC)
+                finally:
+                    conn.execute('ROLLBACK')
+        return enqueue(ctx, task, **kwargs)
+
+    def after_record(*args, **kwargs):
+        result = record(*args, **kwargs)
+        if kwargs.get('task_id') == 'based':
+            record_finished.set()
+            assert reader_held.wait(_WAIT_SEC)
+        return result
+
+    def observed_idle(lane, timeout=None):
+        if lane == prep.ADMISSION_LANE:
+            idle_entered.set()
+        result = lane_idle(lane, timeout)
+        if lane == prep.ADMISSION_LANE:
+            idle_returned.set()
+        return result
+
+    def release_during_idle_wait():
+        assert idle_entered.wait(_WAIT_SEC)
+        assert reader_held.is_set() and not release_reader.is_set()
+        assert not lane_idle(prep.ADMISSION_LANE, 0) and not idle_returned.is_set()
+        release_reader.set()
+
+    monkeypatch.setattr(task_admission, 'enqueue_subagent_with_scheduled_result', enqueue_with_reader)
+    monkeypatch.setattr(scheduling, '_record_delegation_constraint', after_record)
+    monkeypatch.setattr(env.gen, 'lane_idle', observed_idle)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        controller = pool.submit(release_during_idle_wait)
+        try:
+            yield
+        finally:
+            release_reader.set()
+            record_finished.set()
+            idle_entered.set()
+        controller.result(timeout=_WAIT_SEC)
+
+
 def test_held_store_at_entry_claims_in_memory_and_admits_once_when_free(env, monkeypatch):
     """The event loop touches no storage: a request arriving while the store is held is claimed in
     memory, never re-put, and its lane writes the marker and admits once the store frees."""
@@ -400,6 +462,8 @@ def test_direct_head_refusal_keeps_primary_detail_across_publication_contention(
                 presend_gap[0] = False
                 # The preceding CURRENT read already succeeded. An independent
                 # exclusive owner now makes the actual zero-wait write contend.
+                assert env.gen.current_lane() == prep.COPY_LANE
+                assert env.gen.lane_idle(prep.ADMISSION_LANE, _WAIT_SEC)
                 with database_reader(env.data, exclusive=True):
                     with pytest.raises(store.StoreBusy) as held:
                         real_write(root, tid, status, **kwargs)
@@ -441,12 +505,13 @@ def test_direct_head_refusal_keeps_primary_detail_across_publication_contention(
 
 
 @pytest.mark.parametrize('published', [False, True])
-def test_direct_head_refusal_presend_contention_keeps_one_commit(env, monkeypatch, published):
+def test_direct_head_refusal_presend_contention_keeps_one_commit(env, monkeypatch, published,
+                                                               prior_admission_reader):
     test_direct_head_refusal_keeps_primary_detail_across_publication_contention(
         env, monkeypatch, published, presend_busy=True)
 
 
-def test_direct_head_refusal_waits_for_real_store_contention_once(env, monkeypatch):
+def test_direct_head_refusal_waits_for_real_store_contention_once(env, monkeypatch, prior_admission_reader):
     from supervisor import events_schedule_task as scheduling
     from tests.test_workspace_preparation import test_head_moved_while_queued_keeps_the_typed_base_refusal
 
@@ -478,11 +543,18 @@ def test_direct_head_refusal_waits_for_real_store_contention_once(env, monkeypat
     monkeypatch.setattr(scheduling, '_send_subagent_rejection', notice)
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(test_head_moved_while_queued_keeps_the_typed_base_refusal, env)
-        assert reached.wait(_WAIT_SEC)
-        with database_reader(env.data, exclusive=True):
+        try:
+            assert reached.wait(_WAIT_SEC)
+            # The copy-lane callback is parked, not the prior child's admission.
+            # Drain only that independent lane before injecting the exclusive lock.
+            assert env.gen.lane_idle(prep.ADMISSION_LANE, _WAIT_SEC)
+            with database_reader(env.data, exclusive=True):
+                proceed.set()
+                assert busy_seen.wait(3)
+                assert not env.gen.wait_idle(0)
+        finally:
+            # Even a failed fixture acquisition must release its parked jobs.
             proceed.set()
-            assert busy_seen.wait(3)
-            assert not env.gen.wait_idle(0)
         future.result(timeout=_WAIT_SEC)
     assert notices == ['based']
     assert env.row('based')[prep.MARKER]['phase'] == prep.REFUSED

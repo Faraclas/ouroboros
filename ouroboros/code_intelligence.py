@@ -21,7 +21,8 @@ import subprocess
 import time
 import unicodedata
 from collections import Counter
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import MISSING, asdict, dataclass, field, fields, replace
+from itertools import repeat
 from typing import Any, Callable, Dict, Iterable, List
 
 from ouroboros.code_import_candidates import import_specs, is_import_node
@@ -206,7 +207,35 @@ def _call_from_json(raw: Any) -> CallSiteFact:
     )
 
 
-def _file_from_json(raw: Any) -> FileFact | None:
+def _validate_deferred_details(raw: dict) -> None:
+    """Keep eager acceptance without allocating rich objects, not weaker validity.
+
+    Ordinary JSON call scalars take C-level scans; unusual values use the old
+    coercions. Import values are untyped, so only keyword binding is checked.
+    """
+    calls = raw.get("call_sites") or []
+    if not isinstance(calls, list):
+        calls = list(calls)
+    try:
+        ordinary = all(set(map(type, map(dict.get, calls, repeat(key)))) <= types
+                       for key, types in (("line", {int, type(None)}),
+                                          ("name", {str, type(None)}),
+                                          ("enclosing", {str, type(None)})))
+    except TypeError:
+        ordinary = False
+    if not ordinary:
+        for item in calls:
+            data = item if isinstance(item, dict) else {}
+            str(data.get("name") or ""), int(data.get("line") or 0), str(data.get("enclosing") or "")
+    declared = fields(ImportFact)
+    required = {f.name for f in declared if f.default is MISSING and f.default_factory is MISSING}
+    allowed = {f.name for f in declared}
+    for item in raw.get("import_facts", []):
+        if not isinstance(item, dict) or not required <= item.keys() <= allowed:
+            raise TypeError("invalid cached import fact arguments")
+
+
+def _file_from_json(raw: Any, *, _relevance: bool = False) -> FileFact | None:
     if not isinstance(raw, dict):
         return None
     required = ("path", "sha256", "size", "language", "token_estimate",
@@ -214,6 +243,8 @@ def _file_from_json(raw: Any) -> FileFact | None:
     if any(key not in raw for key in required):
         return None
     try:
+        if _relevance:
+            _validate_deferred_details(raw)
         return FileFact(
             path=str(raw.get("path") or ""),
             sha256=str(raw.get("sha256") or ""),
@@ -225,9 +256,9 @@ def _file_from_json(raw: Any) -> FileFact | None:
             symbols=[item for item in (_symbol_from_json(s) for s in raw.get("symbols") or []) if item.name],
             imports=sorted({str(item) for item in (raw.get("imports") or []) if str(item)}),
             routes=sorted({str(item) for item in (raw.get("routes") or []) if str(item)}),
-            call_sites=[item for item in (_call_from_json(s) for s in raw.get("call_sites") or []) if item.name],
+            call_sites=None if _relevance else [item for item in (_call_from_json(s) for s in raw.get("call_sites") or []) if item.name],
             exports=sorted({str(item) for item in (raw.get("exports") or []) if str(item)}),
-            import_facts=[ImportFact(**item) for item in raw.get("import_facts", [])],
+            import_facts=None if _relevance else [ImportFact(**item) for item in raw.get("import_facts", [])],
             import_facts_complete=raw.get("import_facts_complete") is True,
             import_facts_method=str(raw.get("import_facts_method") or ""),
         )
@@ -237,16 +268,22 @@ def _file_from_json(raw: Any) -> FileFact | None:
 
 def load_cached_inventory(repo_root: pathlib.Path, drive_root: pathlib.Path) -> CodeInventory | None:
     """Load current local facts; old caches may contain stale cross-file joins."""
+    return _load_cached_inventory(repo_root, drive_root)[0]
+
+
+def _load_cached_inventory(repo_root, drive_root, *, _relevance=False):
+    """Private light view plus object-keyed full sources; public loads stay rich."""
     path = inventory_cache_path(repo_root, drive_root)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return None
+        return None, {}
     if not isinstance(raw, dict) or raw.get("schema_version") != CODE_INTELLIGENCE_SCHEMA_VERSION:
-        return None
-    files = [_file_from_json(item) for item in raw.get("files") or []]
+        return None, {}
+    records = raw.get("files") or []
+    files = [_file_from_json(item, _relevance=_relevance) for item in records]
     if any(fact is None for fact in files):
-        return None
+        return None, {}
     raw_cov = raw.get("coverage")
     coverage = ({str(k): int(v or 0) for k, v in raw_cov.items()} if isinstance(raw_cov, dict)
                 else dict(Counter(file.disposition for file in files)))
@@ -259,7 +296,7 @@ def load_cached_inventory(repo_root: pathlib.Path, drive_root: pathlib.Path) -> 
         coverage=coverage,
         nested_roots=list(raw.get("nested_roots") or []),
         enumeration_limits=list(raw.get("enumeration_limits") or []),
-    )
+    ), ({id(fact): record for fact, record in zip(files, records)} if _relevance else {})
 
 
 def _git_head(repo_root: pathlib.Path) -> str:
@@ -812,9 +849,13 @@ def build_code_inventory(
     path_allowed: Callable[[pathlib.Path], bool] | None = None,
     parse: bool = True,
     name: str = "",
+    _relevance: bool = False,
 ) -> CodeInventory:
-    """Current inventory facts; ``parse=False`` lists admitted paths only, never cached. ``name`` leaves
-    files whose current bytes cannot hold that outline name unparsed (``name_absent``), likewise uncached."""
+    """Current facts; parse=False lists paths, name skips provably absent outlines.
+
+    Private _relevance views defer call/import objects (None), not validity.
+    Only query_code's relevance renderer consumes them; cache writes stay rich.
+    """
     root = pathlib.Path(repo_root).resolve(strict=False)
     deadline = time.monotonic() + _MAX_ENUMERATION_SECONDS
     excluded_paths = [
@@ -835,7 +876,24 @@ def build_code_inventory(
     # A selected file (or empty scoped result) needs no unrelated cached facts.
     # Decide after admission/enumeration: a one-file directory still reuses cache.
     file_scope = scoped != pathlib.PurePosixPath(".") and (not paths or paths == [root / scoped])
-    cached = load_cached_inventory(root, drive_root) if drive_root is not None and parse and not file_scope else None
+    cached, sources = None, {}
+    if drive_root is not None and parse and not file_scope:
+        if _relevance:
+            cached, sources = _load_cached_inventory(root, drive_root, _relevance=True)
+        else:
+            cached = load_cached_inventory(root, drive_root)
+
+    def full(file):
+        # Identity, not path: duplicate cached paths keep distinct tail records.
+        return file if file.call_sites is not None else _file_from_json(sources[id(file)])
+
+    def same(left, right):
+        if left is None or right is None:
+            return left is right
+        return (replace(left, files=[]) == replace(right, files=[])
+                and len(left.files) == len(right.files)
+                and all(a is b or full(a) == full(b) for a, b in zip(left.files, right.files)))
+
     cached_by_path = {file.path: file for file in (cached.files if cached else [])}
     walked = None if any("limit" in note for note in enumeration_limits) else {
         path.relative_to(root).as_posix() for path in paths}
@@ -886,7 +944,13 @@ def build_code_inventory(
         kept = sorted([*files, *tail], key=lambda f: f.path)
         stored = replace(inventory, files=kept, coverage=dict(Counter(f.disposition for f in kept)))
     # A caller-scoped view must not replace the shared full-source cache.
-    if persist and parse and not name and drive_root is not None and not filtered and stored != cached:
+    if persist and parse and not name and drive_root is not None and not filtered and not same(stored, cached):
+        if sources:
+            stored = replace(stored, files=[full(f) for f in stored.files])
+            if any(f is None for f in stored.files):
+                return build_code_inventory(root, scope=scope, drive_root=drive_root, persist=persist,
+                                            exclude_paths=excluded_paths, path_allowed=path_allowed,
+                                            parse=parse, name=name)
         atomic_write_json(inventory_cache_path(root, pathlib.Path(drive_root)), stored.to_json(), trailing_newline=True)
         from ouroboros.maintenance_retirement import artifact_changed
         artifact_changed(drive_root)

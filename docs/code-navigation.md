@@ -200,8 +200,11 @@ relative-import helpers remain available to their architecture/review consumers.
 Restricted/scoped, path-only and name-prepared views never overwrite the shared
 inventory cache. Explicit-file views parse fresh admitted bytes without loading
 the full cache; a named view may therefore report `name_absent` rather than reuse
-an indexed fact. Directory/root views retain hash-checked reuse and its load cost.
-A bounded full-source refresh keeps unvisited prior facts only in
-that disposable cache, never in current returned rows. Reuse checks current
-path/hash; a complete refresh removes deleted files. This avoids needless
-reparsing, not a new freshness guarantee. Retention/reset: [PERSISTENCE](PERSISTENCE.md).
+an indexed fact. Directory/root views retain hash-checked reuse. Relevance alone defers call-site
+and detailed-import objects in a private view, retaining their raw records and
+validating even unused fields with the eager loader's coercion/binding rules.
+Public cache loads and other operations remain rich. Normal equality/writeback
+materializes complete records, including unvisited bounded-refresh tails; a
+light view cannot erase sibling evidence or trigger spurious warm writes.
+A complete refresh removes deletions; scoped/restricted views never replace the
+full cache. Retention/reset: [PERSISTENCE](PERSISTENCE.md).
