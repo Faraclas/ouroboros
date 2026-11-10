@@ -1075,6 +1075,35 @@ Nobody votes, and whether an open objection holds is the host's fact, not part o
 
 ---
 
+## Pre-Result-Review Self-Check
+
+For the author, before asking for result review (or declaring completion without
+one). This is judgment using existing sources, not another host gate or a demand
+to run a review that the task does not need.
+
+1. Reconcile the task, owner decisions and accepted commitments. Identify the
+   coordination handoffs explicitly due at this boundary; do not infer new duties
+   from a tool call, a board status or a reviewer's preferred workflow.
+2. Check each required handoff's actual submission evidence. Separate **not
+   submitted/unconfirmed**, **submitted, receipt pending**, **host-observed read**
+   and **recipient answered**. Tool success or a durable mailbox write proves
+   neither reading nor agreement. A host read acknowledgement means transcript
+   consumption, not substantive acceptance. Require a reply only when the task
+   requires it; otherwise disclose pending receipt without inventing a wait.
+3. Resolve the exact final evidence pointer through its real reader. For a file,
+   confirm the artifact exists, is registered for delivery and opens at the path
+   being handed over—not an older draft or a local-only copy. Existing artifact
+   observation confirms existence, not content or recipient access. An unreadable,
+   missing or out-of-scope pointer is a gap, never evidence of success. A result
+   with no file deliverable needs no invented artifact.
+4. Fix a missing required handoff or broken pointer before spending final-review
+   effort, or explicitly present the result as partial with the unmet requirement
+   and its real blocker. Keep future/post-review notifications labelled pending;
+   do not move a task-defined deadline or claim them already performed. Review
+   enforcement, Stop/Panic and the author's right to deliver an honest partial
+   remain unchanged. Memory bookkeeping and optional notices need not delay the
+   ready answer.
+
 ## Result Review Checklist
 
 Used by `review_change(subject="result")`: the mind asks for it, and under task review Required the host
