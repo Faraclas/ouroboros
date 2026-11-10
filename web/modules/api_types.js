@@ -761,6 +761,9 @@
  * @property {boolean=} pinned  // absent on legacy rows means unpinned
  * @property {number=} chat_id
  * @property {string=} working_dir
+ * @property {import('./client_contract_types.js').ProjectLocation=} location
+ * @property {boolean=} working_dir_configured
+ * @property {?ProjectResourceObservation=} working_dir_observation
  * @property {Array<ProjectResource>=} resources
  * @property {"active"|"closing"|"closed"=} lifecycle_label
  * @property {string=} reopened_at

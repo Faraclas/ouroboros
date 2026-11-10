@@ -1071,6 +1071,8 @@ def update_project(
             for key, value in updates.items():
                 if key not in allowed or (key in only_if_empty and str(entry.get(key) or "").strip()):
                     continue
+                if key == "working_dir" and key in only_if_empty and entry.get("working_dir_configured") is True:
+                    continue  # explicit empty configuration is not an unchosen default
                 if key == "name":
                     value = _validated_name(value, str(entry.get("id") or ""))
                 if key == "pinned" and type(value) is not bool:
@@ -1333,7 +1335,7 @@ def ensure_project_workspace(drive_root: Any, project_id: str, repo_dir: Any,
     reading again after provisioning would lose an intervening rebind/ABA.
     """
     entry = create_project(drive_root, project_id, admission_basis=admission_basis)
-    if not str(entry.get("working_dir") or "").strip():
+    if not str(entry.get("working_dir") or "").strip() and entry.get("working_dir_configured") is not True:
         try:
             from ouroboros.subagent_worktrees import provision_genesis_project
 

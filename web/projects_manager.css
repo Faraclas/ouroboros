@@ -40,6 +40,9 @@
 .pm-content-form label { display:flex; flex-direction:column; gap:6px; font-size:var(--type-meta); font-weight:600; }
 .pm-content-form input,.pm-content-form textarea { width:100%; min-width:0; box-sizing:border-box; font:inherit; font-size:var(--type-body); font-weight:400; min-height:40px; }
 .pm-content-form textarea { resize:vertical; line-height:var(--line-body); }
+.pm-location-editor[hidden] { display:none; }
+.pm-location .pm-content-heading { flex-wrap:wrap; }
+.pm-location .pm-note { overflow-wrap:anywhere; }
 .pm-content-actions { display:flex; flex-wrap:wrap; gap:8px; }
 .pm-content-feedback { margin:0; color:var(--text-meta); line-height:var(--line-body); overflow-wrap:anywhere; }
 .pm-content-feedback:empty,.pm-content-comparison:empty { display:none; }

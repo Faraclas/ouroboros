@@ -602,3 +602,30 @@ def test_a_folderless_direct_parent_dispatches_a_readonly_child_with_its_own_scr
     sibling.mkdir(parents=True)
     (sibling / "notes.txt").write_text("sibling-private-input", encoding="utf-8")
     assert "sibling-private-input" not in registry.execute("read_file", {"root": "task_drive", "path": str(sibling / "notes.txt")})
+
+
+def test_location_selection_changes_future_occurrences_not_bound_work(q, tmp_path):
+    from ouroboros import project_management as management, projects_registry as projects
+    folder, replacement = tmp_path / 'old-folder', tmp_path / 'new-folder'
+    folder.mkdir(); replacement.mkdir()
+    project = _project(q, folder=folder)
+    def select(path):
+        return management.update_project_location(q.root, project['id'], working_dir=str(path),
+            expected_location=management.project_location(projects.get_project(q.root, project['id'])),
+            system_repo_dir=tmp_path / 'repo')
+    _row(q, 'before', intent={'kind': 'room_default', 'project_id': project['id']}, project_id=project['id'], chat_id=project['chat_id'])
+    q.queue.check_scheduled_tasks(); original = q.pending[0]
+    assert original['workspace_root'] == str(folder)
+    select(replacement)
+    _row(q, 'after', intent={'kind': 'room_default', 'project_id': project['id']}, project_id=project['id'], chat_id=project['chat_id'])
+    q.queue.check_scheduled_tasks()
+    assert q.pending[-1]['workspace_root'] == str(replacement)
+    select('')
+    _row(q, 'cleared', intent={'kind': 'room_default', 'project_id': project['id']}, project_id=project['id'], chat_id=project['chat_id'])
+    q.queue.check_scheduled_tasks()
+    assert not q.pending[-1].get('workspace_root')
+    _row(q, 'explicit', intent={'kind': 'explicit_resource', 'root': str(folder)}, project_id=project['id'], chat_id=project['chat_id'])
+    q.queue.check_scheduled_tasks()
+    assert q.pending[-1]['workspace_root'] == str(folder)
+    assert original['workspace_root'] == str(folder)
+    with projects.project_admission_guard(q.root, original['_project_admission']): pass

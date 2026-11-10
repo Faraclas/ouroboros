@@ -570,6 +570,7 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
     "invalid_project_authorization": (False, "gateway/task_project_recovery.py: malformed exact saved-scope authorization refused with HTTP400 before any record or Resume; not a task terminal or truncated attempt"),
     "invalid_project_parent": (False, "gateway/projects.py: mixed fields or malformed/unknown parent refused with HTTP 400 before reparenting; no task transition or truncation"),
     "invalid_project_content": (False, "gateway/projects.py: mixed or invalid authored-content input refused with HTTP 400 before the content write; no task transition or truncation"),
+    "invalid_project_location": (False, "gateway/projects.py: mixed location input refused with HTTP 400 before registry configuration writes; no task transition or truncation"),
     "invalid_resource": (False, "gateway/projects.py: malformed JSON or resource-association schema input; HTTP 400 before the resource write, never a task terminal or truncated attempt"),
     "project_routing_fence_lookup_failed": (False, "gateway/tasks.py: Project authority unreadable before admission; HTTP 409, no running attempt truncated"),
     "input_source_selection_unsupported": (False, "HTTP 400 before root-task admission; no execution was truncated"),

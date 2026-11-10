@@ -769,7 +769,8 @@ class OuroborosAgent:
 
         if _resolved_project_id and room_lens_applies(task):
             try:
-                _room_dir, _room_note = room_chat_lens_dir(self.env.drive_root, _resolved_project_id)
+                _room_dir, _room_note = room_chat_lens_dir(self.env.drive_root, _resolved_project_id,
+                                                         project_admission=task.get("_project_admission"))
                 if _room_dir:
                     task_metadata["_project_room_dir"] = _room_dir
                 if _room_note:
