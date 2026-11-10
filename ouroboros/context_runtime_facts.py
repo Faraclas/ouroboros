@@ -305,12 +305,13 @@ def _project_room_fact(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             from ouroboros.projects_registry import get_project as _get_project
             from ouroboros.workspace_admission import room_chat_lens_dir as _room_lens, room_lens_applies
 
-            _room = _get_project(_DATA_DIR, _room_pid) or {}
+            _basis = task.get("_project_admission") or {}
+            _room = (_basis.get("project") or {}) if _basis.get("frozen") is True and room_lens_applies(task) else (_get_project(_DATA_DIR, _room_pid) or {})
             _room_wd = str(_room.get("working_dir") or "").strip()
             if _room_wd:
                 # Same resolver the agent uses for the tool lens, so the stated rule
                 # and the actual tool surface cannot diverge (the robot incident).
-                _lens_dir, _room_note = _room_lens(_DATA_DIR, _room_pid)
+                _lens_dir, _room_note = _room_lens(_DATA_DIR, _room_pid, project_admission=_basis)
                 _lens_active = room_lens_applies(task) and bool(_lens_dir)
                 fact.update({
                     "project_id": _room_pid,

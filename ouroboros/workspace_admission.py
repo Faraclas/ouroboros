@@ -270,7 +270,7 @@ def workspace_repair_hint(
     )
 
 
-def room_chat_lens_dir(drive_root: Any, project_id: str) -> tuple[str, str]:
+def room_chat_lens_dir(drive_root: Any, project_id: str, *, project_admission: Any = None) -> tuple[str, str]:
     """The selected folder for a direct conversation, with an availability note.
 
     Ordinary folders need no Git admission. A missing folder keeps its selected
@@ -284,7 +284,14 @@ def room_chat_lens_dir(drive_root: Any, project_id: str) -> tuple[str, str]:
         from ouroboros.projects_registry import get_reserved_project
 
         # Strict: an unreadable registry is a note, never a folderless room (#1315).
-        project = get_reserved_project(drive_root, pid, strict=True) or {}
+        if isinstance(project_admission, dict) and project_admission.get("frozen") is True:
+            from ouroboros.project_admission import validate_project_admission
+            captured = validate_project_admission(project_admission)
+            if captured["project_id"] != pid:
+                raise ValueError("The captured Project does not match the direct turn")
+            project = captured["project"] or {}
+        else:
+            project = get_reserved_project(drive_root, pid, strict=True) or {}
         if str(project.get("lifecycle") or "active") != "active":
             project = {}
         raw = str(project.get("working_dir") or "").strip()

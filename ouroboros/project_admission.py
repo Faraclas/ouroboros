@@ -255,10 +255,10 @@ def project_admission_basis(project_id: str, project: Optional[dict], *, frozen:
     basis. Reconstruction always mints an incarnation, so it cannot recreate ABA.
     """
     return {"project_id": project_id, "project": None if project is None else {
-        key: project.get(key) for key in (
+        **{key: project.get(key) for key in (
             "id", "chat_id", "lifecycle", "routing_generation", "working_dir",
             "routing_incarnation", "created_at",
-        )}, "frozen": frozen}
+        )}, **({"working_dir_configured": True} if project.get("working_dir_configured") is True else {})}, "frozen": frozen}
 
 
 def project_admission_view(drive_root: Any, project_id: str, *,

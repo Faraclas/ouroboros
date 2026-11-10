@@ -513,6 +513,19 @@ class ProjectAncestor(TypedDict):
     name: str
 
 
+class ProjectLocation(TypedDict):
+    working_dir: str
+    routing_generation: int
+    routing_incarnation: str
+    created_at: str
+
+
+class ProjectLocationConflictResponse(TypedDict):
+    error: str
+    reason_code: Literal["project_location_conflict"]
+    current_location: ProjectLocation
+
+
 class ProjectEntry(TypedDict, total=False):
     """A registry project row. ``provenance`` (attached|cloned|genesis|none) and ``clone_url``
     are historical facts; operational git data is read live from ``.git``. List rows are a
@@ -531,6 +544,9 @@ class ProjectEntry(TypedDict, total=False):
     parent_path: List[ProjectAncestor]  # management rows, root to immediate parent
     parent_path_complete: bool  # false on missing/cyclic historical edges; never healed
     working_dir: str
+    location: ProjectLocation
+    working_dir_configured: bool
+    working_dir_observation: Optional[ProjectResourceObservation]
     resources: List[ProjectResource]
     lifecycle_label: Literal["active", "closing", "closed"]
     reopened_at: str
@@ -638,6 +654,8 @@ class ProjectUpdateRequest(TypedDict, total=False):
     description: str
     notes: str
     expected_content: ProjectContent
+    working_dir: str  # location-only edit; empty clears the default, not resources
+    expected_location: ProjectLocation
 
 
 class ProjectUpdateResponse(TypedDict):
@@ -890,6 +908,7 @@ __all__ = [
     "SettingsSecretRequest", "SettingsSecretResponse", "ChatUploadDeleteRequest", "ChatUploadDeleteResponse",
     "ProjectListResponse", "ProjectCreateResponse", "ProjectUpdateRequest", "ProjectUpdateResponse",
     "ProjectContent", "ProjectContentConflictResponse",
+    "ProjectLocation", "ProjectLocationConflictResponse",
     "ProjectResourceRequest", "ProjectResourceGit", "ProjectResourceObservation", "ProjectResource",
     "ProjectCatalogResponse", "ProjectDetailResponse", "ProjectAncestor",
     "ProjectFromTaskRequest", "ProjectTaskBinding", "ProjectFromTaskResponse",

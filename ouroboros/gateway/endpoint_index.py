@@ -375,8 +375,8 @@ HTTP_SHAPES: dict[str, Shape] = {
     "POST /api/projects/from-task": Shape("200:ProjectFromTaskResponse 400,409,500:ErrorResponse", "ProjectFromTaskRequest",
                                           note="409: the task already belongs to another project"),
     "POST /api/projects/{project_id}/update": Shape(
-        "200:ProjectUpdateResponse 400,404,500:ErrorResponse 409:ProjectContentConflictResponse|ErrorResponse",
-        "ProjectUpdateRequest", note="name/pin, parent-only, or content CAS; parent cycles/inactive return 409"),
+        "200:ProjectUpdateResponse 400,404,500:ErrorResponse 409:ProjectContentConflictResponse|ProjectLocationConflictResponse|ErrorResponse",
+        "ProjectUpdateRequest", note="separate name/pin, parent, content CAS or location CAS; no file/task effects"),
     "POST /api/projects/{project_id}/delete": Shape("200:ProjectDeleteResponse 404,500:ErrorResponse"),
     "GET /api/fs/dirs": Shape("200:FsDirsResponse 400,403,404,500:ErrorResponse", query="path"),
     "GET /api/files/list": Shape(f"200:FileBrowserListResponse {_FILE_ERRORS}", query="path"),

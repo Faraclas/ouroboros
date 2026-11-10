@@ -709,11 +709,26 @@
  * @property {string=} description
  * @property {string=} notes
  * @property {ProjectContent=} expected_content
+ * @property {string=} working_dir Location-only edit; empty clears the default, not resources.
+ * @property {ProjectLocation=} expected_location
  */
 
 /**
  * @typedef {Object} ProjectUpdateResponse
  * @property {?import('./api_types.js').ProjectEntry} project
+ */
+
+/** @typedef {Object} ProjectLocation
+ * @property {string} working_dir
+ * @property {number} routing_generation
+ * @property {string} routing_incarnation
+ * @property {string} created_at
+ */
+
+/** @typedef {Object} ProjectLocationConflictResponse
+ * @property {string} error
+ * @property {"project_location_conflict"} reason_code
+ * @property {ProjectLocation} current_location
  */
 
 /** @typedef {Object} ProjectContentConflictResponse

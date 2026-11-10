@@ -572,6 +572,10 @@ export const apiClient = {
         jsonPost(`/api/projects/${encodeURIComponent(projectId)}/resources/${encodeURIComponent(resourceId)}/detach`, {}),
     projectUpdate: (projectId, update) => jsonPost(`/api/projects/${encodeURIComponent(projectId)}/update`,
         typeof update === 'string' ? { name: update } : update),
+    projectLocationUpdate: (projectId, workingDir, expectedLocation, signal) => fetchJson(`/api/projects/${encodeURIComponent(projectId)}/update`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
+        body: JSON.stringify({ working_dir: workingDir, expected_location: expectedLocation }),
+    }, { rejectOkFalse: true }),
     /** @returns {Promise<import('./api_types.js').ProjectDeleteResponse>} */
     projectDelete: (projectId) => jsonPost(`/api/projects/${encodeURIComponent(projectId)}/delete`, {}),
     /** @returns {Promise<import('./api_types.js').FsDirsResponse>} */

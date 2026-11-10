@@ -151,3 +151,26 @@ def test_direct_basis_reaches_deferred_queue_and_pause_carrier(host, tmp_path, m
         assert parked['_project_admission'] == basis
     finally:
         admitted['registry'].unregister(task['id'])
+
+
+def test_location_update_keeps_restored_direct_target(host, tmp_path, monkeypatch):
+    from ouroboros.project_management import update_project_location, project_location
+    from ouroboros.workspace_admission import room_chat_lens_dir
+    from ouroboros.tools.registry import ToolContext
+    admitted, project = admit(host, monkeypatch, tmp_path)
+    tid = admitted['task']['id']; old = project['working_dir']
+    replacement = tmp_path / 'replacement'; replacement.mkdir()
+    try:
+        restored = stopped(host, admitted)
+        update_project_location(host.root, project['id'], working_dir=str(replacement),
+            expected_location=project_location(project), system_repo_dir=workers.REPO_DIR)
+        sent = worker(host, monkeypatch); workers.assign_tasks()
+        assert len(sent) == 1 and sent[0]['id'] == tid
+        directory, note = room_chat_lens_dir(host.root, project['id'], project_admission=sent[0]['_project_admission'])
+        ctx = ToolContext(repo_dir=workers.REPO_DIR, drive_root=host.root, task_id=tid,
+            project_id=project['id'], is_direct_chat=True, task_metadata={'_project_room_dir': directory, '_project_room_note': note})
+        assert str(ctx.active_repo_dir()) == old
+        assert room_chat_lens_dir(host.root, project['id'])[0] == str(replacement)
+        assert restored['_working_recovery']['source_task_id'] == tid
+    finally:
+        admitted['registry'].unregister(tid)

@@ -587,13 +587,30 @@ async def api_project_update(request: Request) -> JSONResponse:
             from ouroboros import project_management as management
             from ouroboros.gateway._helpers import run_sync_to_completion
 
-            if any(key in body for key in ("name", "pinned", "description", "notes", "expected_content")):
+            if any(key in body for key in ("name", "pinned", "description", "notes", "expected_content", "working_dir", "expected_location")):
                 return JSONResponse(
                     {"error": "Save parent_id separately from other Project fields",
                      "reason_code": "invalid_project_parent"}, status_code=400)
             try:
                 entry = await run_sync_to_completion(management.reparent_project,
                     drive_root, str(request.path_params.get("project_id") or ""), body["parent_id"])
+            except management.ProjectManagementError as exc:
+                return JSONResponse({"error": str(exc), "reason_code": exc.reason}, status_code=exc.status_code)
+            _broadcast_projects_changed(entry["id"], entry["chat_id"])
+            return JSONResponse({"project": entry})
+        if "working_dir" in body or "expected_location" in body:
+            from ouroboros import project_management as management
+            from ouroboros.gateway._helpers import run_sync_to_completion
+            if set(body) != {"working_dir", "expected_location"}:
+                return JSONResponse({"error": "Save working_dir and expected_location separately",
+                                     "reason_code": "invalid_project_location"}, status_code=400)
+            try:
+                entry = await run_sync_to_completion(management.update_project_location,
+                    drive_root, project_id, working_dir=body["working_dir"],
+                    expected_location=body["expected_location"], system_repo_dir=request_repo_dir(request))
+            except management.ProjectLocationConflict as exc:
+                return JSONResponse({"error": str(exc), "reason_code": exc.reason,
+                                     "current_location": exc.current_location}, status_code=409)
             except management.ProjectManagementError as exc:
                 return JSONResponse({"error": str(exc), "reason_code": exc.reason}, status_code=exc.status_code)
             _broadcast_projects_changed(entry["id"], entry["chat_id"])

@@ -618,7 +618,8 @@ def _admit_promoted_workspace(evt: dict, ctx: Any, task: dict, *, pid: str, tid:
     ):
         provisioned_now = ""
         basis = task.get("_project_admission") or {}
-        if not str((basis.get("project") or {}).get("working_dir") or "").strip():
+        if (not str((basis.get("project") or {}).get("working_dir") or "").strip()
+                and (basis.get("project") or {}).get("working_dir_configured") is not True):
             try:
                 from ouroboros.projects_registry import ensure_project_workspace, project_admission_basis
 
