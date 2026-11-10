@@ -617,9 +617,36 @@ class ProjectCatalogResponse(TypedDict):
     has_more: bool
 
 
+class ProjectResourceReference(TypedDict):
+    project_id: str
+    project_name: str
+    resource_id: str
+    path: str
+    relation: Literal["same", "contains", "inside"]
+    identity_verified: bool
+
+
+class ProjectResourceTarget(TypedDict):
+    resource_id: str
+    path: str
+    label: str
+    resolved_path: str
+    identity_status: Literal["available", "missing", "unavailable"]
+    runtime_overlap: bool
+    references: List[ProjectResourceReference]
+
+
+class ProjectResourcePreview(TypedDict):
+    observed_at: str
+    targets: List[ProjectResourceTarget]
+    gaps: List[str]
+    coverage: str
+
+
 class ProjectDetailResponse(TypedDict):
-    """Same room, all lifecycles; resources add fresh read-only observations."""
+    """Same room; ?resource_preview=1 adds registered-path observations, not eligibility."""
     project: ProjectEntry
+    resource_preview: NotRequired[ProjectResourcePreview]
 
 
 class ProjectCreateResponse(TypedDict):
@@ -911,6 +938,7 @@ __all__ = [
     "ProjectLocation", "ProjectLocationConflictResponse",
     "ProjectResourceRequest", "ProjectResourceGit", "ProjectResourceObservation", "ProjectResource",
     "ProjectCatalogResponse", "ProjectDetailResponse", "ProjectAncestor",
+    "ProjectResourceReference", "ProjectResourceTarget", "ProjectResourcePreview",
     "ProjectFromTaskRequest", "ProjectTaskBinding", "ProjectFromTaskResponse",
     "FileBrowserEntry", "FileBrowserListResponse", "FileBrowserReadResponse", "FileMkdirRequest", "FileWriteRequest", "FilePathRequest",
     "FileTransferRequest", "FileChangeResponse",

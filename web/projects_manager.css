@@ -81,3 +81,11 @@
 @container projectcatalog (min-width:1700px) { .pm-workspace { grid-template-columns:minmax(300px,0.8fr) minmax(0,1.8fr); } .pm-detail { padding-right:40px; } }
 @container projectcatalog (max-width:1000px) { .pm-workspace { grid-template-columns:minmax(220px,.8fr) minmax(0,1.2fr); gap:12px; } .pm-detail { padding:4px 12px 24px; } .pm-resource-form { grid-template-columns:minmax(0,1fr); align-items:start; } .pm-resource-form button { justify-self:start; } .pm-row-facts { align-items:flex-start; } .pm-project-row { flex-direction:column; gap:8px; } }
 @container projectcatalog (max-width:680px) { .projects-manager { overflow:auto; padding:16px 0; } .pm-filters { flex-wrap:wrap; } .pm-filters label:first-child { flex-basis:100%; max-width:none; } .pm-workspace { display:flex; flex-direction:column; gap:24px; flex:none; } .pm-catalog { min-height:160px; max-height:350px; } .pm-detail { border-left:0; border-top:1px solid var(--divider); overflow:visible; padding:20px 0 0; } .pm-project-row { flex-direction:row; } .pm-row-facts { align-items:flex-end; } .pm-toolbar { align-items:center; } }
+
+/* Preview owns wrapping, not a second scrolling panel or action toolbar. */
+.pm-resource-preview>summary { cursor:pointer; padding:8px 0; font-size:var(--type-body); color:var(--text-primary); font-weight:650; }
+.pm-preview-body { padding:8px 0; min-width:0; overflow-wrap:anywhere; }
+.pm-preview-body h4,.pm-preview-meanings dt { font-size:var(--type-body); color:var(--text-primary); font-weight:600; margin:12px 0 6px; }
+.pm-preview-references,.pm-preview-meanings { font-size:var(--type-body); color:var(--text-meta); line-height:var(--line-body); overflow-wrap:anywhere; padding-left:20px; }
+.pm-preview-meanings dd { margin:0 0 12px; }
+.pm-preview-body .btn { margin:4px 8px 4px 0; white-space:normal; text-align:left; }

@@ -322,13 +322,15 @@ async def api_projects_catalog(request: Request) -> JSONResponse:
 
 
 async def api_project_detail(request: Request) -> JSONResponse:
-    from ouroboros.project_management import ProjectManagementError, project_detail
+    from ouroboros.project_management import ProjectManagementError, project_detail_view
     from ouroboros.gateway._helpers import run_sync_to_completion
 
     try:
-        project = await run_sync_to_completion(
-            project_detail, request_drive_root(request), str(request.path_params["project_id"]))
-        return JSONResponse({"project": project})
+        view = await run_sync_to_completion(
+            project_detail_view, request_drive_root(request), str(request.path_params["project_id"]),
+            resource_preview=request.query_params.get("resource_preview") == "1",
+            system_repo_dir=getattr(request.app.state, "repo_dir", None))
+        return JSONResponse(view)
     except ProjectManagementError as exc:
         return JSONResponse({"error": str(exc), "reason_code": exc.reason}, status_code=exc.status_code)
     except Exception as exc:

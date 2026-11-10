@@ -425,7 +425,8 @@ def observe_resource(path: str) -> dict:
             "git": _git_observation(target) if kind == "directory" else empty_git}
 
 
-def project_detail(drive_root: Any, project_id: str) -> dict:
+def project_detail_view(drive_root: Any, project_id: str, *, resource_preview: bool = False,
+                        system_repo_dir: Any = None) -> dict:
     pid = registry.sanitize_project_id(project_id)
     # Validate routing only on the addressed room. Breadcrumbs use raw
     # neighbours from that SAME capture, not their execution authority.
@@ -443,4 +444,96 @@ def project_detail(drive_root: Any, project_id: str) -> dict:
     row["location"] = project_location(row)
     row["working_dir_observation"] = observe(row["working_dir"]) if row.get("working_dir") else None
     row["resources"] = [{**item, "observation": observe(item["path"])} for item in row["resources"]]
-    return row
+    result = {"project": row}
+    if resource_preview:
+        result["resource_preview"] = _resource_preview(projects, row, drive_root, system_repo_dir)
+    return result
+
+
+def project_detail(drive_root: Any, project_id: str) -> dict:
+    """Existing detail consumer; opt-in preview work never runs on this path."""
+    return project_detail_view(drive_root, project_id)["project"]
+
+
+def _preview_identity(path: str) -> dict:
+    """Observe registered paths only. No walk, content read, Git write or retention call."""
+    try:
+        resolved = pathlib.Path(path).expanduser().resolve(strict=True)
+        info = resolved.stat()
+        return {"resolved_path": str(resolved), "identity_status": "available",
+                "inode": (info.st_dev, info.st_ino)}
+    except FileNotFoundError:
+        status = "missing"
+    except (OSError, RuntimeError, ValueError):
+        status = "unavailable"
+    # Failed resolution supplies spelling overlap only, never physical proof.
+    try:
+        spelling = str(pathlib.Path(path).expanduser().resolve(strict=False))
+    except (OSError, RuntimeError, ValueError):
+        spelling = _path_identity(path)
+    return {"resolved_path": spelling, "identity_status": status, "inode": None}
+
+
+def _preview_overlap(left: dict, right: dict) -> str:
+    a, b = pathlib.Path(left["resolved_path"]), pathlib.Path(right["resolved_path"])
+    if a == b or (left["inode"] is not None and left["inode"] == right["inode"]):
+        return "same"
+    if a in b.parents:
+        return "contains"
+    if b in a.parents:
+        return "inside"
+    return ""
+
+
+def _resource_preview(projects: list, project: dict, drive_root: Any, system_repo_dir: Any) -> dict:
+    """One registry capture, uncapped registered references; no eligibility or loss estimate.
+
+    Resolution/stat are sequential observations, not custody or stable handles.
+    Denied/missing aliases leave gaps; unregistered locations are outside coverage.
+    """
+    identities, references, gaps = {}, [], []
+    def identity(path):
+        if path not in identities:
+            identities[path] = _preview_identity(path)
+        return identities[path]
+    for row in projects:
+        try:
+            resources = resources_for_project(row)
+        except (ProjectManagementError, ValueError) as exc:
+            gaps.append(f"{row['id']}: {exc}")
+            resources = []
+        paths = [(item["path"], item["id"]) for item in resources]
+        default = row.get("working_dir", "")
+        if not isinstance(default, str):
+            gaps.append(f"{row['id']}: invalid starting folder")
+        elif default:
+            paths.append((default, "starting_folder"))
+        for path, resource_id in paths:
+            if not isinstance(path, str) or not path:
+                gaps.append(f"{row['id']}: invalid registered path")
+                continue
+            observed = identity(path)
+            if observed["identity_status"] != "available":
+                gaps.append(f"{row['id']}: {path}: {observed['identity_status']}")
+            references.append((row["id"], row.get("name") or row["id"], resource_id, path, observed))
+    runtime = [identity(str(path)) for path in (drive_root, system_repo_dir) if path]
+    targets = []
+    resources = list(project["resources"])
+    if project.get("working_dir") and not any(item["path"] == project["working_dir"] for item in resources):
+        resources.append({"id": "starting_folder", "path": project["working_dir"], "label": "Starting folder"})
+    for item in resources:
+        observed = identity(item["path"])
+        related = []
+        for pid, name, rid, path, other in references:
+            relation = _preview_overlap(observed, other)
+            if relation:
+                related.append({"project_id": pid, "project_name": name, "resource_id": rid,
+                                "path": path, "relation": relation,
+                                "identity_verified": observed["identity_status"] == other["identity_status"] == "available"})
+        targets.append({"resource_id": item["id"], "path": item["path"], "label": item.get("label", ""),
+                        "resolved_path": observed["resolved_path"], "identity_status": observed["identity_status"],
+                        "runtime_overlap": any(_preview_overlap(observed, other) for other in runtime),
+                        "references": related})
+    return {"observed_at": utc_now_iso(), "targets": targets, "gaps": list(dict.fromkeys(gaps)),
+            "coverage": "Registered resource and starting-folder paths only; sequential resolution/stat. "
+                        "No directory contents, backups, sizes, unique work or live-use custody inspected."}

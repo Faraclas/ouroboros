@@ -679,8 +679,35 @@
  * @property {boolean} has_more
  */
 
+/** @typedef {Object} ProjectResourceReference
+ * @property {string} project_id
+ * @property {string} project_name
+ * @property {string} resource_id
+ * @property {string} path
+ * @property {"same"|"contains"|"inside"} relation
+ * @property {boolean} identity_verified
+ */
+
+/** @typedef {Object} ProjectResourceTarget
+ * @property {string} resource_id
+ * @property {string} path
+ * @property {string} label
+ * @property {string} resolved_path
+ * @property {"available"|"missing"|"unavailable"} identity_status
+ * @property {boolean} runtime_overlap
+ * @property {ProjectResourceReference[]} references
+ */
+
+/** @typedef {Object} ProjectResourcePreview
+ * @property {string} observed_at
+ * @property {ProjectResourceTarget[]} targets
+ * @property {string[]} gaps
+ * @property {string} coverage
+ */
+
 /** @typedef {Object} ProjectDetailResponse
  * @property {import('./api_types.js').ProjectEntry} project
+ * @property {ProjectResourcePreview=} resource_preview
  */
 
 /**

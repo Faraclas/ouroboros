@@ -1509,6 +1509,7 @@ dashboardControls = initDashboard(ctx);
 const projectsManager = initProjectsManager({ mount: document.getElementById('dashboard-panel-projects'), state,
     onCreate: createProjectFromClient,
     onWorkItems: project => workItems.open(project),
+    onStorage: () => { dashboardControls.activateTab('storage'); document.getElementById('dashboard-tab-storage')?.focus(); },
     onOpen: (project, beside) => openProjectPanel(project, { openOnly: true, besideSource: beside, composerFocus: !beside }),
     onChanged: () => { knownProjectsJson = ''; return refreshProjectsNav(); },
     onPin: (project, pinned) => setProjectPin(project, pinned),

@@ -6,6 +6,7 @@ import { createDocumentReader, documentReaderKind } from './document_reader.js';
 import { attachmentViews } from './chat_attachments.js';
 import { createParentSection, projectPath } from './project_parent.js';
 import { createLocationSection } from './project_location.js';
+import { createResourcePreview } from './project_resource_preview.js';
 
 // Installation-local labels/policy, not a core lifecycle rule or a name heuristic.
 export const MANAGED_PROJECT_IDS = Object.freeze(['viper-interface', 'viper-discord', 'viper-model-transport']);
@@ -41,7 +42,7 @@ function deliveredFile(row) {
     return { source, reader: base64 ? { base64 } : source && (address === canonical || upload) ? { url: source } : null };
 }
 
-export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged, onPin, onWorkItems }) {
+export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged, onPin, onWorkItems, onStorage }) {
     const root = el('section', 'projects-manager');
     root.setAttribute('aria-label', 'Projects');
     root.innerHTML = `<header class="pm-toolbar"><div class="pm-heading"><h2>Projects</h2><p>Rooms and their working context</p></div><button type="button" class="btn btn-primary" data-pm-create>New project</button></header>
@@ -52,7 +53,7 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
     let live = false, dead = false, rows = [], selectedId = '', selected = null, offset = 0, total = 0, more = false;
     let catalogRequest = 0, detailRequest = 0, catalogController = null, detailController = null, historyController = null;
     let search = '', lifecycle = 'all', historyCursor = null, historyBusy = false, historyInterrupted = false, mutationBusy = false;
-    let pageSize = 30, parentScope = null;
+    let pageSize = 30, parentScope = null, resourcePreview = null;
     const historySeen = new Set();
     // Page memory only. Saved text lives in the registry; unsaved drafts never use browser storage.
     const contentEditors = new Map(), contentControllers = new Set();
@@ -113,6 +114,7 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
         } finally { if (current === catalogRequest) q('[data-pm-list]').removeAttribute('aria-busy'); }
     }
     function stopDetailReads() {
+        resourcePreview?.destroy(); resourcePreview?.root.remove(); resourcePreview = null;
         if (historyBusy || detail.querySelector('.pm-result-body[aria-busy="true"]')) historyInterrupted = true;
         ++detailRequest; detailController?.abort(); historyController?.abort(); reader.close({ restoreFocus: false }); historyBusy = false;
     }
@@ -165,6 +167,7 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
         } finally { mutationBusy = false; if (control.isConnected) { control.disabled = false; control.textContent = oldText; } }
     }
     function paintDetail() {
+        resourcePreview?.destroy(); resourcePreview = null;
         const project = selected, life = projectLifecycle(project); historyCursor = null; historyBusy = false; historyInterrupted = false;
         const locationFocus = locationEditors.get(project.id)?.root.contains(document.activeElement) ? document.activeElement : null;
         historySeen.clear();
@@ -235,6 +238,8 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
         if (['active', 'closed'].includes(life) && !MANAGED_PROJECT_IDS.includes(project.id)) resources.append(resourceForm(project));
         else if (MANAGED_PROJECT_IDS.includes(project.id)) resources.append(el('p', 'pm-note', 'Viper manages these associations.'));
         detail.append(resources);
+        resourcePreview = createResourcePreview({ project, managedProjectIds: MANAGED_PROJECT_IDS, onStorage });
+        detail.append(resourcePreview.root);
         const history = el('details', 'pm-history-section'); const summary = el('summary', '', 'View history'); history.append(summary);
         const feed = el('div', 'pm-history'); feed.dataset.pmHistory = ''; history.append(feed); detail.append(history);
         let loaded = false;
