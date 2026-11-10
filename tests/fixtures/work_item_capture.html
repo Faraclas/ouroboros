@@ -10,7 +10,8 @@ import {createWorkItems} from '/static/modules/work_items.js';
 import {openProjectRowMenu} from '/static/modules/project_create.js';
 const h = window.h = {mode: 'success', writes: [], reads: [], toasts: [], items: [],
     receipts: new Map(), release: null, checkRelease: null, readDelay: false, aborted: 0,
-    actions: [], target: {id: 'b', name: 'Project B', lifecycle: 'active'}};
+    actions: [], comments: new Map(), commentReceipts: new Map(), commentMode: 'success',
+    transfers: [], target: {id: 'b', name: 'Project B', lifecycle: 'active'}};
 function held(signal, releaseName) {
     return new Promise((resolve, reject) => {
         const abort = () => { h.aborted++; reject(new DOMException('Aborted', 'AbortError')); };
@@ -20,19 +21,70 @@ function held(signal, releaseName) {
 }
 h.wi = createWorkItems({
     onCaptured: (p, item) => h.toasts.push({project: p, item}),
+    sendToChat: async (project, text) => {h.transfers.push({project, text}); return true;},
     read: async (url, opts, policy) => {
         if (policy.rejectOkFalse !== true) throw Error('Strict response policy missing');
         if (!opts.method) {
             const u = new URL(url, location.origin);
-            if (u.pathname !== '/api/extensions/project-boards/list') throw Error('Unexpected read');
             h.reads.push(url);
             if (h.readDelay) await held(opts.signal, 'checkRelease');
-            const items = h.items.filter(i => i.project_id === u.searchParams.get('project_id'));
-            return {ok: true, items, counts: {idea: items.length}, total: items.length,
-                offset: 0, limit: 100, has_more: false};
+            if (u.pathname === '/api/projects/catalog') return {projects: [
+                {id:'p',name:'Project P',lifecycle:'active'}, {id:'q',name:'Project Q',lifecycle:'active'}], offset:0, has_more:false};
+            if (u.pathname === '/api/extensions/project-boards/item') {
+                if (h.failNextItem) { h.failNextItem = false; throw Error('Read failed after saved move'); }
+                const item = h.items.find(i => i.id === u.searchParams.get('item_id'));
+                if (!item) throw Error('Missing fixture item');
+                return {ok: true, item: structuredClone(item),
+                    comments: structuredClone(h.comments.get(item.id) || []), needed_by: []};
+            }
+            if (u.pathname !== '/api/extensions/project-boards/list') throw Error('Unexpected read');
+            const query = (u.searchParams.get('q') || '').toLowerCase();
+            const archived = u.searchParams.get('archived') === 'true';
+            const population = h.items.filter(i =>
+                i.project_id === u.searchParams.get('project_id') && !!i.archived === archived &&
+                (!query || [i.title, i.description, i.outcome,
+                    ...(h.comments.get(i.id) || []).map(c => c.text)].join('\n').toLowerCase().includes(query)));
+            const counts = Object.fromEntries(['planned','idea','done','set_aside'].map(key =>
+                [key, population.filter(i => i.disposition === key).length]));
+            const disposition = u.searchParams.get('disposition');
+            const matching = population.filter(i => !disposition || i.disposition === disposition);
+            const offset = Number(u.searchParams.get('offset') || 0), limit = Number(u.searchParams.get('limit') || 100);
+            return {ok: true, items: structuredClone(matching.slice(offset, offset + limit)), counts,
+                total: matching.length, offset, limit, has_more: offset + limit < matching.length};
         }
         const payload = JSON.parse(opts.body);
         h.writes.push({url, payload, method: opts.method, headers: opts.headers});
+        if (url === '/api/extensions/project-boards/update') {
+            const current = h.items.find(i => i.id === payload.item_id), mode = h.updateMode;
+            h.updateMode = '';
+            let item = h.receipts.get(payload.request_id);
+            if (!item) {
+                if (payload.expected_revision !== current.revision) throw Object.assign(Error('Changed'),
+                    {status:409,body:{ok:false,error:{code:'revision_conflict'},current:structuredClone(current)}});
+                Object.assign(current, payload.changes); current.revision++;
+                item = structuredClone(current); h.receipts.set(payload.request_id,item);
+            }
+            if (mode === 'lost') throw Error('Lost after update');
+            if (mode === 'refresh-fail') h.failNextItem = true;
+            return {ok:true,item:structuredClone(item)};
+        }
+        if (url === '/api/extensions/project-boards/comment' && opts.method === 'POST') {
+            const mode = h.commentMode; h.commentMode = 'success';
+            if (mode === 'delay') await held(opts.signal, 'commentRelease');
+            let item = h.commentReceipts.get(payload.request_id);
+            if (!item) {
+                const current = h.items.find(i => i.id === payload.item_id);
+                if (!current) throw Error('Missing fixture item');
+                const rows = h.comments.get(current.id) || [];
+                rows.push({id: 'comment-' + rows.length, text: payload.text,
+                    created_at: '2026-11-10T09:00:00Z', created_by: {surface: 'interface'}});
+                h.comments.set(current.id, rows);
+                current.revision++; current.comment_count = rows.length;
+                item = structuredClone(current); h.commentReceipts.set(payload.request_id, item);
+            }
+            if (mode === 'lost') throw Error('Connection lost after comment commit');
+            return {ok: true, item: structuredClone(item)};
+        }
         if (url !== '/api/extensions/project-boards/capture' || opts.method !== 'POST') throw Error('Unexpected write');
         if (Object.keys(payload).sort().join(',') !== 'description,project_id,request_id,title') {
             throw Object.assign(Error('Unknown capture fields'), {status: 400, body: {ok: false, error: {code: 'invalid'}}});

@@ -5,6 +5,7 @@ import { mountChatMarkdown, destroyChatMarkdown } from './chat_markdown.js';
 import { createDocumentReader, documentReaderKind } from './document_reader.js';
 import { attachmentViews } from './chat_attachments.js';
 import { createParentSection, projectPath } from './project_parent.js';
+import { createLocationSection } from './project_location.js';
 
 // Installation-local labels/policy, not a core lifecycle rule or a name heuristic.
 export const MANAGED_PROJECT_IDS = Object.freeze(['viper-interface', 'viper-discord', 'viper-model-transport']);
@@ -56,7 +57,7 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
     // Page memory only. Saved text lives in the registry; unsaved drafts never use browser storage.
     const contentEditors = new Map(), contentControllers = new Set();
     // Parent writes outlive detail GETs/navigation, just like per-room content drafts.
-    const parentEditors = new Map(), parentController = new AbortController();
+    const parentEditors = new Map(), locationEditors = new Map(), parentController = new AbortController();
     const reader = createDocumentReader({ actions: { download(file) { const a = el('a'); a.href = file.url; a.download = file.filename; a.click(); } } });
     const isHere = () => live && !dead;
     const validSelection = id => isHere() && selectedId === id;
@@ -165,6 +166,7 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
     }
     function paintDetail() {
         const project = selected, life = projectLifecycle(project); historyCursor = null; historyBusy = false; historyInterrupted = false;
+        const locationFocus = locationEditors.get(project.id)?.root.contains(document.activeElement) ? document.activeElement : null;
         historySeen.clear();
         const previousContent = contentEditors.get(project.id)?.node;
         const focused = previousContent?.contains(document.activeElement) ? document.activeElement : null;
@@ -213,8 +215,20 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
         }
         parent.updateProject(project);
         detail.append(parent.root);
-        const folder = el('section', 'pm-section'); folder.append(el('h3', '', 'Starting folder'), el('p', 'pm-path', project.working_dir || 'No starting folder configured'));
-        detail.append(folder);
+        let location = locationEditors.get(project.id);
+        if (!location) {
+            location = createLocationSection({ project, signal: parentController.signal,
+                isCurrent: () => validSelection(project.id),
+                onApplied: async () => {
+                    if (dead) return;
+                    await onChanged?.();
+                    if (validSelection(project.id)) await selectProject(project.id);
+                    if (isHere()) await loadCatalog();
+                } });
+            locationEditors.set(project.id, location);
+        }
+        location.updateProject(project); detail.append(location.root);
+        locationFocus?.focus({ preventScroll: true });
         const resources = el('section', 'pm-section pm-resources'); resources.append(el('h3', '', 'Resources'), el('p', 'pm-note', MANAGED_PROJECT_IDS.includes(project.id) ? 'Working context, not an access boundary.' : 'Working context, not an access boundary. Detaching removes the association, not files or the starting folder.'));
         if (!project.resources.length) resources.append(el('p', 'pm-empty', 'No resources associated. A project can be conversation only.'));
         for (const resource of project.resources) resources.append(resourceRow(project, resource, life));
@@ -492,5 +506,5 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
     window.addEventListener('ouro:page-shown', exposure);
     window.addEventListener('ouro:dashboard-subtab-shown', exposure);
     exposure();
-    return { root, select: selectProject, refresh: () => loadCatalog(), destroy() { dead = true; live = false; ++catalogRequest; catalogController?.abort(); for (const controller of contentControllers) controller.abort(); contentEditors.clear(); parentController.abort(); parentEditors.clear(); stopDetailReads(); reader.destroy(); cleanRich(detail); window.removeEventListener('ouro:page-shown', exposure); window.removeEventListener('ouro:dashboard-subtab-shown', exposure); root.remove(); } };
+    return { root, select: selectProject, refresh: () => loadCatalog(), destroy() { dead = true; live = false; ++catalogRequest; catalogController?.abort(); for (const controller of contentControllers) controller.abort(); contentEditors.clear(); parentController.abort(); parentEditors.clear(); locationEditors.clear(); stopDetailReads(); reader.destroy(); cleanRich(detail); window.removeEventListener('ouro:page-shown', exposure); window.removeEventListener('ouro:dashboard-subtab-shown', exposure); root.remove(); } };
 }

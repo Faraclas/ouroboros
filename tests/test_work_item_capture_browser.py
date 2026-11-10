@@ -410,3 +410,241 @@ def test_unknown_draft_lives_only_for_current_page(capture_ui):
     page.locator(DIALOG).wait_for(state='detached')
     new, = writes(page)
     assert new['request_id'] != old['request_id']
+
+
+def seed_board(page):
+    page.evaluate("""() => {
+        const item = (id, disposition, title, archived = false, project_id = 'b') => ({
+            id, project_id, title, disposition, archived, revision: 1,
+            description: 'Preserved description\\n'.repeat(30), outcome: '',
+            references: [], prerequisites: [], comment_count: 0,
+            created_at: '2026-11-10T09:00:00Z', updated_at: '2026-11-10T09:00:00Z',
+            created_by: {surface: 'interface'}
+        });
+        h.items = [
+            ...Array.from({length: 102}, (_, i) => item('p-' + i, 'planned', 'Needle planned ' + i)),
+            item('i-1', 'idea', 'Needle idea'), item('i-2', 'idea', 'Unmatched idea'),
+            item('d-1', 'done', 'Needle done'),
+            item('a-1', 'set_aside', 'Needle archived', true),
+            item('c-1', 'idea', 'Other room', false, 'c')
+        ];
+        h.comments.set('p-0', [{id: 'original-comment', text: 'Quoted original',
+            created_at: '2026-11-10T09:00:00Z', created_by: {surface: 'agent'}}]);
+    }""")
+
+
+def open_board(page, project='b', name='Project B', item=''):
+    page.evaluate("([id,name,item]) => h.wi.open({id,name}, item)", [project, name, item])
+    wait_board_list(page)
+
+
+def wait_board_list(page):
+    page.wait_for_function("""() => {
+        const root = document.querySelector('.work-items');
+        return !root.hidden && !root.querySelector('.wi-list').hasAttribute('aria-busy') &&
+            root.querySelector('.wi-list-status').textContent === '';
+    }""")
+
+
+def choose_category(page, key):
+    page.locator('[data-wi-filter="' + key + '"]').click()
+    wait_board_list(page)
+
+
+def category_counts(page):
+    return page.locator('[data-wi-count]').evaluate_all(
+        'nodes => Object.fromEntries(nodes.map(n => [n.dataset.wiCount, n.textContent]))')
+
+
+def test_persistent_categories_search_archive_pages_and_room_state(capture_ui):
+    page = capture_ui
+    seed_board(page)
+    open_board(page)
+    assert page.locator('.wi-search select').count() == 0
+    assert page.locator('.wi-list details').count() == 0
+    assert page.locator('[data-wi-count]').count() == 4
+    assert category_counts(page) == {'planned': '102', 'idea': '2', 'done': '1', 'set_aside': '0'}
+    assert page.locator('[data-wi-filter=""]').get_attribute('aria-pressed') == 'true'
+
+    choose_category(page, 'planned')
+    assert page.locator('.wi-row').count() == 100
+    assert page.locator('[data-wi-page]').inner_text() == '1–100 of 102'
+    # Updating counts/results must not replace the activating control.
+    assert page.locator('[data-wi-filter="planned"]').evaluate('n => n === document.activeElement')
+    page.locator('[data-wi-next]').click()
+    wait_board_list(page)
+    assert page.locator('.wi-row').count() == 2
+    assert page.locator('[data-wi-page]').inner_text() == '101–102 of 102'
+    assert category_counts(page)['planned'] == '102'  # not this page's two rows
+
+    page.locator('.wi-search input').fill('Needle')
+    page.locator('.wi-search button').click()
+    wait_board_list(page)
+    assert page.locator('[data-wi-page]').inner_text() == '1–100 of 102'
+    assert category_counts(page) == {'planned': '102', 'idea': '1', 'done': '1', 'set_aside': '0'}
+    assert page.locator('[data-wi-filter="planned"]').get_attribute('aria-pressed') == 'true'
+
+    choose_category(page, 'idea')
+    assert page.locator('.wi-row').count() == 1
+    assert category_counts(page)['planned'] == '102'  # before category filtering
+    page.locator('[data-wi-archived]').check()
+    wait_board_list(page)
+    assert page.locator('.wi-row').count() == 0
+    assert category_counts(page) == {'planned': '0', 'idea': '0', 'done': '0', 'set_aside': '1'}
+    choose_category(page, 'set_aside')
+    assert page.locator('.wi-row').count() == 1
+
+    open_board(page, 'c', 'Project C')
+    assert page.locator('.wi-search input').input_value() == ''
+    assert not page.locator('[data-wi-archived]').is_checked()
+    assert page.locator('[data-wi-filter=""]').get_attribute('aria-pressed') == 'true'
+    open_board(page)
+    assert page.locator('.wi-search input').input_value() == 'Needle'
+    assert page.locator('[data-wi-archived]').is_checked()
+    assert page.locator('[data-wi-filter="set_aside"]').get_attribute('aria-pressed') == 'true'
+    choose_category(page, '')
+    assert page.locator('.wi-row').count() == 1
+    assert writes(page) == []
+    assert page.evaluate('h.transfers') == []
+
+
+def test_add_comment_focuses_existing_editor_without_repaint_or_submission(capture_ui):
+    page = capture_ui
+    seed_board(page)
+    open_board(page, item='p-0')
+    page.locator('.wi-comment-form textarea').wait_for()
+    textarea = page.locator('.wi-comment-form textarea')
+    textarea.fill('Existing comment draft  ')
+    page.locator('.wi-comment').get_by_role('button', name='Quote', exact=True).click()
+    textarea = page.locator('.wi-comment-form textarea')
+    page.evaluate("""() => {
+        window.keptCommentForm = document.querySelector('.wi-comment-form');
+        window.keptCommentInput = keptCommentForm.querySelector('textarea');
+        keptCommentInput.setSelectionRange(3, 8);
+        document.querySelector('.wi-detail').scrollTop = 0;
+    }""")
+    page.locator('[data-wi-add-comment]').click()
+    assert textarea.evaluate('n => n === window.keptCommentInput && n === document.activeElement')
+    assert page.locator('.wi-comment-form').evaluate('n => n === window.keptCommentForm')
+    assert textarea.input_value() == 'Existing comment draft  '
+    assert textarea.evaluate('n => [n.selectionStart, n.selectionEnd]') == [3, 8]
+    assert 'Quoted original' in page.locator('.wi-comment-form blockquote').inner_text()
+    assert textarea.evaluate("""n => {
+        const r = n.getBoundingClientRect(), h = n.closest('.wi-detail').getBoundingClientRect();
+        return r.top >= h.top && r.bottom <= h.bottom;
+    }"""), textarea.evaluate("n => ({input:n.getBoundingClientRect().toJSON(),host:n.closest('.wi-detail').getBoundingClientRect().toJSON()})")
+    assert writes(page) == []
+    assert page.evaluate('h.transfers') == []
+    assert page.locator('.wi-detail').get_by_role('button', name='Bring to chat', exact=True).count() == 1
+
+
+@pytest.mark.parametrize('mode', ['delay', 'lost'])
+def test_comment_shortcut_respects_existing_pending_and_unknown_request(capture_ui, mode):
+    page = capture_ui
+    seed_board(page)
+    open_board(page, item='p-0')
+    textarea = page.locator('.wi-comment-form textarea')
+    textarea.wait_for()
+    textarea.fill('Kept during request')
+    page.evaluate('mode => h.commentMode = mode', mode)
+    page.locator('.wi-comment-form button[type=submit]').click()
+    if mode == 'delay':
+        page.wait_for_function('!!h.commentRelease')
+    else:
+        page.get_by_role('button', name='Retry comment with same request', exact=True).wait_for()
+    first, = writes(page)
+    assert textarea.is_disabled()
+    assert page.locator('[data-wi-add-comment]').is_disabled()
+    assert textarea.input_value() == 'Kept during request'
+    if mode == 'delay':
+        page.evaluate('h.commentRelease()')
+    else:
+        page.get_by_role('button', name='Retry comment with same request', exact=True).click()
+    page.wait_for_function("""() => {
+        const n = document.querySelector('.wi-comment-form textarea');
+        return n && !n.disabled && n.value === '';
+    }""")
+    assert page.locator('[data-wi-add-comment]').is_enabled()
+    assert writes(page) == ([first] if mode == 'delay' else [first, first])
+    assert page.evaluate("h.comments.get('p-0').length") == 2  # one original + one new, even after retry
+
+
+@pytest.mark.parametrize('theme', ['dark', 'light'])
+@pytest.mark.parametrize('width', [390, 1440])
+def test_category_controls_fit_both_palettes_and_narrow_list(capture_ui, theme, width):
+    page = capture_ui
+    page.set_viewport_size({'width': width, 'height': 1000})
+    page.evaluate("""({theme,width}) => {
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.dataset.layout = width < 760 ? 'stack' : 'wide';
+    }""", {'theme': theme, 'width': width})
+    seed_board(page)
+    open_board(page)
+    choose_category(page, 'set_aside')  # zero remains visible, selectable and empty
+    assert page.locator('[data-wi-filter="set_aside"]').get_attribute('aria-pressed') == 'true'
+    assert page.locator('.wi-row').count() == 0
+    settle(page)
+    assert page.locator('.wi-categories').evaluate("""n => {
+        const buttons = [...n.querySelectorAll('button')], r = n.getBoundingClientRect();
+        return n.scrollWidth <= n.clientWidth && buttons.every(b => {
+            const x = b.getBoundingClientRect();
+            return x.width > 0 && x.height > 0 && x.left >= r.left && x.right <= r.right &&
+                b.scrollWidth <= b.clientWidth;
+        });
+    }""")
+    assert page.locator('.work-items').evaluate("""n => {
+        const r = n.getBoundingClientRect();
+        return r.left >= 0 && r.right <= innerWidth && n.scrollWidth <= n.clientWidth;
+    }""")
+    assert writes(page) == []
+
+
+def open_move(page):
+    section = page.locator('.wi-move')
+    if not section.evaluate('n => n.open'):
+        section.locator('summary').click()
+
+
+def test_move_cas_preserves_unsaved_edit_base_and_comment_draft(capture_ui):
+    page = capture_ui
+    seed_board(page)
+    open_board(page, item='p-0')
+    page.get_by_role('button', name='Edit item', exact=True).click()
+    page.locator('.wi-edit input[name=title]').fill('Unsent title')
+    page.locator('.wi-comment-form textarea').fill('Unsent comment')
+    page.evaluate("() => {h.items[0].revision++; h.items[0].outcome='Remote outcome';}")
+    open_move(page)
+    page.get_by_role('button', name='Project Q', exact=True).click()
+    page.locator('.wi-move').get_by_text('Item changed', exact=False).wait_for()
+    page.get_by_role('button', name='Project Q', exact=True).click()
+    page.wait_for_function("document.querySelector('[data-wi-project]').textContent === 'Project Q'")
+    assert page.locator('.wi-edit input[name=title]').input_value() == 'Unsent title'
+    assert page.locator('.wi-comment-form textarea').input_value() == 'Unsent comment'
+    assert page.evaluate('h.items[0].project_id') == 'q'
+    page.get_by_role('button', name='Save item', exact=True).click()
+    page.locator('.wi-conflict').wait_for(state='visible')
+    assert page.evaluate('h.items[0].outcome') == 'Remote outcome'
+    assert page.evaluate('h.items[0].title') != 'Unsent title'
+
+
+@pytest.mark.parametrize('mode', ['lost', 'refresh-fail'])
+def test_move_keeps_unknown_receipt_and_distinguishes_saved_refresh_failure(capture_ui, mode):
+    page = capture_ui
+    seed_board(page)
+    open_board(page, item='p-0')
+    page.evaluate('mode => h.updateMode=mode', mode)
+    open_move(page)
+    page.get_by_role('button', name='Project Q', exact=True).click()
+    if mode == 'lost':
+        page.get_by_role('button', name='Retry same move', exact=True).wait_for()
+        original, = writes(page)
+        page.get_by_role('button', name='Retry same move', exact=True).click()
+        page.wait_for_function("document.querySelector('[data-wi-project]').textContent === 'Project Q'")
+        assert writes(page) == [original, original]
+    else:
+        page.locator('.wi-move').get_by_text('Move saved. Current location could not be refreshed', exact=False).wait_for()
+        page.get_by_role('button', name='Refresh current item', exact=True).click()
+        page.get_by_role('button', name='Open in current project', exact=True).click()
+        page.wait_for_function("document.querySelector('[data-wi-project]').textContent === 'Project Q'")
+    assert page.evaluate('h.items[0].id') == 'p-0'
+    assert page.evaluate('h.items[0].revision') == 2

@@ -29,7 +29,7 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
     room_work.js, project_read_state.js, chat_header.js, consciousness_status.js — a room's bar: work list (no execution authority), consciousness chip and Shade, Panic, Main's Restart/Copilot usage; read receipt (§3 Project rooms)
     room_activity.js, activity_types.js, work_visibility.js — retained occurrences, coverage, keyed history/assessment and room status wording; no liveness/control authority (§6)
     pane_workspace.js, room_orientation.js, orientation_config.js — retained Main/project composition, room identity and configured-location disclosure (§3)
-    projects_manager.js, project_hierarchy.js, project_parent.js, project_unread.js — project catalog, tree, parent editor and destination-specific unread presentation (§3)
+    projects_manager.js, project_hierarchy.js, project_parent.js, project_location.js, project_unread.js — catalog, tree, retained parent/location editors and unread (§3)
     copilot_usage.js, work_items.js — optional account-credit read and passive shared Work Items (§3)
     reader_collaboration.js, chat_selection.js — modeless reader movement and exact selection-to-origin-draft transfer, never automatic send (§3)
     model_wait.js — model waits and owner actions in chat cards (§6 Quota and auth waits)

@@ -382,18 +382,39 @@ def test_closed_generation_retains_its_chosen_refusal_across_real_contention(env
 
 
 @pytest.mark.parametrize('published', [False, True])
-def test_direct_head_refusal_keeps_primary_detail_across_publication_contention(env, monkeypatch, published):
+def test_direct_head_refusal_keeps_primary_detail_across_publication_contention(env, monkeypatch, published,
+                                                                             presend_busy=False):
     from tests.test_workspace_preparation import test_head_moved_while_queued_keeps_the_typed_base_refusal
 
     real_write, real_read = task_admission.write_task_result, task_admission.load_task_result
-    attempts, writes, readback_gap = [], [], [False]
+    attempts, writes, readback_gap, uncommitted = [], [], [False], []
+    presend_gap, write_gap = [presend_busy], [not published]
 
     def write(root, tid, status, **kwargs):
         if tid == 'based' and status == 'failed':
+            # A rolled-back/pre-acquisition StoreBusy permits another attempt;
+            # the committed receipt must instead be re-read without a second write.
+            assert not writes, 'refusal write repeated after its successful publication'
             attempts.append((kwargs['result'], kwargs['_admission_refusal_token']))
-            if not published and len(attempts) == 1:
+            if presend_gap[0]:
+                presend_gap[0] = False
+                # The preceding CURRENT read already succeeded. An independent
+                # exclusive owner now makes the actual zero-wait write contend.
+                with database_reader(env.data, exclusive=True):
+                    with pytest.raises(store.StoreBusy) as held:
+                        real_write(root, tid, status, **kwargs)
+                uncommitted.append('independent writer before commit')
+                raise held.value
+            if write_gap[0]:
+                write_gap[0] = False
+                uncommitted.append('write')
                 raise store.StoreBusy('direct refusal write held', reason='contention')
-            result = real_write(root, tid, status, **kwargs)
+            try:
+                result = real_write(root, tid, status, **kwargs)
+            except store.StoreBusy as exc:
+                assert getattr(exc, 'rollback_confirmed', None) is not False
+                uncommitted.append('real writer contention')
+                raise
             writes.append(kwargs['_admission_refusal_token'])
             if published:
                 readback_gap[0] = True
@@ -411,12 +432,18 @@ def test_direct_head_refusal_keeps_primary_detail_across_publication_contention(
     # Reuse every original stale-base/no-admission/no-copy assertion unchanged.
     test_head_moved_while_queued_keeps_the_typed_base_refusal(env)
     stored = env.row('based')
-    assert len(attempts) == (1 if published else 2)
+    assert len(attempts) == 1 + len(uncommitted)
     assert all(detail == stored['result'] and token == stored['_admission_refusal_token']
                for detail, token in attempts)
     assert writes == [stored['_admission_refusal_token']]
     assert not any('workspace preparation failed: StoreBusy' in text for _, text, _ in env.ctx.sent)
     assert queue.ADMISSION_RESERVATIONS == {} and not prep._LIVE
+
+
+@pytest.mark.parametrize('published', [False, True])
+def test_direct_head_refusal_presend_contention_keeps_one_commit(env, monkeypatch, published):
+    test_direct_head_refusal_keeps_primary_detail_across_publication_contention(
+        env, monkeypatch, published, presend_busy=True)
 
 
 def test_direct_head_refusal_waits_for_real_store_contention_once(env, monkeypatch):

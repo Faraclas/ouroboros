@@ -2,7 +2,7 @@
 
 The registry is the sole durable source. Resources describe useful paths; they
 never grant access, claim ownership, change cwd or participate in admission.
-Only explicit detail reads observe the filesystem/Git. No cleanup or setup.
+Detail reads observe filesystem/Git; location writes change configuration only.
 """
 from __future__ import annotations
 
@@ -30,6 +30,66 @@ class ProjectContentConflict(ProjectManagementError):
         super().__init__("project_content_conflict",
                          "Project description or notes changed; review the saved content before retrying", 409)
         self.current_content = dict(current_content)
+
+
+class ProjectLocationConflict(ProjectManagementError):
+    def __init__(self, current_location: dict):
+        super().__init__("project_location_conflict",
+                         "Starting folder or Project identity changed; review the saved location", 409)
+        self.current_location = current_location
+
+
+def project_location(row: dict) -> dict:
+    """Exact default/routing basis; unrelated name/content/cognition never conflict."""
+    return {key: row.get(key, "" if key != "routing_generation" else 0) for key in
+            ("working_dir", "routing_generation", "routing_incarnation", "created_at")}
+
+
+def update_project_location(drive_root: Any, project_id: str, *, working_dir: str,
+                            expected_location: dict, system_repo_dir: Any) -> dict:
+    """Validate an existing target, then CAS configuration only. No task is rebound.
+
+    The normal generation fence rejects in-progress default preparation; frozen
+    accepted/explicit work retains its resource and original identity. Filesystem
+    validation is a point observation, not a promise the folder cannot disappear.
+    """
+    from ouroboros.project_sources import validate_attach_path
+    from ouroboros.workspace_admission import validate_workspace_root, WorkspaceRootError
+
+    if not isinstance(working_dir, str) or not isinstance(expected_location, dict):
+        raise ProjectManagementError("invalid_project_location", "working_dir and expected_location are required")
+    basis = project_location(_project(drive_root, project_id))
+    if (expected_location.keys() != basis.keys()
+            or any(type(expected_location[key]) is not type(value) for key, value in basis.items())
+            or expected_location["routing_generation"] < 0):
+        raise ProjectManagementError("invalid_project_location", "expected_location must contain the complete location basis")
+    target = ""
+    if working_dir.strip():
+        path, error = validate_attach_path(working_dir, system_repo_dir=system_repo_dir, drive_root=drive_root)
+        if error:
+            raise ProjectManagementError("invalid_project_location", error)
+        try:
+            target = str(validate_workspace_root(path, system_repo_dir=system_repo_dir, drive_root=drive_root))
+        except WorkspaceRootError as exc:
+            raise ProjectManagementError("invalid_project_location", str(exc)) from exc
+    pid = registry.sanitize_project_id(project_id)
+    with registry._file_write_lock(registry._registry_path(drive_root)):
+        data = registry._load(drive_root, strict=True, project_id=pid)
+        row = next((item for item in data["projects"] if item["id"] == pid), None)
+        if row is None:
+            raise ProjectManagementError("project_not_found", f"Unknown project: {project_id}", 404)
+        if row["lifecycle"] == registry.PROJECT_DELETING:
+            raise ProjectManagementError("project_closing", "The Project is still closing", 409)
+        if project_location(row) != expected_location:
+            raise ProjectLocationConflict(project_location(row))
+        if row.get("working_dir", "") != target or row.get("working_dir_configured") is not True:
+            # Freeze the old legacy association BEFORE changing its projection source.
+            row["resources"] = resources_for_project(row)
+            row.update(working_dir=target, working_dir_configured=True,
+                       routing_generation=row["routing_generation"] + 1)
+            _view(row, projects=data["projects"])
+            registry._save(drive_root, data)
+        return _view(row, projects=data["projects"])
 
 
 def _project(drive_root: Any, project_id: str) -> dict:
@@ -165,7 +225,7 @@ def _view(row: dict, *, include_notes: bool = True, projects: list[dict] | None 
     view = {**row, **_content(row), "parent_id": row.get("parent_id", ""), **hierarchy,
             "lifecycle_label": {"active": "active", "deleting": "closing",
                                 "tombstoned": "closed"}[row["lifecycle"]],
-            "resources": resources_for_project(row)}
+            "resources": resources_for_project(row), "location": project_location(row)}
     if not include_notes:
         view.pop("notes")
     return view
@@ -374,5 +434,13 @@ def project_detail(drive_root: Any, project_id: str) -> dict:
     if project is None:
         raise ProjectManagementError("project_not_found", f"Unknown project: {project_id}", 404)
     row = _view(project, projects=projects)
-    row["resources"] = [{**item, "observation": observe_resource(item["path"])} for item in row["resources"]]
+    observations = {}
+    def observe(path):
+        identity = _path_identity(path)
+        if identity not in observations:
+            observations[identity] = observe_resource(path)
+        return observations[identity]
+    row["location"] = project_location(row)
+    row["working_dir_observation"] = observe(row["working_dir"]) if row.get("working_dir") else None
+    row["resources"] = [{**item, "observation": observe(item["path"])} for item in row["resources"]]
     return row

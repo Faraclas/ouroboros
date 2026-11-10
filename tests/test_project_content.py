@@ -115,7 +115,7 @@ def test_content_public_facade_and_http_conflict_union(content_client):
         assert name in contracts.__all__ and name in client_contracts.__all__
     document = client.get("/api/contract").json()
     route = next(row for row in document["http"] if f"{row['method']} {row['path']}" == TOKEN)
-    assert route["responses"]["409"]["schemas"] == ["ProjectContentConflictResponse", "ErrorResponse"]
+    assert route["responses"]["409"]["schemas"] == ["ProjectContentConflictResponse", "ProjectLocationConflictResponse", "ErrorResponse"]
     conflict = document["schemas"]["ProjectContentConflictResponse"]
     assert conflict["required"] == ["current_content", "error", "reason_code"]
     assert conflict["properties"]["current_content"]["required"] == ["description", "notes"]

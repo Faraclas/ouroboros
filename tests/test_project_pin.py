@@ -126,7 +126,7 @@ def test_legacy_and_concurrent_partial_updates_keep_neighbour_fields(pin_client)
 
 def test_pin_contract_is_optional_partial_and_mirrored_in_jsdoc(pin_client):
     """The served ABI, its ingress validator and both JSDoc twins agree: pinned is an optional
-    strict boolean on the row, and an update names name and/or pinned (the handler requires one)."""
+    strict boolean on the row; isolated content/location updates retain their own CAS."""
     client, _ = pin_client
     document = client.get("/api/contract").json()
     schemas = document["schemas"]
@@ -137,9 +137,16 @@ def test_pin_contract_is_optional_partial_and_mirrored_in_jsdoc(pin_client):
         assert entry["properties"]["pinned"] == {"type": "boolean"} and "pinned" not in entry.get("required", [])
     assert len(answered) == 1
     update = schemas["ProjectUpdateRequest"]
-    assert set(update["properties"]) == {"name", "pinned", "parent_id", "description", "notes", "expected_content"}
+    assert set(update["properties"]) == {"name", "pinned", "parent_id", "description", "notes", "expected_content", "working_dir", "expected_location"}
     assert update["properties"]["name"] == {"type": "string"}
     assert update["properties"]["pinned"] == {"type": "boolean"}
+    assert update["properties"]["working_dir"] == {"type": "string"}
+    assert update["properties"]["expected_location"] == {
+        "type": "object", "properties": {"working_dir": {"type": "string"},
+            "routing_generation": {"type": "integer"}, "routing_incarnation": {"type": "string"},
+            "created_at": {"type": "string"}}, "additionalProperties": True,
+        "required": ["created_at", "routing_generation", "routing_incarnation", "working_dir"],
+    }
     assert update["properties"]["description"] == {"type": "string"}
     assert update["properties"]["notes"] == {"type": "string"}
     assert update["properties"]["expected_content"] == {
@@ -163,6 +170,7 @@ def test_pin_contract_is_optional_partial_and_mirrored_in_jsdoc(pin_client):
     assert _js_typedef_properties(twin, "ProjectUpdateRequest") == {
         ("string=", "name"), ("boolean=", "pinned"), ("string=", "description"),
         ("string=", "notes"), ("ProjectContent=", "expected_content"), ("string=", "parent_id"),
+        ("string=", "working_dir"), ("ProjectLocation=", "expected_location"),
     }
-    assert set(typing.get_type_hints(ProjectUpdateRequest)) == {"name", "pinned", "parent_id", "description", "notes", "expected_content"}
+    assert set(typing.get_type_hints(ProjectUpdateRequest)) == {"name", "pinned", "parent_id", "description", "notes", "expected_content", "working_dir", "expected_location"}
     assert not ProjectUpdateRequest.__required_keys__
