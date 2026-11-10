@@ -709,7 +709,8 @@
  * @property {string=} description
  * @property {string=} notes
  * @property {ProjectContent=} expected_content
- * @property {string=} working_dir Location-only edit; empty clears the default, not resources.
+ * Location-only working_dir edits clear the default when empty, never resources.
+ * @property {string=} working_dir
  * @property {ProjectLocation=} expected_location
  */
 
