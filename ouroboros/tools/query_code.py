@@ -372,6 +372,7 @@ def _query_code(
         inventory = build_code_inventory(
             repo_root, drive_root=pathlib.Path(ctx.drive_root), persist=persist, exclude_paths=exclude_paths,
             scope=scope, path_allowed=admitted, parse=parse, name=name,
+            **({"_relevance": True} if op == "relevant_files" else {}),
         )
         inventory.files = [
             file for file in inventory.files
