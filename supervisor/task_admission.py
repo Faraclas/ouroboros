@@ -812,10 +812,11 @@ def revalidate_project_holds() -> None:
                     if task.get(key) and not pathlib.Path(task[key]).is_dir():
                         raise ValueError("The original prepared task drive is unavailable.")
                 # Preserve independent Pause/budget/restart holds in the row.
-                task["_project_admission"] = basis
+                if not unscoped:
+                    task["_project_admission"] = basis
                 task.pop("_project_admission_restore_hold")
                 released.append((task, {"_project_admission_restore_hold": hold,
-                                        "_project_admission": original_basis,
+                                        **({"_project_admission": original_basis} if not unscoped else {}),
                                         **({"admitted_dispatch": task.get("admitted_dispatch")} if unsent else {})}))
                 if unsent:  # restore's own correction, read now that the receipt is readable
                     task["admitted_dispatch"] = "none"
