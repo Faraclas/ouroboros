@@ -122,4 +122,35 @@ def test_real_location_editor_save_cancel_conflict_and_unknown(location_server, 
         out.mkdir(parents=True, exist_ok=True); page.screenshot(path=str(out / f'location-{theme}-{width}.png'))
         assert page.locator('[data-pm-detail]').evaluate('(n)=>n.scrollWidth<=n.clientWidth+1')
         assert not errors
+        # A failed send before commit must not mistake a legacy empty default for
+        # the owner's explicit folderless choice.
+        r.create_project(data, 'legacy', name='Legacy fileless room')
+        page.get_by_role('button', name='Refresh', exact=True).click()
+        page.locator('[data-pm-row="legacy"]').click()
+        location.locator('[data-pm-location-edit]').click()
+        def unsent(route): route.abort('failed')
+        context.route('**/api/projects/legacy/update', unsent)
+        location.locator('[data-pm-location-apply]').click()
+        page.wait_for_function("document.querySelector('[data-pm-location-status]').textContent.includes('not confirmed')")
+        location.locator('[data-pm-location-check]').click()
+        page.wait_for_function("!document.querySelector('[data-pm-location-check]').disabled")
+        assert 'No retry is needed' not in location.locator('[data-pm-location-status]').inner_text()
+        assert location.locator('[data-pm-location-apply]').is_enabled()
+        assert r.get_project(data, 'legacy').get('working_dir_configured') is not True
+        # A caller's asynchronous refresh may deliberately focus another field.
+        # The location component must not take it back on successful completion.
+        page.evaluate('''async () => {
+            const {createLocationSection} = await import('/static/modules/project_location.js');
+            const project = (await (await fetch('/api/projects/alpha/detail')).json()).project;
+            const outside = document.createElement('input'); outside.id='focus-outside'; document.body.append(outside);
+            const section = createLocationSection({project, signal:new AbortController().signal,
+                isCurrent:()=>true, onApplied:async()=>{outside.focus();}});
+            section.root.id='focus-location'; document.getElementById('content').append(section.root);
+        }''')
+        focus_section = page.locator('#focus-location')
+        focus_section.locator('[data-pm-location-edit]').click()
+        focus_section.locator('[data-pm-location-mode]').select_option('none')
+        focus_section.locator('[data-pm-location-apply]').click()
+        page.wait_for_function("document.querySelector('#focus-location [data-pm-location-status]').textContent.includes('saved')")
+        assert page.evaluate("document.activeElement.id") == 'focus-outside'
         context.close(); browser.close()

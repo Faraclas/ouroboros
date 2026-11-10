@@ -13,6 +13,7 @@ export function createLocationSection({ project, signal, isCurrent, onApplied })
     const desired = () => mode.value === 'none' ? '' : input.value.trim();
     const edit = button('Set up working location…', () => {
         base = { ...project.location }; input.value = project.working_dir || ''; mode.value = input.value ? 'folder' : 'none';
+        ++browserSequence; browser.hidden = true;
         editor.hidden = false; feedback.textContent = ''; conflict = unknown = false; update(); mode.focus();
     }); edit.dataset.pmLocationEdit = ''; edit.setAttribute('aria-expanded', 'false');
     heading.append(el('h3', '', 'Starting folder'), edit);
@@ -47,8 +48,10 @@ export function createLocationSection({ project, signal, isCurrent, onApplied })
             if (signal.aborted) return;
             if (data?.project?.id !== project.id || typeof data.project.location?.working_dir !== 'string') throw Error('Saved location response is incomplete.');
             project = data.project; base = { ...project.location }; unknown = conflict = false; editor.hidden = true;
+            ++browserSequence; browser.hidden = true;
             feedback.textContent = 'Starting folder saved. Existing work and resource associations are unchanged.'; paintSaved();
-            busy = false; update(); await changed(); if (isCurrent()) edit.focus({ preventScroll: true });
+            busy = false; update(); await changed();
+            if (isCurrent() && (document.activeElement === document.body || root.contains(document.activeElement))) edit.focus({ preventScroll: true });
         } catch (error) {
             if (signal.aborted) return;
             if (error.status === 409 && error.body?.reason_code === 'project_location_conflict') {
@@ -67,7 +70,8 @@ export function createLocationSection({ project, signal, isCurrent, onApplied })
             if (signal.aborted) return;
             if (data?.project?.id !== project.id || !data.project.location) throw Error('Current location response is incomplete.');
             project = data.project; latestKnown = true; unknown = false; conflict = !same(base, project.location); paintSaved();
-            feedback.textContent = project.working_dir === desired() ? 'Current saved location matches your choice. No retry is needed.' : 'Current location checked. Your choice is kept; review it before a new Apply.';
+            const matches = project.working_dir === desired() && project.working_dir_configured === true;
+            feedback.textContent = matches ? 'Current saved location matches your choice. No retry is needed.' : 'Current location checked. Your choice is kept; review it before a new Apply.';
             if (project.working_dir === desired()) { base = { ...project.location }; conflict = false; }
         } catch (error) { latestKnown = false; if (!signal.aborted) feedback.textContent = `Current location unavailable: ${error.message}. Your choice is kept.`; }
         finally { busy = false; if (!signal.aborted) update(); }
@@ -89,7 +93,7 @@ export function createLocationSection({ project, signal, isCurrent, onApplied })
     function update() {
         const editable = ['active', 'tombstoned'].includes(project.lifecycle) && !!project.location;
         edit.disabled = busy || unknown || !editable; edit.setAttribute('aria-expanded', String(!editor.hidden));
-        mode.disabled = input.disabled = busy || unknown; pathLabel.hidden = browse.hidden = mode.value === 'none';
+        mode.disabled = input.disabled = browse.disabled = busy || unknown; pathLabel.hidden = browse.hidden = mode.value === 'none';
         if (mode.value === 'none') browser.hidden = true;
         apply.disabled = busy || unknown || conflict || !editable || (mode.value === 'folder' && !desired()) || (desired() === base?.working_dir && project.working_dir_configured === true);
         apply.textContent = busy ? 'Applying…' : 'Apply'; cancel.disabled = busy;
