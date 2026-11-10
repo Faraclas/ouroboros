@@ -8,17 +8,17 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 
 | domain | name | modules | proposed |
 |---|---|---:|---:|
-| D01 | Agent core & main loop | 55 | 0 |
+| D01 | Agent core & main loop | 56 | 0 |
 | D02 | LLM client, routing & providers | 47 | 0 |
 | D03 | Context assembly, fit & compaction | 27 | 0 |
 | D04 | Tool execution: registry, access & typed results | 24 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 47 | 0 |
 | D06 | Review stack | 96 | 0 |
 | D07 | Delegation, subagents & Claudexor | 97 | 0 |
-| D08 | Supervisor: queue, workers, events & runtime control | 73 | 0 |
+| D08 | Supervisor: queue, workers, events & runtime control | 75 | 0 |
 | D09 | Cancellation, owner control & process custody | 26 | 0 |
 | D10 | Git, update & release machinery | 41 | 0 |
-| D11 | Gateway, server & Web UI | 110 | 0 |
+| D11 | Gateway, server & Web UI | 111 | 0 |
 | D12 | Settings & configuration | 26 | 0 |
 | D13 | Safety, guards & runtime mode | 11 | 0 |
 | D14 | Skills & extensions | 70 | 0 |
@@ -28,7 +28,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D18 | Launcher, packaging, platform & shared substrate | 37 | 0 |
 | D19 | Frozen contracts (ABI) | 12 | 0 |
 | D20 | Presence | 20 | 0 |
-| **total** | | **933** | **0** |
+| **total** | | **937** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -234,6 +234,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/model_detach.py`
 - `ouroboros/model_sleep.py`
 - `ouroboros/mutation_attribution.py`
+- `ouroboros/mutation_authorship.py`
 - `ouroboros/outcome_receipt_store.py`
 - `ouroboros/outcomes.py`
 - `ouroboros/owner_continue.py`
@@ -655,10 +656,12 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `supervisor/followup_policy.py`
 - `supervisor/log_addressing.py`
 - `supervisor/loop_load.py`
+- `supervisor/maintenance_return.py`
 - `supervisor/message_bus.py`
 - `supervisor/message_ingress.py`
 - `supervisor/owner_pause_control.py`
 - `supervisor/owner_pause_resume.py`
+- `supervisor/project_reauthorization.py`
 - `supervisor/queue.py`
 - `supervisor/queue_schedules.py`
 - `supervisor/queue_snapshot.py`
@@ -838,6 +841,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/gateway/task_hurry.py`
 - `ouroboros/gateway/task_model_wait.py`
 - `ouroboros/gateway/task_pause.py`
+- `ouroboros/gateway/task_project_recovery.py`
 - `ouroboros/gateway/task_reviews.py`
 - `ouroboros/gateway/tasks.py`
 - `ouroboros/gateway/ui_holds.py`

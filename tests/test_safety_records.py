@@ -14,7 +14,7 @@ from tests._store_shared import seed_result
 supervisor = supervisor_fixture
 
 
-@pytest.mark.parametrize("kind", ["safety_mode_skip", "safety_declared_read_skip", "safety_hold"])
+@pytest.mark.parametrize("kind", ["safety_mode_skip", "safety_declared_read_skip", "safety_declared_policy_skip", "safety_hold"])
 def test_repeated_chip_avoids_store_but_new_chip_and_other_root_write(tmp_path, monkeypatch, kind):
     from ouroboros import task_store
 
@@ -98,6 +98,7 @@ def test_actual_safety_decisions_produce_panel_chips(supervisor, monkeypatch):
     ({"type": "safety_hold"}, ["held"]),
     ({"type": "safety_mode_skip"}, ["not_checked"]),
     ({"type": "safety_declared_read_skip"}, ["not_checked"]),
+    ({"type": "safety_declared_policy_skip"}, ["not_checked"]),
     ({"type": "safety_parse_failed"}, []),
 ])
 def test_each_durable_event_maps_without_inventing_checks(tmp_path, event, chips):

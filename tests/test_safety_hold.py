@@ -34,7 +34,7 @@ def test_legacy_owner_backend_absence_still_warns(supervisor, monkeypatch):
     assert not h.module.check_safety("write_remote", {}, ctx=h.ctx)[0]
 
 
-@pytest.mark.parametrize("source", ["subject", "rules", "directives", "prior"])
+@pytest.mark.parametrize("source", ["subject", "rules", "directives", "prior", "assignment"])
 def test_mandatory_bundle_never_truncated(supervisor, monkeypatch, source):
     h = supervisor
     monkeypatch.setattr(h.module, "_SAFETY_BUNDLE_BYTE_BUDGET", 2000)
@@ -45,6 +45,8 @@ def test_mandatory_bundle_never_truncated(supervisor, monkeypatch, source):
         h.values["OUROBOROS_SAFETY_OWNER_RULES"] = "rules" * 1000
     elif source == "directives":
         h.ctx._owner_directives = [{"role": "user", "content": "exact" * 1000}]
+    elif source == "assignment":
+        h.ctx.task_contract["objective"] = "exact" * 1000
     else:
         h.module._PRIOR_VERDICTS["work"] = {"x": {"reason": "earlier" * 1000}}
     for _ in range(2):
@@ -54,5 +56,6 @@ def test_mandatory_bundle_never_truncated(supervisor, monkeypatch, source):
     h.module._PRIOR_VERDICTS.clear()
     h.values["OUROBOROS_SAFETY_OWNER_RULES"] = ""
     h.ctx._owner_directives = []
+    h.ctx.task_contract = {}
     assert h.module.check_safety("place_reply", {"text": "fits"}, ctx=h.ctx)[0]
     assert len(h.calls) == 1

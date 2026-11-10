@@ -815,6 +815,26 @@ class ScheduleActionRequest(TypedDict):
     relation: NotRequired[str]
 
 
+class ProjectAuthorizationRequest(TypedDict):
+    """NEW current-Project authority for an exact saved working checkpoint, not Resume."""
+
+    request_id: str
+    issuer_task_id: str
+    owner_source: Dict[str, Any]
+    checkpoint_sha256: str
+    project_basis: Dict[str, Any]
+
+
+class ProjectAuthorizationResponse(TypedDict):
+    """No Resume grant; existing selection may dispatch after normal revalidation."""
+
+    ok: bool
+    task_id: str
+    project_authorization: Dict[str, Any]
+    resumed: bool
+    dispatch_may_proceed: bool
+
+
 class TaskResumeRequest(TypedDict, total=False):
     """The optional body of ``POST /api/tasks/{task_id}/resume``: the held calls whose outcome is
     unknown (a refusal's ``acceptable_unknown``) the owner goes on past, and why. Recorded, never re-run."""
@@ -877,4 +897,5 @@ __all__ = [
     "FileTransferRequest", "FileChangeResponse",
     "ScheduleTriggerRequest", "ScheduleTaskTemplate", "ScheduleUpsertRequest", "ScheduleActionRequest",
     "TaskResumeRequest", "TaskResumeResponse",
+    "ProjectAuthorizationRequest", "ProjectAuthorizationResponse",
 ]

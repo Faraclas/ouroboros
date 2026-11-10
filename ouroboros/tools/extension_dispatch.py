@@ -259,6 +259,7 @@ def _dispatch_extension_tool_untagged(
         call_args,
         messages=getattr(ctx, "messages", None),
         ctx=ctx,
+        ext_tool=ext_tool,
     )
     if not _ext_safe:
         return _extension_result("blocked", "SAFETY_VIOLATION", _ext_safety_msg)

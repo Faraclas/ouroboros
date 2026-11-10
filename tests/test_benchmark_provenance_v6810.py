@@ -567,6 +567,7 @@ def test_task_result_row_publishes_the_runtime_reason_alongside_the_adapter_stag
 # enforces — a new runtime code with no row here fails the suite, which is the only thing
 # that stops the vocabulary from being hand-copied beside the check again.
 _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
+    "invalid_project_authorization": (False, "gateway/task_project_recovery.py: malformed exact saved-scope authorization refused with HTTP400 before any record or Resume; not a task terminal or truncated attempt"),
     "invalid_project_parent": (False, "gateway/projects.py: mixed fields or malformed/unknown parent refused with HTTP 400 before reparenting; no task transition or truncation"),
     "invalid_project_content": (False, "gateway/projects.py: mixed or invalid authored-content input refused with HTTP 400 before the content write; no task transition or truncation"),
     "invalid_resource": (False, "gateway/projects.py: malformed JSON or resource-association schema input; HTTP 400 before the resource write, never a task terminal or truncated attempt"),

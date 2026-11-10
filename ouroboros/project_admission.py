@@ -37,7 +37,8 @@ def hold_unreadable_result(task: dict) -> bool:
     no-dispatch or exact continuation evidence (exact budget, owner wait or
     resolver continuation) and canonical bindings; Stop/terminal results stay
     independent. An invalid basis or unreadable authority keeps the hold at any
-    snapshot age, and bases are never recaptured. Exact budget pauses keep their
+    snapshot age; new source-bound owner authorization is separate from historical
+    basis recovery. Exact budget pauses keep their
     own hold authority.
     """
     pause = task.get("_budget_pause")

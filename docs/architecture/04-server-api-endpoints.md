@@ -140,6 +140,7 @@ Files routes: `gateway/files.py::file_browser_routes()` (envelopes/parity: §11)
 | POST | `/api/tasks/{task_id}/pause` | (§6 Owner Pause of a whole tree) |
 | POST | `/api/tasks/{task_id}/continue` | (§6 Owner Continue after a technical interruption) |
 | POST | `/api/tasks/{task_id}/resume` | |
+| POST | `/api/tasks/{task_id}/project-authorization` | new scope, not a Resume grant (§5) |
 | GET | `/api/rooms/{chat_id}/activity` | passive bounded retained roots/services/failed checks; cursor, coverage and source gaps |
 | POST | `/api/decisions` | |
 | GET | `/api/cards/{card_id}` | a living card's current body and presses |

@@ -874,7 +874,7 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 425 -> 426: ``state/openrouter_models.json``, the OpenRouter catalogue every process adopts.
 # 427 -> 429: ``observability/calls/*/*``, scanned on the target before this pin moved, and
 # ``state/claudexor_route_health.json``, the engine's newest per-route failure shares (its section-2 row).
-EXPECTED_SCAN_PATHS = 430  # owner-image-*.bin: native owner pixels retained in the existing actor CAS
+EXPECTED_SCAN_PATHS = 432  # authorship-evidence + historical-baseline in the existing actor CAS
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
@@ -1112,15 +1112,6 @@ STALE_ROW_EXEMPTIONS = frozenset({
     # (``review_source_closure._owned_attachment_path`` during child-ref promotion,
     # ``delegate_registration_policy.minted_review_root``).
     "task_results/artifacts/*/source_handles/review_inputs",
-    # A LIVE plane the scan cannot see: ``delegate_output.retain_terminal_bytes``
-    # and ``delegate_collection._retain`` spell each source id as an f-string over a
-    # run id, and ``artifacts.persist_exact_text_source`` (the result review's
-    # ``review_result.subject_source`` and every other exact-text writer) takes it as
-    # a parameter — never an exact string, and a dynamic id names no file here
-    # (``test_dynamic_source_handle_arguments_do_not_certify_named_rows``). The
-    # population saw this plane only through the retired acceptance tool-trajectory
-    # literal.
-    "task_results/artifacts/*/source_handles/tool_results",
     # The row states no writer in this tree: the automatic post-task reflection and
     # its routed store (``ouroboros/reflection.py``) are gone. The history is still
     # read (``journal_read(source='reflections')``, ``read_file``), and server.py

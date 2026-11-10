@@ -147,7 +147,7 @@ def _reject_schedule_task(
             from supervisor.task_admission import persist_never_admitted_refusal
 
             write_refusal = persist_never_admitted_refusal if never_admitted else write_task_result
-            write_refusal(
+            publish = functools.partial(write_refusal,
                 ctx.DRIVE_ROOT,
                 tid,
                 **({"admission_token": preparation.token} if preparation is not None
@@ -158,6 +158,11 @@ def _reject_schedule_task(
                 # under the honest name (the retired alias is read-only).
                 accounted_upper_bound_usd=0.0,
             )
+            if preparation is not None:
+                # Retry only this same receipt, not provisioning or notification.
+                preparation.store_gate(publish, controls=False)
+            else:
+                publish()
             refusal_confirmed = True
         except Exception as exc:
             from supervisor.workspace_preparation import store_contention

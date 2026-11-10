@@ -379,3 +379,84 @@ def test_closed_generation_retains_its_chosen_refusal_across_real_contention(env
     assert stored["status"] == "failed"
     assert stored["reason_code"] == prep.INTERRUPTED_BY_GENERATION_EXIT
     assert stored[prep.MARKER]["phase"] == prep.REFUSED
+
+
+@pytest.mark.parametrize('published', [False, True])
+def test_direct_head_refusal_keeps_primary_detail_across_publication_contention(env, monkeypatch, published):
+    from tests.test_workspace_preparation import test_head_moved_while_queued_keeps_the_typed_base_refusal
+
+    real_write, real_read = task_admission.write_task_result, task_admission.load_task_result
+    attempts, writes, readback_gap = [], [], [False]
+
+    def write(root, tid, status, **kwargs):
+        if tid == 'based' and status == 'failed':
+            attempts.append((kwargs['result'], kwargs['_admission_refusal_token']))
+            if not published and len(attempts) == 1:
+                raise store.StoreBusy('direct refusal write held', reason='contention')
+            result = real_write(root, tid, status, **kwargs)
+            writes.append(kwargs['_admission_refusal_token'])
+            if published:
+                readback_gap[0] = True
+            return result
+        return real_write(root, tid, status, **kwargs)
+
+    def read(root, tid, **kwargs):
+        if tid == 'based' and readback_gap[0]:
+            readback_gap[0] = False
+            raise store.StoreBusy('direct refusal committed, readback held', reason='contention')
+        return real_read(root, tid, **kwargs)
+
+    monkeypatch.setattr(task_admission, 'write_task_result', write)
+    monkeypatch.setattr(task_admission, 'load_task_result', read)
+    # Reuse every original stale-base/no-admission/no-copy assertion unchanged.
+    test_head_moved_while_queued_keeps_the_typed_base_refusal(env)
+    stored = env.row('based')
+    assert len(attempts) == (1 if published else 2)
+    assert all(detail == stored['result'] and token == stored['_admission_refusal_token']
+               for detail, token in attempts)
+    assert writes == [stored['_admission_refusal_token']]
+    assert not any('workspace preparation failed: StoreBusy' in text for _, text, _ in env.ctx.sent)
+    assert queue.ADMISSION_RESERVATIONS == {} and not prep._LIVE
+
+
+def test_direct_head_refusal_waits_for_real_store_contention_once(env, monkeypatch):
+    from supervisor import events_schedule_task as scheduling
+    from tests.test_workspace_preparation import test_head_moved_while_queued_keeps_the_typed_base_refusal
+
+    reached, proceed, busy_seen = threading.Event(), threading.Event(), threading.Event()
+    record = scheduling._record_delegation_constraint
+    persist = task_admission.persist_never_admitted_refusal
+    notify = scheduling._send_subagent_rejection
+    notices = []
+
+    def before_refusal(*args, **kwargs):
+        result = record(*args, **kwargs)
+        reached.set()
+        assert proceed.wait(_WAIT_SEC)
+        return result
+
+    def publish(*args, **kwargs):
+        try:
+            return persist(*args, **kwargs)
+        except store.StoreBusy:
+            busy_seen.set()
+            raise
+
+    def notice(*args, **kwargs):
+        notices.append(kwargs['tid'])
+        return notify(*args, **kwargs)
+
+    monkeypatch.setattr(scheduling, '_record_delegation_constraint', before_refusal)
+    monkeypatch.setattr(task_admission, 'persist_never_admitted_refusal', publish)
+    monkeypatch.setattr(scheduling, '_send_subagent_rejection', notice)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(test_head_moved_while_queued_keeps_the_typed_base_refusal, env)
+        assert reached.wait(_WAIT_SEC)
+        with database_reader(env.data, exclusive=True):
+            proceed.set()
+            assert busy_seen.wait(3)
+            assert not env.gen.wait_idle(0)
+        future.result(timeout=_WAIT_SEC)
+    assert notices == ['based']
+    assert env.row('based')[prep.MARKER]['phase'] == prep.REFUSED
+    assert queue.ADMISSION_RESERVATIONS == {} and not prep._LIVE

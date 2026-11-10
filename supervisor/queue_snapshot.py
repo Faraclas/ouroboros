@@ -488,7 +488,7 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
             "_attempt": attempt, "root_task_id": task_id, "depth": 0,
         }
         for key in ("origin_message_ref", "origin_message_text", "metadata", "project_id",
-                    "tool_profile", "detached_at", "detached_by",
+                    "_project_admission", "_project_scope_none", "tool_profile", "detached_at", "detached_by",
                     "task_contract", "title", "text", "budget_drive_root"):
             if stored.get(key) not in (None, ""):
                 record[key] = stored[key]

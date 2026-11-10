@@ -43,6 +43,17 @@ def agent_restart_snapshot() -> dict:
             ("request_id", "task_id", "task_attempt", "status", "reason", "refusal") if key in _AGENT_RESTART}
 
 
+def agent_restart_defers_room_input(task_id: str, task_attempt: int) -> bool:
+    """Ordinary input cannot reopen this exact closing requester.
+
+    The room's final mailbox admission holds Q, as intent acceptance does. Typed
+    question answers and explicit controls use their own admission paths. Only
+    accepted intents close this reader; a definite release restores routing.
+    """
+    return (_AGENT_RESTART.get("status") in {"accepted", "ready"} and _AGENT_RESTART.get("task_id") == task_id
+            and _AGENT_RESTART.get("task_attempt") == task_attempt)
+
+
 def agent_restart_holds(task: dict) -> bool:
     """Only work anchored in this generation's already-started tree may start.
 

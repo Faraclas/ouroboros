@@ -434,21 +434,24 @@ def pending_member_replay_safe(q: Any, member: Dict[str, Any]) -> Tuple[bool, st
     ), "replay_unsafe"
 
 
-def resume_budget_paused_task(task_id: str, *, selected_by: str = "") -> Dict[str, Any]:
+def resume_budget_paused_task(task_id: str, *, selected_by: str = "",
+                              expected_owner_fence_id: str = "") -> Dict[str, Any]:
     from ouroboros.owner_pause import paused_gap
     from ouroboros.pause_notices import gap_fact
     from ouroboros.work_stop import resume_outcome
 
     gap = paused_gap(_queue_module().DRIVE_ROOT, task_id)  # read before this Resume ends that Pause
     seen: List[Dict[str, str]] = []  # what this Resume's own census found; the Pause's record keeps its own
-    outcome = _resume_budget_paused_task(task_id, selected_by=selected_by, gaps=seen)
+    outcome = _resume_budget_paused_task(task_id, selected_by=selected_by, gaps=seen,
+                                       expected_owner_fence_id=expected_owner_fence_id)
     if seen:
         gap = {"membership_gaps": gap_fact(seen, gap.get("membership_gaps"))}
     return resume_outcome({**outcome, **gap} if outcome.get("ok") else outcome)
 
 
 def _resume_budget_paused_task(task_id: str, *, selected_by: str = "",
-                               gaps: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+                               gaps: Optional[List[Dict[str, str]]] = None,
+                               expected_owner_fence_id: str = "") -> Dict[str, Any]:
     """Explicitly resume one budget-paused task and, if needed, its root latch.
 
     A replay-safe ZERO-dispatch row is released as before. An EXACT
@@ -477,6 +480,8 @@ def _resume_budget_paused_task(task_id: str, *, selected_by: str = "",
                 q.DRIVE_ROOT, located, budget=q.BUDGET_ROOT_FENCES), control_actor()):
             return refusal
     if located is None:
+        if expected_owner_fence_id:
+            return {"ok": False, "error": "maintenance_task_not_pending"}
         # A member parked WARM under the owner's Pause (its stack retained while a
         # started critic finishes) wakes on the fence; the owner's own Resume and
         # a model's selection reach it here.
@@ -487,17 +492,11 @@ def _resume_budget_paused_task(task_id: str, *, selected_by: str = "",
             return warm
     if located is None and not selected_by:
         from supervisor.owner_pause_resume import resume_terminal_tree
-
-        tree = resume_terminal_tree(task_id, gaps=gaps)
-        if tree is not None:
-            return tree
-    if located is None and not selected_by:
-        # An answered root's Pause: its deferred late review resumes, or nothing is left.
         from supervisor.budget_resume import resume_late_phase
-
-        late = resume_late_phase(task_id, gaps=gaps)
-        if late is not None:
-            return late
+        # Try the ended tree before its upkeep; neither fallback starts a task.
+        for resume in (resume_terminal_tree, resume_late_phase):
+            if (outcome := resume(task_id, gaps=gaps)) is not None:
+                return outcome
     with q._queue_lock:
         located = next((item for item in q.PENDING if str(item.get("id") or "") == task_id), None)
         if located is not None and not located.get("_budget_pause"):
@@ -558,6 +557,9 @@ def _resume_budget_paused_task(task_id: str, *, selected_by: str = "",
     elif needs_selection:
         observation = observe_held_budget_selection(q, task_id)
         owner_fence = (observation.get("authority") or {}).get("owner_fence") or {}
+        if expected_owner_fence_id and (owner_fence.get("fence_id") != expected_owner_fence_id
+                or (owner_fence.get("maintenance_return") or {}).get("state") != "pending"):
+            return {"ok": False, "error": "selection_authority_changed"}
         root_id = str(located_state.get("root_task_id") or task_id)
         from ouroboros.owner_pause import root_actor
         if (not selected_by and owner_fence.get("fence_id") and queued_admitted_dispatch(located_state)
@@ -582,6 +584,9 @@ def _resume_budget_paused_task(task_id: str, *, selected_by: str = "",
         if pause and pause.get("exact_continuation"):
             if task is not located or task != located_state:
                 return {"ok": False, "error": "selection_authority_changed"}
+            if expected_owner_fence_id:
+                from supervisor.maintenance_return import grant_maintenance_resume
+                return grant_maintenance_resume(task, pause, external, expected_owner_fence_id)
             return grant_exact_budget_resume(task, pause, selected_by=selected_by, external=external)
         if observation is not None:
             if observation.get("error"):
@@ -630,18 +635,8 @@ def _resume_budget_paused_task(task_id: str, *, selected_by: str = "",
         authority = observation["authority"]  # a member's consumed Resume completes at its selection
         if authority["owner_fence"] and (selected_by or not authority["consumed_resume"]):
             return {"ok": False, "error": "selection_owner_held"}
-        nominated_safe, nominated_error = observation["safe"], observation["unsafe_error"]
-        nominated_safe = bool(
-            nominated_safe
-            and pause.get("replay_safe")
-            and pause.get("physical_calls") == 0
-        )
-        if not nominated_safe:
-            return {
-                "ok": False,
-                "error": nominated_error,
-                "action": "cancel_or_new_run",
-            }
+        if not (observation["safe"] and pause.get("replay_safe") and pause.get("physical_calls") == 0):
+            return {"ok": False, "error": observation["unsafe_error"], "action": "cancel_or_new_run"}
         if root_scope:
             # Root Resume selects the root alone; children remain behind this
             # same fence until individually selected under its root grant (Q9).

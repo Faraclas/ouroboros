@@ -474,15 +474,25 @@ def _admit_chat_task(
         if pid:
             try:
                 from ouroboros.projects_registry import bind_task_to_project
+                from ouroboros.project_admission import project_admission_view
+
+                # Direct turns never pass queue preparation. Freeze their actual
+                # identity here; restart must not reconstruct it from today's room.
+                basis = project_admission_view(_pool().DRIVE_ROOT, pid, frozen=True)
+                if basis["project"]["chat_id"] != chat_id:
+                    raise ValueError("The direct turn's chat does not match its Project.")
 
                 bind_task_to_project(
                     _pool().DRIVE_ROOT, task["id"], pid, chat_id,
+                    admission_basis=basis,
                     origin=_pool()._origin_from_mapping(
                         task_metadata or {}, absent="mid_task_no_origin",
                     ),
                 )
+                task["_project_admission"] = basis
             except Exception as exc:
                 _pool()._report_binding_failure(task["id"], pid, exc, path="direct_project_turn")
+                raise  # the admission error path reports refusal and unregisters
         if not task["text"]:
             from ouroboros.chat_uploads import attachment_placeholder
             task["text"] = attachment_placeholder(image_data, task_metadata)
@@ -559,7 +569,8 @@ def _defer_chat_for_restart(task: dict, chat_id: int, metadata: Optional[dict]) 
     meta = metadata or {}
     ack = host_operation_reply_kwargs(meta.get("origin_message_ref") if meta.get("_host_operation") else None,
                                      client_message_id=str(meta.get("client_message_id") or ""))
-    _pool().send_with_budget(chat_id, "Saved for execution after Restart.",
+    _pool().send_with_budget(chat_id, "Saved for execution after Restart or release of the pending restart. "
+                            "To change the installation before it proceeds, use the requester's Stop control.",
                             **ack, role="system", system_type="restart_notice")
 
 
@@ -847,6 +858,12 @@ def auto_resume_after_restart() -> None:
             update_state(lambda state: state.update({PANIC_RECEIPT: identity}))
             remove_received_panic(root, identity)
             return
+        from supervisor.maintenance_return import resume_maintenance_pauses
+        try:
+            resume_maintenance_pauses(root)
+        except Exception as exc:
+            append_jsonl(root / "logs" / "supervisor.jsonl", {
+                "ts": utc_now_iso(), "type": "maintenance_return_unavailable", "error": str(exc)})
         if restart:
             return
 

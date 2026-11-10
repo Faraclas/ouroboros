@@ -251,6 +251,16 @@ export async function resumeTask(taskId, body = null) {
 }
 
 /**
+ * Record new owner-source-bound Project scope for exact saved work; does not Resume.
+ * @param {string} taskId
+ * @param {import('./client_contract_types.js').ProjectAuthorizationRequest} body
+ * @returns {Promise<import('./client_contract_types.js').ProjectAuthorizationResponse>}
+ */
+export function authorizeTaskProject(taskId, body) {
+    return jsonPost(`/api/tasks/${encodeURIComponent(taskId)}/project-authorization`, body);
+}
+
+/**
  * Owner hurry (S3, HQ1): the text-free typed task-local acceleration control.
  * The body carries ONLY the client-generated stable request_id (reuse the same
  * id on retry — the acknowledgement is idempotent). This path never creates a

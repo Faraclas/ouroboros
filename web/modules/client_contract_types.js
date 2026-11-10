@@ -913,6 +913,26 @@
  * @property {string=} message
  */
 
+/**
+ * NEW Project authority for an exact saved continuation, not a Resume grant.
+ * @typedef {Object} ProjectAuthorizationRequest
+ * @property {string} request_id
+ * @property {string} issuer_task_id
+ * @property {Object<string, *>} owner_source
+ * @property {string} checkpoint_sha256
+ * @property {Object<string, *>} project_basis
+ */
+
+/**
+ * No Resume grant; existing selection may dispatch after normal revalidation.
+ * @typedef {Object} ProjectAuthorizationResponse
+ * @property {boolean} ok
+ * @property {string} task_id
+ * @property {Object<string, *>} project_authorization
+ * @property {boolean} resumed
+ * @property {boolean} dispatch_may_proceed
+ */
+
 /* Living-message cards (`ouroboros.gateway.card_contracts`): the `card` / `card_state` frames, the read API
  * and the pin receipt. Presses go to `POST /api/decisions` with `card:{card_id}:{action_id}`. */
 

@@ -653,7 +653,7 @@ def revalidate_project_holds() -> None:
     held = [task for task in queue.PENDING if task.get("_project_admission_restore_hold")]
     if not held:
         return
-    effects = ("_project_admission_restore_hold", "_terminalization_retry", "_owner_hold",
+    effects = ("_project_admission", "_project_admission_restore_hold", "_terminalization_retry", "_owner_hold",
                "_owner_wait_resume", "_budget_pause", "_budget_pause_resume", "_resume_selection", BUDGET_HOLD_KEY)
     before = [copy.deepcopy({key: task[key] for key in effects if key in task}) for task in held]
     counts = Counter(row.get("id") for row in queue.PENDING)
@@ -768,7 +768,12 @@ def revalidate_project_holds() -> None:
             placement = pending_placement(queue.DRIVE_ROOT, task, bindings_snapshot=bindings)
             if placement and not refresh_pending_placement(queue.DRIVE_ROOT, task, binding=placement):
                 raise ValueError("The committed placement cannot be readmitted yet.")
-            basis = task.get("_project_admission")
+            original_basis = copy.deepcopy(task.get("_project_admission"))
+            basis = original_basis
+            if not isinstance(basis, dict) or basis.get("legacy_basis"):
+                from supervisor.project_reauthorization import authorized_basis
+
+                basis = authorized_basis(task, stored) or basis
             unscoped = host_unscoped(task)
             if not unscoped and (not isinstance(basis, dict) or basis.get("legacy_basis")
                     or isinstance(basis.get("project"), dict) and not {
@@ -807,8 +812,11 @@ def revalidate_project_holds() -> None:
                     if task.get(key) and not pathlib.Path(task[key]).is_dir():
                         raise ValueError("The original prepared task drive is unavailable.")
                 # Preserve independent Pause/budget/restart holds in the row.
+                if not unscoped:
+                    task["_project_admission"] = basis
                 task.pop("_project_admission_restore_hold")
                 released.append((task, {"_project_admission_restore_hold": hold,
+                                        **({"_project_admission": original_basis} if not unscoped else {}),
                                         **({"admitted_dispatch": task.get("admitted_dispatch")} if unsent else {})}))
                 if unsent:  # restore's own correction, read now that the receipt is readable
                     task["admitted_dispatch"] = "none"
