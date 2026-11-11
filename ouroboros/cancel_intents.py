@@ -207,15 +207,20 @@ def settled_status(drive_root: Any, task_id: str) -> str:
         return ""
 
 
-def _validated_single_cancel_target(drive_root: Any, task_id: str) -> str:
+def _validated_single_cancel_target(drive_root: Any, task_id: str, *, read_result=None) -> str:
     """Resolve a historical root id to its durable physical retry leaf.
 
     Only reciprocal host-written result lineage is authority.  Same-id retries
     (subagent/evolution) stay exact.  This helper is called while the cancel
     projection lock is held, which makes retry publication and intent minting
     one ordered decision with the reaper's admission boundary.
+
+    Observations may supply their strict full-document reader explicitly; control
+    callers keep the ordinary fresh reader. Lineage validation is shared, not copied.
     """
     from ouroboros.task_results import load_task_result, resolve_task_lineage
+
+    load_task_result = read_result if read_result is not None else load_task_result
 
     current_id = _valid_task_id(task_id)
     seen = {current_id}
