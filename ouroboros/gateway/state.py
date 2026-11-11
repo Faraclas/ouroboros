@@ -1019,6 +1019,7 @@ async def api_state(request: Request) -> JSONResponse:
             "runtime_mode": get_runtime_mode(),
             "context_mode": get_context_mode(),
             "subagents_mode": snap["subagents_mode"],
+            "primary_model": snap["primary_model"],
             "subagents_availability": snap["subagents_availability"],
             # Frozen one-window compatibility field. Persistent auto-Low is retired.
             "context_mode_auto_low": False,
