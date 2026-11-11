@@ -43,7 +43,7 @@ function deliveredFile(row) {
     return { source, reader: base64 ? { base64 } : source && (address === canonical || upload) ? { url: source } : null };
 }
 
-export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged, onPin, onWorkItems, onStorage }) {
+export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged, onPin, onWorkItems, onSelection, onStorage }) {
     const root = el('section', 'projects-manager');
     root.setAttribute('aria-label', 'Projects');
     root.innerHTML = `<header class="pm-toolbar"><div class="pm-heading"><h2>Projects</h2><p>Rooms and their working context</p></div><button type="button" class="btn btn-primary" data-pm-create>New project</button></header>
@@ -126,6 +126,7 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
         const retainedHistory = same && !historyBusy && !historyInterrupted && !detail.querySelector('.pm-result-body[aria-busy="true"]') ? detail.querySelector('.pm-history-section') : null;
         const retainedCursor = historyCursor, retainedSeen = new Set(historySeen), scroll = same ? detail.scrollTop : 0;
         stopDetailReads(); selectedId = id; if (!keepDetail) selected = null; selectionPaint();
+        if (!same) onSelection?.(rows.find(project => project.id === id) || { id, name: id });
         retainedHistory?.remove();
         if (!keepDetail) { cleanRich(detail); detail.replaceChildren(el('p', 'pm-empty', 'Loading project…')); }
         detail.setAttribute('aria-busy', 'true');
@@ -135,6 +136,7 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
             if (!validSelection(id) || current !== detailRequest) return;
             if (data?.project?.id !== id || !Array.isArray(data.project.resources)) throw Error('Project detail response is incomplete.');
             selected = data.project; paintDetail();
+            onSelection?.(selected);
             if (draft) { if (q('[data-pm-resource-path]')) q('[data-pm-resource-path]').value = draft.path; if (q('[data-pm-resource-label]')) q('[data-pm-resource-label]').value = draft.label; }
             if (retainedHistory) { detail.querySelector('.pm-history-section').replaceWith(retainedHistory); historyCursor = retainedCursor; for (const key of retainedSeen) historySeen.add(key); }
             detail.scrollTop = scroll;

@@ -535,7 +535,7 @@ def test_add_comment_focuses_existing_editor_without_repaint_or_submission(captu
     }"""), textarea.evaluate("n => ({input:n.getBoundingClientRect().toJSON(),host:n.closest('.wi-detail').getBoundingClientRect().toJSON()})")
     assert writes(page) == []
     assert page.evaluate('h.transfers') == []
-    assert page.locator('.wi-detail').get_by_role('button', name='Bring to chat', exact=True).count() == 1
+    assert page.locator('.wi-detail').get_by_role('button', name='Discuss in project chat', exact=True).count() == 1
 
 
 @pytest.mark.parametrize('mode', ['delay', 'lost'])

@@ -38,7 +38,7 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
     doc.body.append(root);
     const q = sel => root.querySelector(sel), boards = new Map(), drafts = new Map(), attachments = new Map();
     const lifetime = new AbortController(), mutations = new Set();
-    let returnFocus = null, board = null, dead = false, listSequence = 0, detailSequence = 0, listController = null, detailController = null, detailItem = null;
+    let returnFocus = null, board = null, dead = false, followDashboard = false, listSequence = 0, detailSequence = 0, listController = null, detailController = null, detailItem = null;
     const live = () => !dead && !root.hidden;
     const currentItem = (b, id) => live() && board === b && b.selected === id;
     function button(text, fn, cls = 'btn btn-default') { const n = el(doc, 'button', cls, text); n.type = 'button'; n.onclick = fn; return n; }
@@ -218,6 +218,7 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
         catch (error) { if (live() && board === b) note(feedback, error.message, true); }
     }
     function followItem(b, item) {
+        followDashboard = false; // Explicit item navigation leaves the Dashboard selection behind.
         b.selected = '';
         board = stateFor(boards.get(item.project_id)?.project || { id: item.project_id, name: item.project_id });
         board.filter = item.disposition; board.offset = 0; board.archived = !!item.archived; board.query = '';
@@ -315,7 +316,7 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
         });
         commentShortcut.dataset.wiAddComment = '';
         commentShortcut.disabled = !!(d.commentOp || d.moveOp);
-        const actions = el(doc, 'div', 'wi-actions'); actions.append(commentShortcut, transferButton('Bring to chat', text => bring(b, text, feedback)), transferButton('Copy item', async text => { try { await navigator.clipboard.writeText(text); note(feedback, 'Item copied.'); } catch { note(feedback, 'Copy is unavailable. Select the item text to copy.', true); } })); host.append(actions, feedback); moveChooser(b, d, host);
+        const actions = el(doc, 'div', 'wi-actions'); actions.append(commentShortcut, transferButton('Discuss in project chat', text => bring(b, text, feedback)), transferButton('Copy item', async text => { try { await navigator.clipboard.writeText(text); note(feedback, 'Item copied.'); } catch { note(feedback, 'Copy is unavailable. Select the item text to copy.', true); } })); host.append(actions, feedback); moveChooser(b, d, host);
         const identityRow = el(doc, 'p', 'wi-meta wi-item-identity', `Item ID: ${item.id}`); identityRow.append(button('Copy item ID', async () => { try { await navigator.clipboard.writeText(item.id); note(feedback, 'Item ID copied.'); } catch { note(feedback, 'Copy is unavailable. Select the item ID.', true); } })); host.append(identityRow);
         if (d.editing) {
             const form = el(doc, 'form', 'wi-edit');
@@ -369,7 +370,7 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
             const row = el(doc, 'article', 'wi-comment'); row.dataset.wiComment = comment.id;
             row.append(el(doc, 'p', 'wi-meta', `${authorLabel(comment.created_by || comment.author)} · ${when(comment.created_at)}`));
             if (comment.quote) row.append(el(doc, 'blockquote', 'wi-text', comment.quote.text || ''));
-            row.append(el(doc, 'p', 'wi-text', comment.text), button('Quote', () => { d.quote = comment; paintDetail(b, d); q('.wi-comment-form textarea')?.focus(); }), transferButton('Bring comment to chat', text => bring(b, text, feedback), comment, row)); thread.append(row);
+            row.append(el(doc, 'p', 'wi-text', comment.text), button('Quote', () => { d.quote = comment; paintDetail(b, d); q('.wi-comment-form textarea')?.focus(); }), transferButton('Discuss comment in project chat', text => bring(b, text, feedback), comment, row)); thread.append(row);
         }
         if (!detailItem?.comments?.length) thread.append(el(doc, 'p', 'wi-empty', 'No discussion yet.'));
         const commentForm = el(doc, 'form', 'wi-comment-form');
@@ -382,12 +383,16 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
     }
     async function openLinked(link) {
         if (link.project_id && link.project_id !== board.project.id) {
+            followDashboard = false;
             const b = stateFor(boards.get(link.project_id)?.project || { id: link.project_id, name: link.project_id }); board = b; syncBoard(); void loadList();
         } await openItem(link.item_id);
     }
     async function openItem(id) {
         if (!live() || !board) return;
         const b = board; b.selected = id; detailController?.abort(); detailController = new AbortController(); const sequence = ++detailSequence;
+        if (detailItem?.item.id !== id || detailItem?.item.project_id !== b.project.id) {
+            detailItem = null; q('.wi-detail').replaceChildren(el(doc, 'p', 'wi-empty', 'Loading item…'));
+        }
         root.classList.add('wi-has-detail'); q('.wi-detail').setAttribute('aria-busy', 'true');
         try {
             const data = await request('item', { item_id: id }, detailController);
@@ -416,15 +421,18 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
         if (b && board === b && live()) void loadList();
         onCaptured?.(project, item);
     } });
-    function open(project, itemId = '', { listOnly = false } = {}) {
+    function open(project, itemId = '', { listOnly = false, dashboard = false, focus = true } = {}) {
         if (dead || !project?.id) return;
         if (!live()) returnFocus = doc.activeElement;
+        followDashboard = dashboard;
         cancelReads(); board = stateFor(project); detailItem = null;
+        // Never leave another project's actionable detail beneath the new heading during a read.
+        q('.wi-detail').replaceChildren(el(doc, 'p', 'wi-empty', 'Choose an item to read or discuss.'));
         if (listOnly) board.selected = '';
         root.hidden = false; syncBoard();
         if (itemId || board.selected) void openItem(itemId || board.selected);
         else q('.wi-detail').replaceChildren(el(doc, 'p', 'wi-empty', 'Choose an item to read or discuss.'));
-        void loadList(); q('.wi-add input').focus();
+        void loadList(); if (focus) q('.wi-add input').focus();
     }
     root.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); close(); } }, { signal: lifetime.signal });
     q('[data-wi-close]').addEventListener('click', () => close(), { signal: lifetime.signal });
@@ -440,6 +448,11 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
     q('[data-wi-prev]').addEventListener('click', () => { board.offset = Math.max(0, board.offset - board.limit); void loadList(); }, { signal: lifetime.signal });
     q('[data-wi-next]').addEventListener('click', () => { board.offset += board.limit; void loadList(); }, { signal: lifetime.signal });
     return { root, open, close, openCapture: project => quickCapture.open(project),
+        followProject(project) {
+            if (!live() || !followDashboard || !project?.id) return;
+            if (board.project.id !== project.id) open(project, '', { dashboard: true, focus: false });
+            else { board.project = project; q('[data-wi-project]').textContent = project.name || project.id; }
+        },
         attachRoom(project, header) {
             this.detachRoom(project.id); if (!header) return;
             const node = button('', () => open(project), 'btn btn-default wi-room-entry');

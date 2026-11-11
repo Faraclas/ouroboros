@@ -412,6 +412,12 @@ export function createComposer({ page, byId, ws, replies, chatSessionId, isMain,
         chipsSlot: page.querySelector('[data-composer-chips]'),
         focus: () => input.focus({ preventScroll: true }),
         getDraft: () => input.value,
+        /** Item-to-chat transfer is a new subject, not a reply to an old saved row. Keeps typed words. */
+        clearReply() {
+            const hadReply = !!replies.frameField().reply_to;
+            replies.clear();
+            return hadReply;
+        },
         /** Replace the draft (it is kept for the room like typed words). */
         setDraft(text) {
             input.value = String(text ?? '');

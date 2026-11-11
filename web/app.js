@@ -596,20 +596,28 @@ const workItems = createWorkItems({
     onCaptured: project => showToast(`Work Item saved as Idea in ${project.name || project.id}.`),
     async sendToChat(projectId, text, { current, signal }) {
         if (!current()) return;
-        const originFocus = document.activeElement;
-        const project = (await fetchJson(`/api/projects/${encodeURIComponent(projectId)}/detail`, { signal, cache: 'no-store' }))?.project;
-        if (!current()) return;
-        if (!project || String(project.lifecycle || 'active') !== 'active') throw Error('This room is closed or unavailable. Reopen it explicitly before bringing text to chat.');
-        if (document.activeElement !== originFocus && document.activeElement !== document.body) throw Error('Focus changed before the room opened. Nothing was added.');
-        const opening = openProjectPanel(project, { openOnly: true, besideSource: panes.collaborating(), composerFocus: false, navigationCurrent: current });
-        const navigation = projectNavigationGeneration;
-        await opening;
-        if (!current()) return;
-        const instance = projectInstances.get(projectId);
-        if (!instance || navigation !== projectNavigationGeneration || state.activePage !== 'chat' || navState.activeProjectId !== projectId) throw Error('The room changed before text was added. Nothing was added.');
-        if (document.activeElement !== originFocus && document.activeElement !== document.body && !instance.page.contains(document.activeElement)) throw Error('Focus changed while the room opened. Nothing was added.');
-        appendSelection(instance.composer, text);
-        return true;
+        // A shell focus restoration is not a new owner intent. A subsequent gesture is.
+        const intent = new AbortController();
+        let movedOn = false;
+        const changed = event => { if (event.isTrusted) movedOn = true; };
+        for (const type of ['pointerdown', 'keydown', 'input']) document.addEventListener(type, changed, { capture: true, signal: intent.signal });
+        try {
+            const project = (await fetchJson(`/api/projects/${encodeURIComponent(projectId)}/detail`, { signal, cache: 'no-store' }))?.project;
+            if (!current()) return;
+            if (!project || String(project.lifecycle || 'active') !== 'active') throw Error('This room is closed or unavailable. Reopen it explicitly before bringing text to chat.');
+            if (movedOn) throw Error('You moved on before the room opened. Nothing was added.');
+            const opening = openProjectPanel(project, { openOnly: true, besideSource: panes.collaborating(), composerFocus: false, navigationCurrent: current });
+            const navigation = projectNavigationGeneration;
+            await opening;
+            if (!current()) return;
+            const instance = projectInstances.get(projectId);
+            if (!instance || navigation !== projectNavigationGeneration || state.activePage !== 'chat' || navState.activeProjectId !== projectId) throw Error('The room changed before text was added. Nothing was added.');
+            if (movedOn) throw Error('You moved on while the room opened. Nothing was added.');
+            const replyCleared = instance.composer.clearReply();
+            appendSelection(instance.composer, text);
+            if (replyCleared) showToast('Added to the project draft. The earlier Reply target was removed.');
+            return true;
+        } finally { intent.abort(); }
     },
     async openReference(address, current) {
         const match = /^row:([0-9]+)@/.exec(address);
@@ -1508,7 +1516,8 @@ settingsControls = initSettings(ctx);
 dashboardControls = initDashboard(ctx);
 const projectsManager = initProjectsManager({ mount: document.getElementById('dashboard-panel-projects'), state,
     onCreate: createProjectFromClient,
-    onWorkItems: project => workItems.open(project),
+    onWorkItems: project => workItems.open(project, '', { dashboard: true }),
+    onSelection: project => workItems.followProject(project),
     onStorage: () => { dashboardControls.activateTab('storage'); document.getElementById('dashboard-tab-storage')?.focus(); },
     onOpen: (project, beside) => openProjectPanel(project, { openOnly: true, besideSource: beside, composerFocus: !beside }),
     onChanged: () => { knownProjectsJson = ''; return refreshProjectsNav(); },
