@@ -215,6 +215,7 @@ def _record_owner_directive(
     origin: Optional[Dict[str, str]] = None,
     media: Optional[List[Dict[str, Any]]] = None,
     owner_text: str = "",
+    inherited: bool = False,
 ) -> None:
     """Retain the task-local owner corpus across transcript compaction.
 
@@ -257,6 +258,11 @@ def _record_owner_directive(
         row["msg_id"] = stable_id
     row.update({key: str(value) for key, value in (origin or {}).items() if value})
     directives.append(row)
+    if inherited:
+        from ouroboros.owner_words import OWNER_SOURCES
+        from ouroboros.dialogue_provenance import run_origin
+        if row["source"] in OWNER_SOURCES and not run_origin({"metadata": getattr(ctx, "task_metadata", {})})["owner_ingress"]:
+            ctx._owner_inherited_revision = int(getattr(ctx, "_owner_inherited_revision", 0) or 0) + 1
 
 
 def _initialize_owner_directives(ctx: Any, messages: List[Dict[str, Any]]) -> None:
@@ -302,6 +308,7 @@ def _initialize_owner_directives(ctx: Any, messages: List[Dict[str, Any]]) -> No
                 _loop()._record_owner_directive(
                     ctx, source=str(row["source"]), content=row.get("content"), media=row.get("media"),
                     owner_text=row.get("owner_text", ""),
+                    inherited=True,
                     msg_id=str(row.get("msg_id") or ""),
                     origin={key: row[key] for key in ("source_task_id", "relayed_from_task_id", "quiz_id") if row.get(key)},
                 )
@@ -342,7 +349,17 @@ def owner_reply_owed(ctx: Any) -> bool:
     A failed or deferred send discharges nothing; queue admission is not a read receipt, and
     whether a sent line answered completely remains the author's judgment, not the host's.
     """
-    return owner_input_revision(ctx) > int(getattr(ctx, "_owner_reply_revision", None) or 0)
+    return owner_reply_input_revision(ctx) > int(getattr(ctx, "_owner_reply_revision", None) or 0)
+
+
+def owner_reply_input_revision(ctx: Any) -> int:
+    """Current dialogue only; inherited authority keeps its exact corpus identity.
+
+    Both inherited producers count only newly appended owner rows, even when
+    legacy evidence arrives late or reorders the corpus. Missing legacy counts
+    remain conservative reply debt; cold continuation carries the count.
+    """
+    return owner_input_revision(ctx) - int(getattr(ctx, "_owner_inherited_revision", 0) or 0)
 
 
 def queue_inspection_unknown(ctx: Any, exc: BaseException) -> Dict[str, Any]:

@@ -484,6 +484,7 @@ def _recover_followup_owner_evidence(ctx: Any) -> None:
         for index, row in enumerate(rows):
             _record_owner_directive(ctx, source=row["source"], content=row.get("content"), media=row.get("media"),
                 owner_text=row.get("owner_text", ""),
+                inherited=True,
                 msg_id=str(row.get("msg_id") or f"retained:{source_task}:{index}"),
                 origin={key: row[key] for key in ("source_task_id", "relayed_from_task_id", "quiz_id") if row.get(key)})
     owned_gaps = list(dict.fromkeys([*previous_gaps, *gaps])) if gaps else []

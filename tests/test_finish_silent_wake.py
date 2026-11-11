@@ -318,6 +318,126 @@ def test_silent_terminal_ships_no_deferred_mid_turn_send_early(wake):
 
 # --- owner words: an admitted row needs a live reply first ------------------------------
 
+@pytest.mark.parametrize("source", ["initial_user", "owner_mailbox", "owner_quiz_answer",
+                                   "origin_message", "owner_corpus", "direct_incoming"])
+def test_inherited_authority_is_not_new_schedule_dialogue(wake, source):
+    from ouroboros.loop_messages import owner_input_revision, owner_source_sha256
+
+    inherited = {"source": source, "content": "Keep investigating; report meaningful changes.", "msg_id": "old"}
+    metadata = {**SCHEDULE, "objective_author": {"kind": "task"}, "owner_corpus": [inherited]}
+    wake.ctx.is_direct_chat = False
+    text, usage, trace, bus = wake.run([finish("Nothing new", silent=True), {"content": "Reply required"}], metadata=metadata)
+    assert usage.get("wake_silent") is True and not trace.get("completion_refusals")
+    assert wake.ctx._owner_directives == [inherited] and owner_input_revision(wake.ctx) == 1
+    expected = SimpleNamespace(_owner_directives=[inherited])
+    assert owner_source_sha256(wake.ctx) == owner_source_sha256(expected)
+    pending, stored = emit(wake, text, usage, trace, bus=bus, metadata=metadata)
+    assert not sends(pending) and not sends(drained(bus)) and not owed_rows(wake.root)
+    assert stored["result"] == "Nothing new"
+
+
+def test_owner_door_schedule_cannot_hide_its_initial_dialogue(wake):
+    metadata = {**SCHEDULE, "origin_suppressed": True, "objective_author": {"kind": "task"},
+                "owner_corpus": [{"source": "initial_user", "content": "New request", "msg_id": "new"}]}
+    wake.ctx.is_direct_chat = False
+    _, usage, trace, _ = wake.run([finish(silent=True), finish("Reply")], metadata=metadata)
+    assert "wake_silent" not in usage
+    assert trace["completion_refusals"][0]["reason"].startswith("owner_reply_owed")
+
+
+def test_inherited_schedule_still_owes_new_owner_mail(wake):
+    metadata = {**SCHEDULE, "objective_author": {"kind": "task"},
+                "owner_corpus": [{"source": "initial_user", "content": "Old direction", "msg_id": "old"}]}
+    wake.ctx.is_direct_chat = False
+    _, usage, trace, _ = wake.run([
+        wake.owner_writes("Anything new?", call("chat_history", {}), "new"),
+        finish(silent=True), call("send_user_message", {"text": "Nothing changed."}), finish(silent=True),
+    ], metadata=metadata)
+    assert len(trace["completion_refusals"]) == 1
+    assert trace["completion_refusals"][0]["reason"].startswith("owner_reply_owed")
+    assert usage.get("wake_silent") is True and wake.ctx._owner_reply_revision == 1
+
+
+def test_legacy_recovery_after_live_reply_adds_authority_not_debt(wake):
+    from ouroboros.task_results import write_task_result
+    from ouroboros.owner_words import ensure_followup_owner_evidence
+
+    metadata = {**SCHEDULE, "objective_author": {"kind": "task"}, "followup_origin": {"task_id": "old-root"}}
+    inherited = {"source": "initial_user", "content": "Historical direction", "msg_id": "old"}
+    def recover(ctx, **kw):
+        write_task_result(wake.root, "old-root", "completed", review_evidence={"task_inputs": {
+            "owner_requirements_and_decisions": [inherited], "owner_corpus_gaps": []}})
+        ensure_followup_owner_evidence(ctx)
+        ensure_followup_owner_evidence(ctx)
+        return "Recovered"
+    wake.registry.override_handler("chat_history", recover)
+    wake.ctx.is_direct_chat = False
+    _, usage, trace, _ = wake.run([
+        wake.owner_writes("Status?", call("send_user_message", {"text": "Checking."}), "new"),
+        call("send_user_message", {"text": "No change."}), call("chat_history", {}), finish(silent=True),
+    ], metadata=metadata)
+    assert usage.get("wake_silent") is True and not trace.get("completion_refusals")
+    assert wake.ctx._owner_inherited_revision == 1
+    assert [row["msg_id"] for row in wake.ctx._owner_directives] == ["old", "new"]
+
+
+def test_legacy_schedule_recovers_initial_authority_and_finishes_quietly(wake):
+    from ouroboros.task_results import write_task_result
+    inherited = {"source": "initial_user", "content": "Old direction", "msg_id": "old"}
+    write_task_result(wake.root, "old-root", "completed", review_evidence={"task_inputs": {
+        "owner_requirements_and_decisions": [inherited], "owner_corpus_gaps": []}})
+    wake.ctx.is_direct_chat = False
+    _, usage, trace, _ = wake.run([finish(silent=True)], metadata={**SCHEDULE,
+        "objective_author": {"kind": "task"}, "followup_origin": {"task_id": "old-root"}})
+    assert usage.get("wake_silent") is True and not trace.get("completion_refusals")
+    assert wake.ctx._owner_directives == [inherited] and wake.ctx._owner_inherited_revision == 1
+
+
+def test_cold_state_keeps_inherited_count_and_unanswered_new_input(wake):
+    from ouroboros.loop_messages import _initialize_owner_directives, _record_owner_directive, owner_reply_owed
+    from ouroboros.owner_wait import continuation_state, restore_continuation_state
+
+    wake.ctx.task_metadata = {**SCHEDULE, "objective_author": {"kind": "task"},
+        "owner_corpus": [{"source": "initial_user", "content": "Old", "msg_id": "old"}]}
+    _initialize_owner_directives(wake.ctx, [])
+    wake.ctx._owner_reply_revision = 0
+    state = json.loads(json.dumps(continuation_state(wake.ctx, [], {}, {}, 0, [], set())))
+    wake.ctx._owner_inherited_revision = 0
+    restore_continuation_state(wake.registry, state, [], {}, {}, set())
+    assert not owner_reply_owed(wake.ctx) and wake.ctx._owner_inherited_revision == 1
+    _record_owner_directive(wake.ctx, source="owner_quiz_answer", content="New answer", msg_id="new")
+    assert owner_reply_owed(wake.ctx)
+
+
+def test_ordinary_initial_owner_input_is_not_inherited(wake):
+    from ouroboros.loop_messages import owner_reply_owed
+    wake.run([{"content": "Answer"}], metadata={"origin_suppressed": True},
+             messages=[{"role": "user", "content": "New question"}])
+    assert owner_reply_owed(wake.ctx)
+
+
+def test_legacy_cold_reply_mark_cannot_swallow_new_owner_input(wake):
+    from ouroboros.loop_messages import _record_owner_directive, owner_reply_owed
+    from ouroboros.owner_wait import continuation_state, restore_continuation_state
+
+    _record_owner_directive(wake.ctx, source="initial_user", content="Old", msg_id="old")
+    _record_owner_directive(wake.ctx, source="owner_mailbox", content="Answered", msg_id="answered")
+    wake.ctx._owner_reply_revision = 2
+    state = json.loads(json.dumps(continuation_state(wake.ctx, [], {}, {}, 0, [], set())))
+    state["delivery"].pop("_owner_inherited_revision", None)
+    wake.ctx._owner_inherited_revision = 1  # fresh initialization before loading an old checkpoint
+    restore_continuation_state(wake.registry, state, [], {}, {}, set())
+    assert not owner_reply_owed(wake.ctx) and wake.ctx._owner_inherited_revision == 0
+    _record_owner_directive(wake.ctx, source="owner_mailbox", content="New question", msg_id="new")
+    assert owner_reply_owed(wake.ctx)
+
+
+def test_live_row_recovered_as_inherited_still_owes_its_reply(wake):
+    from ouroboros.loop_messages import _record_owner_directive, owner_reply_owed
+    _record_owner_directive(wake.ctx, source="owner_mailbox", content="New", msg_id="same")
+    _record_owner_directive(wake.ctx, source="owner_mailbox", content="New", msg_id="same", inherited=True)
+    assert owner_reply_owed(wake.ctx) and not getattr(wake.ctx, "_owner_inherited_revision", 0)
+
 def test_unanswered_owner_words_refuse_silence_until_a_live_reply(wake):
     text, usage, trace, bus = wake.run([
         wake.owner_writes("Are you there?", call("chat_history", {}), "m1"),
@@ -732,7 +852,11 @@ INTERNAL = "INTERNAL: journal read, nothing new."
 
 @pytest.mark.parametrize("summary", ["", "Checked the journal."])
 @pytest.mark.parametrize("sent", [False, True])
-def test_cold_resume_completes_the_restored_quiet_selection_silently(wake, monkeypatch, summary, sent):
+@pytest.mark.parametrize("inherited", [False, True])
+def test_cold_resume_completes_the_restored_quiet_selection_silently(wake, monkeypatch, summary, sent, inherited):
+    if inherited:
+        wake.ctx.task_metadata = {**WAKE, "objective_author": {"kind": "task"}, "owner_corpus": [
+            {"source": "initial_user", "content": "Historical direction", "msg_id": "old"}]}
     responses = [call("send_user_message", {"text": "A visible progress update."})] if sent else []
     wait = _park_after_selection(wake, monkeypatch, [*responses, finish(INTERNAL, silent=True, summary=summary)])
     assert bool(getattr(wake.ctx, "_owner_message_sent", False)) is sent
@@ -749,7 +873,11 @@ def test_cold_resume_completes_the_restored_quiet_selection_silently(wake, monke
 
 
 @pytest.mark.parametrize("summary", ["", "Checked the tests."])
-def test_cold_resume_new_owner_words_void_the_quiet_selection_without_leaking(wake, monkeypatch, summary):
+@pytest.mark.parametrize("inherited", [False, True])
+def test_cold_resume_new_owner_words_void_the_quiet_selection_without_leaking(wake, monkeypatch, summary, inherited):
+    if inherited:
+        wake.ctx.task_metadata = {**WAKE, "objective_author": {"kind": "task"}, "owner_corpus": [
+            {"source": "initial_user", "content": "Historical direction", "msg_id": "old"}]}
     wait = _park_after_selection(wake, monkeypatch, [
         wake.owner_writes("Status?", call("chat_history", {}), "m1"),
         call("send_user_message", {"text": "Quiet day."}),
