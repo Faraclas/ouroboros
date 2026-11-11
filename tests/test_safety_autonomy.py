@@ -99,6 +99,9 @@ def test_full_keeps_constraints_place_and_model_verdict(supervisor, monkeypatch,
     assert json.loads(prompt.split("\nArguments:\n", 1)[1].rsplit("\nIs this safe?", 1)[0]) == h.module._redact_secrets_in_arguments(subject)
     system = wire["messages"][0]["content"][0]["text"]
     assert system == h.module._get_safety_prompt()
+    # The json_object request contract requires an explicit JSON instruction.
+    assert wire["response_format"] == {"type": "json_object"}
+    assert "json" in system.lower()
     assert "Full is not Cyber Pro" in system
     assert "untrusted person's request" in system
     assert "new related work is not Resume" in system

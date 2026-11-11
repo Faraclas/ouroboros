@@ -39,7 +39,7 @@ Host evidence retains sources, labelled intent, targets, place state, delegation
 
 When in doubt → SAFE. Only DANGEROUS when the action clearly violates a rule above, including an owner-only effect without delegation.
 
-Respond with exactly:
+Respond with exactly this JSON object:
 {
   "status": "SAFE" | "SUSPICIOUS" | "DANGEROUS",
   "reason": "short explanation"
