@@ -37,6 +37,7 @@
  * @property {string} runtime_mode
  * @property {string} context_mode
  * @property {"off"|"auto"|"swarm"} subagents_mode
+ * @property {PrimaryModel} primary_model
  * @property {"available"|"disabled"|"unsaved"} subagents_availability
  * @property {boolean} context_mode_auto_low  // frozen compatibility field; always false
  * @property {EffortRange} effort_range  // the owner's effort range (POST /api/owner/effort-range), the tolerant read
@@ -924,10 +925,24 @@
  */
 
 /**
+ * @typedef {import('./client_contract_types.js').PrimaryModel} PrimaryModel
+ * @typedef {import('./client_contract_types.js').OwnerPrimaryModelRequest} OwnerPrimaryModelRequest
+ */
+
+/**
+ * @typedef {Object} OwnerPrimaryModelResponse
+ * @property {boolean} ok
+ * @property {string} project_id
+ * @property {PrimaryModel} primary_model
+ * @property {ProjectCognition} cognition
+ */
+
+/**
  * @typedef {Object} ProjectCognition
  * @property {"off"|"auto"|"swarm"} subagents_mode
  * @property {string} context_mode
  * @property {EffortRange} effort_range
+ * @property {PrimaryModel} primary_model
  */
 
 /**

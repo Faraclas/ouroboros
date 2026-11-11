@@ -7,6 +7,7 @@ import { attachmentViews } from './chat_attachments.js';
 import { createParentSection, projectPath } from './project_parent.js';
 import { createLocationSection } from './project_location.js';
 import { createResourcePreview } from './project_resource_preview.js';
+import { createRoomModel } from './room_model.js';
 
 // Installation-local labels/policy, not a core lifecycle rule or a name heuristic.
 export const MANAGED_PROJECT_IDS = Object.freeze(['viper-interface', 'viper-discord', 'viper-model-transport']);
@@ -58,7 +59,7 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
     // Page memory only. Saved text lives in the registry; unsaved drafts never use browser storage.
     const contentEditors = new Map(), contentControllers = new Set();
     // Parent writes outlive detail GETs/navigation, just like per-room content drafts.
-    const parentEditors = new Map(), locationEditors = new Map(), parentController = new AbortController();
+    const parentEditors = new Map(), locationEditors = new Map(), modelEditors = new Map(), parentController = new AbortController();
     const reader = createDocumentReader({ actions: { download(file) { const a = el('a'); a.href = file.url; a.download = file.filename; a.click(); } } });
     const isHere = () => live && !dead;
     const validSelection = id => isHere() && selectedId === id;
@@ -170,6 +171,7 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
         resourcePreview?.destroy(); resourcePreview = null;
         const project = selected, life = projectLifecycle(project); historyCursor = null; historyBusy = false; historyInterrupted = false;
         const locationFocus = locationEditors.get(project.id)?.root.contains(document.activeElement) ? document.activeElement : null;
+        const modelFocus = modelEditors.get(project.id)?.root.contains(document.activeElement) ? document.activeElement : null;
         historySeen.clear();
         const previousContent = contentEditors.get(project.id)?.node;
         const focused = previousContent?.contains(document.activeElement) ? document.activeElement : null;
@@ -201,6 +203,19 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
         detail.append(actions, el('p', 'pm-action-status'));
         detail.lastElementChild.dataset.pmActionStatus = ''; detail.lastElementChild.setAttribute('role', 'status');
         detail.append(content);
+        if (life === 'active') {
+            let model = modelEditors.get(project.id);
+            const fresh = !model;
+            if (fresh) {
+                model = createRoomModel({ projectId: project.id, onSaved: () => { void onChanged?.(); } });
+                model.root.prepend(el('h3', '', 'Primary model'));
+                modelEditors.set(project.id, model);
+            }
+            detail.append(model.root);
+            model.sync(project.cognition?.primary_model);
+            if (fresh) void model.load();
+            modelFocus?.focus({ preventScroll: true });
+        }
         (focusEdit ? content.querySelector('[data-pm-content-edit]') : focused)?.focus({ preventScroll: true });
         let parent = parentEditors.get(project.id);
         if (!parent) {
@@ -511,5 +526,5 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
     window.addEventListener('ouro:page-shown', exposure);
     window.addEventListener('ouro:dashboard-subtab-shown', exposure);
     exposure();
-    return { root, select: selectProject, refresh: () => loadCatalog(), destroy() { dead = true; live = false; ++catalogRequest; catalogController?.abort(); for (const controller of contentControllers) controller.abort(); contentEditors.clear(); parentController.abort(); parentEditors.clear(); locationEditors.clear(); stopDetailReads(); reader.destroy(); cleanRich(detail); window.removeEventListener('ouro:page-shown', exposure); window.removeEventListener('ouro:dashboard-subtab-shown', exposure); root.remove(); } };
+    return { root, select: selectProject, refresh: () => loadCatalog(), destroy() { dead = true; live = false; ++catalogRequest; catalogController?.abort(); for (const controller of contentControllers) controller.abort(); contentEditors.clear(); parentController.abort(); parentEditors.clear(); locationEditors.clear(); for (const model of modelEditors.values()) model.destroy(); modelEditors.clear(); stopDetailReads(); reader.destroy(); cleanRich(detail); window.removeEventListener('ouro:page-shown', exposure); window.removeEventListener('ouro:dashboard-subtab-shown', exposure); root.remove(); } };
 }

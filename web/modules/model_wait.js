@@ -364,7 +364,7 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
                 <button class="btn btn-default" type="button" data-wait-retry>Try again</button>
                 <button class="btn btn-default" type="button" data-wait-settings>Settings</button></div>
             <div class="model-wait-picker" data-wait-picker hidden>${modelRolesHost(editorId)}
-                <label class="model-wait-auto"><input class="ui-checkbox" type="checkbox" data-wait-persist> Also save this role in Settings</label>
+                <label class="model-wait-auto"><input class="ui-checkbox" type="checkbox" data-wait-persist> Also save this role in global Settings (not the project model)</label>
                 <div class="model-wait-actions"><button class="btn btn-default" type="button" data-wait-apply disabled>Apply to this task</button>
                     <span class="model-wait-meta" data-wait-scope></span></div></div>
             <div class="model-wait-notice ui-status" data-wait-notice role="status" aria-live="polite"></div>

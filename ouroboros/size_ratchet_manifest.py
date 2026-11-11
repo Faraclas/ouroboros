@@ -93,6 +93,7 @@ BAND_BASELINE_PATHS = (
 )
 
 BAND_PATHS = {
+    "ouroboros/context_fit.py": "Route sizing owns binding-scoped manual windows; room routing extends that responsibility without splitting its fit flow.",
     "devtools/benchmarks/cybergym/cybergym_executor.py": "Executor assembly after docker/lifecycle/wire splits (ratchet heal); shrink next touch.",
     "devtools/benchmarks/cybergym/cybergym_lifecycle.py": "Run/settle lifecycle layer of the executor split: one accounting seam.",
     "devtools/benchmarks/cybergym/cybergym_protocol.py": "Stateless protocol layer of the adapter split: constants, validators, provenance.",

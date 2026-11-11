@@ -146,8 +146,8 @@ def task_model_binding(task: dict, *, context_fit_plan: object = None,
                        overrides: dict | None = None) -> tuple[str, str | None]:
     """Bind an acting call to its explicit role, active fit plan or frozen actor.
 
-    Callers may pass their live owner's overrides; this pure projection never
-    captures another task's ambient wait or turns an observed Auto account into a pin.
+    Callers pass their live owner's overrides; following Project roots read their
+    saved primary pin. Other roles and observed Auto accounts remain independent.
     """
     from ouroboros.supervisor_route import supervisor_binding
 
@@ -166,6 +166,12 @@ def task_model_binding(task: dict, *, context_fit_plan: object = None,
         followed = str((cognitive or {}).get("follows_role") or "")  # a nanny following its parent's role: that role's current pin
         pin = (str(model_role_option(MODEL_ACCOUNTS_KEY, followed) or "") if followed
                else str((cognitive or route).get("credential_profile_id") or ""))
+    if pin is None and role == "main" and actor_role == "main":
+        from ouroboros.settings_integrity import live_room_primary
+
+        room = live_room_primary()
+        if room is not None:
+            pin = room["credential_profile_id"]
     pin = (overrides or {}).get(role, {}).get("model_account_override", pin)
     return role, pin
 

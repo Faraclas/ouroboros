@@ -693,7 +693,8 @@ class LLMClient(
 
     def available_models(self) -> List[str]:
         """Return list of available models from env (for switch_model tool schema)."""
-        main = self.default_model()
+        from ouroboros.route_choice import following_route
+        main, _local = following_route("main", self)
         light = runtime_setting("OUROBOROS_MODEL_LIGHT", "")
         models = [main]
         if light and light != main:

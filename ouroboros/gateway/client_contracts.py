@@ -22,6 +22,19 @@ except ImportError:  # pragma: no cover - CI supports Python 3.10.
     from typing_extensions import Literal, NotRequired, Required, TypedDict  # type: ignore[assignment]
 
 
+class PrimaryModel(TypedDict):
+    """Saved intent, not an execution or availability observation."""
+    model: str
+    use_local: bool
+    credential_profile_id: str
+
+
+class OwnerPrimaryModelRequest(TypedDict):
+    primary_model: PrimaryModel
+    expected_primary_model: PrimaryModel
+    project_id: NotRequired[str]
+
+
 class ServedUiState(TypedDict):
     """The main interface THIS server generation serves at ``/`` and ``/static``: the applied
     selection (fixed until the core restarts), not the requested value and not an asset digest.
@@ -921,6 +934,7 @@ class TaskResumeResponse(TypedDict, total=False):
 from ouroboros.gateway.contracts import ProjectCognition, SettingsMeta  # noqa: E402
 
 __all__ = [
+    "PrimaryModel", "OwnerPrimaryModelRequest",
     "ServedUiState",
     "SetupStep", "SetupProviderField", "SetupProviderProfile", "SetupModelSlot", "SetupModeChoice",
     "SetupLocalRoutingMode", "SetupBudgetField", "SetupSubscriptionField", "SetupContract",

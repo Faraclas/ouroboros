@@ -716,10 +716,18 @@ class EffortRange(TypedDict):  # helper min ≤ max; primary recommended is inde
     max: str
 
 
+class OwnerPrimaryModelResponse(TypedDict):
+    ok: bool
+    project_id: str
+    primary_model: PrimaryModel
+    cognition: ProjectCognition
+
+
 class ProjectCognition(TypedDict):
     subagents_mode: Literal["off", "auto", "swarm"]
     context_mode: str
     effort_range: EffortRange
+    primary_model: PrimaryModel
 
 
 class OwnerEffortRangeResponse(TypedDict):
@@ -762,6 +770,7 @@ class StateResponse(WorkStateFields):
     runtime_mode: str
     context_mode: str
     subagents_mode: Literal["off", "auto", "swarm"]  # Main stored choice
+    primary_model: PrimaryModel  # Main global primary; Projects carry theirs in cognition
     subagents_availability: Literal["available", "disabled", "unsaved"]
     context_mode_auto_low: bool  # frozen compatibility field, always False (persistent auto-Low is retired)
     effort_range: EffortRange  # the owner's effort range (POST /api/owner/effort-range), the tolerant read
@@ -1462,6 +1471,7 @@ class OnboardingPresetFailureResponse(TypedDict):
 # Human/test-visible contract index; routers own executable Route objects.
 from ouroboros.gateway.endpoint_index import HTTP_ENDPOINTS
 from ouroboros.gateway.client_contracts import FileBrowserListResponse, ServedUiState, ProjectEntry, ProjectResource  # noqa: E402,F401
+from ouroboros.gateway.client_contracts import PrimaryModel, OwnerPrimaryModelRequest  # noqa: E402,F401
 from ouroboros.gateway.client_contracts import ProjectContent, ProjectContentConflictResponse  # noqa: E402,F401
 from ouroboros.gateway.client_contracts import ProjectLocation, ProjectLocationConflictResponse  # noqa: E402,F401
 
@@ -1512,6 +1522,7 @@ __all__ = [
     "UpdateStatusReadyOutbound",
     "UpdateProgressChangedOutbound",
     "ProjectCreateRequest", "ProjectEntry", "ProjectDeleteResponse", "ProjectCognition",
+    "PrimaryModel", "OwnerPrimaryModelRequest", "OwnerPrimaryModelResponse",
     "ProjectContent", "ProjectContentConflictResponse",
     "ProjectLocation", "ProjectLocationConflictResponse",
     "FsDirsEntry", "FsDirsResponse",

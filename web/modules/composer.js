@@ -37,8 +37,9 @@ export function composerMarkup() {
                 <div id="chat-attachment-preview" class="chat-attachment-preview"></div>
                 <div class="chat-toolbar-row">
                     ${renderMobileNavToggle({ inComposer: true })}
-                    <div class="chat-subagents-mode" id="chat-subagents-mode"></div>
+                    <div class="chat-model-mode" id="chat-model-mode"></div>
                     <div class="chat-context-mode" id="chat-context-mode" data-context-mode="max"></div>
+                    <div class="chat-subagents-mode" id="chat-subagents-mode"></div>
                     <span class="chat-composer-chips" data-composer-chips hidden></span>
                 </div>
                 <div class="chat-field">
@@ -343,7 +344,7 @@ export function createComposer({ page, byId, ws, replies, chatSessionId, isMain,
         }
     }
 
-    // Each composer owns its room's Subagents, Context and Effort settings.
+    // Each composer owns its room's Model, Context, Effort and Subagents controls.
     const ownerControls = createComposerOwnerControls({ row: page.querySelector('.chat-toolbar-row'), box: page, byId, apiFetch, showToast,
         projectId, saveEffortRange: apiClient.ownerEffortRange,
         saveSubagentsMode: apiClient.ownerSubagentsMode,

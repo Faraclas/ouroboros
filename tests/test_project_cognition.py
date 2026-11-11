@@ -68,7 +68,7 @@ def test_two_projects_keep_independent_choices_and_saves_never_project_to_env(ro
     assert response.json()["project_id"] == "a" and response.json()["effort_range"] == effort
     response = client.post("/api/owner/context-mode", json={"project_id": "a", "mode": "nano"})
     assert response.status_code == 200, response.text
-    assert response.json()["cognition"] == {"context_mode": "nano", "effort_range": effort, "subagents_mode": "auto"}
+    assert response.json()["cognition"] == {**baseline, "context_mode": "nano", "effort_range": effort, "subagents_mode": "auto"}
     assert config.SETTINGS_PATH.read_bytes() == before_file
     assert {key: os.environ.get(key) for key in COGNITION_KEYS} == before_env
     assert read_cognition(root, "b") == read_cognition(root) == baseline
@@ -83,9 +83,10 @@ def test_main_effort_readback_keeps_forwarded_context(room_settings, monkeypatch
     config.SETTINGS_PATH.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", "nano")
     values = {"min": "low", "recommended": "max", "max": "medium"}
+    primary = read_cognition(root)["primary_model"]
     response = client.post("/api/owner/effort-range", json=values)
     assert response.status_code == 200, response.text
-    assert response.json()["cognition"] == {"context_mode": "nano", "effort_range": values, "subagents_mode": "auto"}
+    assert response.json()["cognition"] == {"context_mode": "nano", "effort_range": values, "subagents_mode": "auto", "primary_model": primary}
     assert config.get_context_mode() == "nano"
 
 

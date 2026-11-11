@@ -11,6 +11,7 @@ import { SEG_PAD, createCapsuleFit, px, widthOf } from './capsule_fit.js';
 import { haptic } from './haptics.js';
 import { createComposerFold } from './composer_fold.js';
 import { createSubagentsControl } from './composer_subagents.js';
+import { createComposerModel } from './room_model.js';
 import { createHint } from './ui_hint.js';
 
 const N = OWNER_TIERS.length - 1;
@@ -877,7 +878,9 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
     };
     const subagents = subagentsEl ? createSubagentsControl({ el: subagentsEl, row, capsule: createCapsule,
         save: saveRoomSubagents, openSettings, ...shared }) : null;
-    const controls = [subagents, context, effort].filter(Boolean);
+    const modelEl = byId('model-mode');
+    const model = modelEl ? createComposerModel({ el: modelEl, row, projectId, doc, onSaved: () => refreshState(true) }) : null;
+    const controls = [model, context, effort, subagents].filter(Boolean);
     for (const control of controls) capsules.push(control.capsule);
     // One capsule is open at a time.
     for (const capsule of capsules) capsule.peers = capsules.filter((other) => other !== capsule);
@@ -918,6 +921,7 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
             if (destroyed) return;
             const values = projectId ? data?.projects?.find(project => project.id === projectId)?.cognition : data;
             subagents?.syncState(values, data?.subagents_availability);
+            model?.syncState(values);
             if (!values) return;
             context?.syncState(values); effort?.syncState(values); fitNames();
         },

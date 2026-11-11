@@ -446,11 +446,16 @@ Enter as a line break.
 
 ### Composer owner controls
 
-Each composer saves its room's **Subagents**, **Context** and **Effort** through the owner endpoints,
-in that order after ☰. Main supplies a one-time copy to new Projects; later changes stay in their room.
-Readback comes from Main state or the named Project, never another room. Saves apply
-to new participants; running work retains its choices through Resume. A refusal
-keeps the saved value and says why. No scope selector or extra settings row.
+The model value itself opens the shared editable Source/Model/Account chooser above the row:
+its multi-field form needs a panel, not a catalog-sized strip. Catalogs suggest, never restrict or
+replace choices. Apply compares the saved binding; Check current model recovers uncertain outcomes.
+This panel and the inline mode strips are mutually exclusive and preserve the message draft.
+
+Each composer orders **current model**, **Context**, **Effort**, **Subagents** after ☰.
+Main controls its global primary; Projects copy it once and edit their independent saved binding,
+also in Dashboard Projects. Model changes reach following roots between calls, never dispatched work;
+Context/Effort keep actor snapshots. Readback names the room; failed/unknown saves retain drafts and
+require readback before retry. Send waits for pending saves. Other roles keep their own bindings.
 
 Each is a neutral **capsule** of the pills' height — ring, name, value: `Subagents Auto`, `Context Max`,
 `Effort X-High`; the name in secondary ink at 500, the value in meta ink at 600,
@@ -463,7 +468,7 @@ arc: band minimum..maximum, dot primary) and the button's name carry the range.
 Context's ring is three arcs, the chosen one lit: one of three modes, never a fill
 level or capacity. Subagents' mark is a small network (owner 27.10, G): Ouroboros joined by threads to three helpers; Off lights none, Auto one helper and its thread, Swarm every helper and the threads between them.
 
-**A capsule opens inline, in the row, never as a dropdown or a panel, one at a time** (owner 11.10; the panels tried
+**Context, Effort and Subagents open inline, one at a time** (owner 11.10; the panels tried
 on 26.10 were withdrawn on 27.10); its value yields to the strip. Context's is Nano · Low · Max under a glass thumb; a
 choice posts at once and the strip waits for the answer. Subagents' is Off · Auto · Swarm the same way. While any
 capsule is open, the one hint ("Hints") stands above it (owner 28.10): the value's word and what it means (a mouse

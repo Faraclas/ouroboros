@@ -126,8 +126,12 @@ def _inherited_cognition(ctx: Any, settings: dict) -> dict:
         pin = ""
     choice = getattr(ctx, "route_choice", None)
     followed = follows(choice) if isinstance(choice, dict) else ""
+    from ouroboros.settings_integrity import live_room_primary
+    room_inherited = followed == "main" and live_room_primary() is not None
+    if room_inherited:
+        followed = ""  # inherit the actual Project send, not global Main on the nanny's next call
     chosen_by = ("parent_fallback" if role.startswith("fallback:")
-                 else "parent_switch" if isinstance(choice, dict) and not followed else "inherited")
+                 else "parent_switch" if isinstance(choice, dict) and not followed and not room_inherited else "inherited")
     return validate_cognitive_route({
         "schema": 2, "model": model,
         "effort": str(getattr(ctx, "active_effort", "") or metadata.get("reasoning_effort") or ""),

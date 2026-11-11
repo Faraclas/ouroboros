@@ -32,7 +32,7 @@ def _owner_revision(ctx: Any) -> int:
 
 
 def binding(ctx: Any) -> list:
-    from ouroboros.model_slots import route_binding
+    from ouroboros.route_choice import acting_binding as route_binding
     from ouroboros.model_wait import current_model_wait
     waiter = current_model_wait()
     role = ctx.model_role or getattr(ctx.context_fit_plan, "model_role", "") or "main"

@@ -63,7 +63,7 @@ def route_facts_text(tool_ctx, *, model: str, use_local: bool, role: str, failed
     """
     from ouroboros.event_usage import REPORTED_TOKENS_KEY, event_token_counts
     from ouroboros.loop_messages import cached_tariff_text
-    from ouroboros.model_slots import route_binding
+    from ouroboros.route_choice import acting_binding as route_binding
     from ouroboros.provider_models import provider_for_model
 
     primary = getattr(tool_ctx, "primary_route", None)
@@ -139,7 +139,8 @@ def observe_primary_route(ctx) -> str:
     from ouroboros.deadline_utils import dispatch_window_remaining_sec
     from ouroboros.llm_probe import upstream_transport_reachable
     from ouroboros.loop_transport import task_deadline_epoch, transport_repeat_stop_requested
-    from ouroboros.model_slots import route_binding, task_model_binding
+    from ouroboros.model_slots import task_model_binding
+    from ouroboros.route_choice import acting_binding as route_binding
     from ouroboros.model_wait import current_model_wait, dispatch_deadline_remaining_sec
     from ouroboros.utils import sanitize_tool_result_for_log, utc_now_iso
 
@@ -219,7 +220,7 @@ def observe_primary_route(ctx) -> str:
 
 
 def record_primary_return_request(owner, model: str, use_local: bool, role: str) -> None:
-    from ouroboros.model_slots import route_binding
+    from ouroboros.route_choice import acting_binding as route_binding
     from ouroboros.model_wait import current_model_wait
     from ouroboros.utils import utc_now_iso
 
@@ -232,7 +233,7 @@ def record_primary_return_request(owner, model: str, use_local: bool, role: str)
 
 
 def record_round_route_result(ctx, role: str, *, accepted: bool) -> None:
-    from ouroboros.model_slots import route_binding
+    from ouroboros.route_choice import acting_binding as route_binding
     from ouroboros.model_wait import current_model_wait
     from ouroboros.utils import utc_now_iso
 
@@ -291,7 +292,7 @@ def held_primary_view(owner, plan, start_mode, *, model: str, use_local: bool, r
     primary = getattr(owner, "primary_route", None)
     if not isinstance(primary, dict) or not primary.get("model"):
         return plan, start_mode
-    from ouroboros.model_slots import route_binding
+    from ouroboros.route_choice import acting_binding as route_binding
     from ouroboros.model_wait import current_model_wait
 
     overrides = getattr(current_model_wait(), "overrides", None)

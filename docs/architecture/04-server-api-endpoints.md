@@ -99,6 +99,8 @@ Files routes: `gateway/files.py::file_browser_routes()` (envelopes/parity: §11)
 | POST | `/api/owner/auto-grant` | |
 | POST | `/api/owner/context-mode` | |
 | POST | `/api/owner/effort-range` | |
+| GET | `/api/owner/primary-model` | optional `project_id`; saved binding |
+| POST | `/api/owner/primary-model` | expected binding CAS; Main global, Project local |
 | POST | `/api/owner/subagents-mode` | `{mode, project_id?}` → `{ok, project_id, subagents_mode, cognition}` (§7) |
 | POST | `/api/owner/safety-mode` | |
 | POST | `/api/owner/safety-model` | |

@@ -652,16 +652,21 @@ def _context_route(task: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]
     from ouroboros.server_runtime import apply_runtime_provider_defaults
 
     settings, _changed, _keys = apply_runtime_provider_defaults(runtime_settings())
-    local_override = task.get("use_local_model")
+    from ouroboros.settings_integrity import live_room_primary
+    from ouroboros.model_slots import task_model_binding
+    role, account = task_model_binding(task)
+    room = live_room_primary(task=task) if role == "main" else None
+    local_override = task.get("use_local_model", room["use_local"] if room and not task.get("model") else None)
     route = _active_main_route(
-        settings, model_override=str(task.get("model") or "").strip(),
+        settings, model_override=str(task.get("model") or (room or {}).get("model") or "").strip(),
         use_local_override=(
             bool(local_override) if local_override is not None else None
         ),
     )
-    from ouroboros.model_slots import task_model_binding
-    role, account = task_model_binding(task)
+    if account is None and room:
+        account = room["credential_profile_id"]
     route["model_role"] = role
+    route["room_primary"] = room
     route["options"] = {}
     if route["provider"] == "claudexor":
         route["options"] = model_account_options(
@@ -690,6 +695,16 @@ def resolve_context_fit_route(
     from ouroboros.model_slots import MODEL_CONTEXT_WINDOWS_KEY, model_role_option
 
     route, settings = _context_route(task)
+    window = int(model_role_option(MODEL_CONTEXT_WINDOWS_KEY, route["model_role"], settings=settings))
+    if route["room_primary"]:
+        from ouroboros.composer_cognition import primary_from_settings
+        from ouroboros.model_slots import task_model_binding
+        main = primary_from_settings(settings)
+        account = task_model_binding(task)[1]
+        if account is None:
+            account = route["room_primary"]["credential_profile_id"]
+        if (route["model"], route["use_local"], account or "") != (main["model"], main["use_local"], main["credential_profile_id"]):
+            window = 0  # an assertion about global Main's model is not a limit on another binding
     evidence = probe(
         DATA_DIR,
         provider=route["provider"],
@@ -703,8 +718,6 @@ def resolve_context_fit_route(
         route["options"] = {**route["options"], **{key: getattr(evidence, key) for key in (
             "source_id", "credential_profile_id", "account_fingerprint")}}
         route["window_observation_fp"] = route_observation_scope(route, settings)
-    window = int(model_role_option(MODEL_CONTEXT_WINDOWS_KEY, route["model_role"],
-                                   settings=settings))
     return route, with_role_window(evidence, window)
 
 

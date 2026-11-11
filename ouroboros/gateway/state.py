@@ -285,6 +285,7 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
     from ouroboros.gateway.ui_preferences import main_room_revision
 
     main_visible_revision = main_room_revision(request_drive_root(request))
+    main_saved = main_cognition(settings)
     return {
         "st": st,
         # Resolved here so the checkout file reads stay on the snapshot thread.
@@ -304,7 +305,8 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
         # on the worker thread with the rest of the snapshot, never on the event loop.
         "bg_state": (_describe_bg(request)(bg_enabled) if _describe_bg(request) else {}),
         "github_token_configured": bool(github_token_from_env_or_settings()),
-        "subagents_mode": main_cognition(settings)["subagents_mode"],
+        "subagents_mode": main_saved["subagents_mode"],
+        "primary_model": main_saved["primary_model"],
         "subagents_availability": subagents_availability(settings),
         "projects": projects,
         "project_chat_ids": project_chat_ids,

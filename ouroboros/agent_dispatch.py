@@ -386,7 +386,9 @@ def main_model_named_effort(task_metadata: Dict[str, Any]) -> str:
     from ouroboros.route_spec import api_model_named_effort
 
     override = model_role_slot_override(task_metadata if isinstance(task_metadata, dict) else {})
-    model = override[0] if override else str(runtime_setting("OUROBOROS_MODEL", "") or "")
+    from ouroboros.settings_integrity import live_room_primary
+    room = live_room_primary()
+    model = override[0] if override else str((room or {}).get("model") or runtime_setting("OUROBOROS_MODEL", "") or "")
     return api_model_named_effort(model)
 
 

@@ -168,7 +168,7 @@ def _route_candidates(tool_ctx: Any, active_model: str, active_use_local: bool, 
     a chain entry with Main's model on another account is a real alternative.
     """
     from ouroboros.config import fallback_candidate_targets
-    from ouroboros.model_slots import route_binding
+    from ouroboros.route_choice import acting_binding as route_binding
 
     overrides = waiter.overrides if waiter is not None else None
     chain_local = runtime_setting("USE_LOCAL_FALLBACK", "").lower() in ("true", "1")
@@ -199,7 +199,8 @@ def _run_cross_model_fallback_chain(
     failure is an outage or an unknown outcome keeps that failure as its wait when none answers."""
     from ouroboros import fallback_cooldown as _fcd
     from ouroboros.loop_transport import append_unknown_recovery_input, fallback_reason_text
-    from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option, task_model_binding, route_binding
+    from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option, task_model_binding
+    from ouroboros.route_choice import acting_binding as route_binding
     from ouroboros.model_wait import current_model_wait
     from ouroboros.loop_llm_call import _COOLDOWN_ERROR_KINDS as _cooldown_kinds
     from ouroboros.primary_route_observation import failure_facts, route_facts_text
@@ -734,7 +735,7 @@ class _RoundModelCallContext:
 def _route_follows(candidates: List[Tuple[str, str, bool, bool]]) -> bool:
     from ouroboros import fallback_cooldown
 
-    from ouroboros.model_slots import route_binding
+    from ouroboros.route_choice import acting_binding as route_binding
     from ouroboros.model_wait import current_model_wait
 
     waiter = current_model_wait()

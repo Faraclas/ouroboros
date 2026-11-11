@@ -4643,7 +4643,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
        capsule never stands wider than closed or open (the fit measures only those). */
     transition: max-width 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), margin 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.2s;
 }
-.chat-capsule[data-open="true"] .chat-capsule-value {
+.chat-capsule:not(.chat-model-mode)[data-open="true"] .chat-capsule-value {
     max-width: 0;
     margin: 0;
     opacity: 0;
@@ -4705,9 +4705,9 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 /* A room's ☰ is one of the controls that step aside: the fit gives the open strip the whole line. */
 .chat-toolbar-row[data-owner-solo] > .composer-menu,
 .chat-toolbar-row[data-owner-solo] .chat-composer-chips,
-.chat-toolbar-row[data-owner-solo="effort"] :is(.chat-context-mode, .chat-subagents-mode),
-.chat-toolbar-row[data-owner-solo="context"] :is(.chat-effort-range, .chat-subagents-mode),
-.chat-toolbar-row[data-owner-solo="subagents"] :is(.chat-context-mode, .chat-effort-range) {
+.chat-toolbar-row[data-owner-solo="effort"] :is(.chat-model-mode, .chat-context-mode, .chat-subagents-mode),
+.chat-toolbar-row[data-owner-solo="context"] :is(.chat-model-mode, .chat-effort-range, .chat-subagents-mode),
+.chat-toolbar-row[data-owner-solo="subagents"] :is(.chat-model-mode, .chat-context-mode, .chat-effort-range) {
     display: none;
 }
 /* Alone, a strip grows from its capsule and folds back into it (capsule_morph.js). While it moves, the capsule's
@@ -4760,6 +4760,12 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .chat-toolbar-row[data-owner-compact] .chat-capsule:not([data-open="true"]) .chat-capsule-name {
     display: none;
 }
+.chat-model-mode { min-width: 0; max-width: 100%; }
+.chat-model-mode .chat-capsule-value { min-width: 0; max-width: 20ch; overflow: hidden; text-overflow: ellipsis; }
+.room-model-popup { width: min(520px, var(--ui-popup-max-width)); overflow: auto; padding: var(--space-3); }
+.room-model-editor { min-width: 0; color: var(--text-primary); font-size: var(--type-body); }
+.room-model-editor .pm-content-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.room-model-editor .model-role-route { min-width: 0; }
 .chat-toolbar-row[data-owner-compact="values"] .chat-capsule:not([data-open="true"]) .chat-capsule-value {
     max-width: var(--capsule-value-cap);
     text-overflow: ellipsis;

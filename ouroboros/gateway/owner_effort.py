@@ -117,4 +117,50 @@ def _api_owner_subagents_mode_sync(request: Request, body: Any) -> JSONResponse:
     return JSONResponse({"ok": True, "project_id": project_id, "subagents_mode": mode, "cognition": cognition})
 
 
-__all__ = ["RANGE_FIELDS", "api_owner_effort_range", "api_owner_subagents_mode", "effort_range_refusal"]
+@owner_write_guard
+async def api_owner_primary_model(request: Request) -> JSONResponse:
+    from ouroboros.gateway.settings import _json_body_or_empty, _run_settings_writer
+
+    body = dict(request.query_params) if request.method == "GET" else await _json_body_or_empty(request)
+    return await _run_settings_writer(_api_owner_primary_model_sync, request, body)
+
+
+def _api_owner_primary_model_sync(request: Request, body: Any) -> JSONResponse:
+    from ouroboros.composer_cognition import (
+        PrimaryModelConflict, normalize_primary, read_cognition,
+    )
+    from ouroboros.config import load_settings
+    from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, apply_model_role_override
+
+    try:
+        if not isinstance(body, dict):
+            raise ValueError("Expected a JSON object.")
+        project_id = request_project_id(body)
+        if request.method == "GET":
+            cognition = read_cognition(request_drive_root(request), project_id)
+        else:
+            desired = normalize_primary(body.get("primary_model"))
+            expected = normalize_primary(body.get("expected_primary_model"))
+            with settings_document_mutation():
+                if project_id:
+                    _old, cognition = update_project_cognition(
+                        request_drive_root(request), project_id, primary_model=desired, expected_primary_model=expected)
+                else:
+                    digest = settings_document_digest()
+                    if main_cognition()["primary_model"] != expected:
+                        raise PrimaryModelConflict("Primary model changed elsewhere. Check the current model before applying.")
+                    _owner_update_settings(lambda current: apply_model_role_override(current, role="main", **desired),
+                                           digest, authored_keys=("OUROBOROS_MODEL", "USE_LOCAL_MAIN", MODEL_ACCOUNTS_KEY),
+                                           allow_safety_lowering=True)
+                    from ouroboros.config import apply_settings_to_env
+                    apply_settings_to_env(load_settings())
+                    cognition = main_cognition()
+            _owner_audit(request, "primary_model", {"project_id": project_id, "primary_model": desired})
+    except PrimaryModelConflict as exc:
+        return unsaved_error(str(exc), 409, code="primary_model_conflict")
+    except ValueError as exc:
+        return unsaved_error(str(exc), 400, code="primary_model_invalid")
+    return JSONResponse({"ok": True, "project_id": project_id, "primary_model": cognition["primary_model"], "cognition": cognition})
+
+
+__all__ = ["RANGE_FIELDS", "api_owner_effort_range", "api_owner_subagents_mode", "api_owner_primary_model", "effort_range_refusal"]

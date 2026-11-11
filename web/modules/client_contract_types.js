@@ -1132,3 +1132,18 @@
  * @typedef {Object} OwnerSafetyModelResponse
  * @property {boolean} ok
  */
+
+/**
+ * Saved intent, not an execution or availability observation.
+ * @typedef {Object} PrimaryModel
+ * @property {string} model
+ * @property {boolean} use_local
+ * @property {string} credential_profile_id
+ */
+
+/**
+ * @typedef {Object} OwnerPrimaryModelRequest
+ * @property {PrimaryModel} primary_model
+ * @property {PrimaryModel} expected_primary_model
+ * @property {string=} project_id
+ */

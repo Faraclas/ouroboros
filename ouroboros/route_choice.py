@@ -228,6 +228,11 @@ def model_role_slot_override(task_metadata: Mapping) -> Optional[Tuple[str, bool
 def following_route(role: str, llm: Any = None) -> Tuple[str, bool]:
     """The binding a following route uses NOW: the role's own slot (an empty slot is Main with the slot's
     own local flag honoured), else Main and its local flag; ``llm`` is the loop's client when it has one."""
+    from ouroboros.settings_integrity import live_room_primary
+
+    room = live_room_primary() if role == "main" else None
+    if room is not None:
+        return room["model"], room["use_local"]
     slot = model_role_slot_override({"model_role": role})
     if slot is not None:
         return slot
@@ -235,6 +240,18 @@ def following_route(role: str, llm: Any = None) -> Tuple[str, bool]:
 
     model = str(llm.default_model() if llm is not None else _main_model())
     return model, str(runtime_setting("USE_LOCAL_MAIN", "") or "").strip().lower() in ("true", "1")
+
+
+def acting_binding(model: str, use_local: bool, role: str, *, overrides: dict | None = None) -> tuple:
+    """Main-loop identity matching its task binding; generic role defaults stay global."""
+    from ouroboros.model_slots import route_binding
+    from ouroboros.settings_integrity import live_room_primary
+
+    room = live_room_primary() if role == "main" else None
+    if room is not None:
+        overrides = {**(overrides or {}), role: {"model_account_override": room["credential_profile_id"],
+                                                **((overrides or {}).get(role) or {})}}
+    return route_binding(model, use_local, role, overrides=overrides)
 
 
 def _metadata(ctx: Any) -> dict:

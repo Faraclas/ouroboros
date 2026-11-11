@@ -524,6 +524,8 @@ export const apiClient = {
     /** @param {import('./client_contract_types.js').OwnerSubagentsModeRequest} choice
      * @returns {Promise<import('./api_types.js').OwnerSubagentsModeResponse>} */
     ownerSubagentsMode: (choice) => jsonPost('/api/owner/subagents-mode', choice),
+    ownerPrimaryModel: (choice) => jsonPost('/api/owner/primary-model', choice, { rejectOkFalse: true }),
+    roomPrimaryModel: (projectId = '', signal) => fetchJson(`/api/owner/primary-model?project_id=${encodeURIComponent(projectId)}`, { cache: 'no-store', signal }),
     /** @returns {Promise<import('./api_types.js').OwnerSafetyModeResponse>} */
     ownerSafetyMode: (mode) => jsonPost('/api/owner/safety-mode', { mode }),
     logsTail: (name, limit = 2000) => fetchJson(`/api/logs/${encodeURIComponent(name)}?limit=${encodeURIComponent(limit)}`, { cache: 'no-store' }),

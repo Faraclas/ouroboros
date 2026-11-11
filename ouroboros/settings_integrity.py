@@ -265,6 +265,7 @@ def captured_cognition() -> dict | None:
         return None
     cognition = cognition_from_settings(snapshot.environ)
     cognition.pop("subagents_mode")
+    cognition.pop("primary_model")  # routing is live; the route continuation owns explicit choices
     marker = snapshot.environ.get("OUROBOROS_CONTEXT_MODE_AUTO_LOW", "")
     if cognition["context_mode"] == "low" and not owner_declared_low(marker):
         cognition["context_mode_auto_low"] = marker
@@ -280,6 +281,25 @@ def restore_cognition(cognition: Mapping | None) -> None:
     snapshot = _TASK_SETTINGS.get()
     if cognition is not None and snapshot is not None:
         _TASK_SETTINGS.set(_with_cognition(snapshot, cognition))
+
+
+def live_room_primary(*, task: Mapping | None = None, drive_root: Path | None = None) -> dict | None:
+    """Only a Project root's primary, never a global default for other model roles.
+
+    Read at logical-call boundaries. Actor/explicit routes keep their own model;
+    child cognition and reviewer/Safety inheritance do not change with this value.
+    """
+    from ouroboros import config
+    from ouroboros.composer_cognition import read_primary
+
+    snapshot = _TASK_SETTINGS.get()
+    scope = (_actor_scope(task, drive_root or config.DATA_DIR) if task is not None and any(
+        task.get(key) for key in ("id", "project_id", "chat_id", "parent_task_id", "root_task_id"))
+             else snapshot.actor_scope if snapshot else None)
+    if scope is None or scope[1].get("parent_task_id") or scope[1].get("autonomous"):
+        return None
+    project_id = _actor_project(scope)
+    return read_primary(scope[0], project_id) if project_id else None
 
 
 def live_effort_range() -> dict[str, str]:
