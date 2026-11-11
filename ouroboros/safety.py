@@ -30,7 +30,7 @@ from ouroboros.config import runtime_setting
 from ouroboros.safety_records import (
     _safety_drive_root, _record_safety_usage, _emit_durable_safety_event, _emit_safety_mode_skip, coalesce_verdicts, verdict_history_bytes,
 )
-from ouroboros.consciousness_authority import work_kind, effective_runtime_mode
+from ouroboros.consciousness_authority import LEVELS, is_consciousness_origin, work_kind, effective_runtime_mode
 
 log = logging.getLogger(__name__)
 
@@ -588,17 +588,21 @@ def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, 
             assignment[key] = value
         else:
             assignment.setdefault("source_references", {})[key] = duplicate
+    # Present the captured delegation, never infer it from prose or today's setting.
+    level = metadata.get("consciousness_autonomy")
+    autonomy = ({"level": level, "source": "host_task_metadata"}
+                if kind == "consciousness" and is_consciousness_origin(metadata) and level in LEVELS else None)
     bundle = {
         "assignment": assignment,
         "work": {"kind": kind, "label": "your work" if kind == "owner" else "consciousness",
-                 "root_task_id": _root_id(ctx), "task_id": getattr(ctx, "task_id", ""), "runtime_mode": _runtime_mode(ctx),
-                 "consciousness_autonomy": metadata.get("consciousness_autonomy")},
+                 "root_task_id": _root_id(ctx), "task_id": getattr(ctx, "task_id", ""), "runtime_mode": _runtime_mode(ctx)},
         "occasion": {"cause": occasion, "consciousness_cause": metadata.get("consciousness_cause"),
                      "origin_wake_task_id": metadata.get("origin_wake_task_id"), "focus": focus,
                      "sources": sources, "retained_host_sources": isinstance(directives, list),
                      "source_recovery": getattr(ctx, "_owner_evidence_recovery", None)},
         "subject": {"tool": tool_name, "physical_target": target, "place": place},
-        "standing_delegation": {"owner_rules": runtime_setting("OUROBOROS_SAFETY_OWNER_RULES", ""), "place_notes": notes},
+        "standing_delegation": {"owner_rules": runtime_setting("OUROBOROS_SAFETY_OWNER_RULES", ""),
+                                "place_notes": notes, "consciousness_autonomy": autonomy},
         "earlier_verdicts": earlier,
         "earlier_safe_verdicts_omitted": omitted_safe,
     }
