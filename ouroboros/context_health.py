@@ -153,10 +153,17 @@ def _stray_server_note(env: Any) -> str:
     if issues and result.get("status") == "stray_processes":
         procs = result.get("processes") or []
         preview = ", ".join(str(p.get("pid")) for p in procs[:5])
+        if len(procs) > 5:
+            preview += f", +{len(procs) - 5} more"
+        scopes = Counter(p.get("scope") for p in procs)
+        same = scopes["same_install"]
+        foreign = scopes["foreign"]
+        unknown = len(procs) - same - foreign
         note = (
-            f"WARNING: STRAY SERVER PROCESS(ES) — {len(procs)} ouroboros server process(es) "
-            f"outside this install (pids: {preview}). Another install may be mutating shared state; "
-            f"investigate before assuming exclusive custody."
+            f"WARNING: STRAY SERVER PROCESS(ES) — {len(procs)} extra server-like process(es) "
+            f"(same-install: {same}; foreign: {foreign}; unknown: {unknown}; pids: {preview}). "
+            "Command scope is not ownership or evidence of shared-state writes; "
+            "investigate before assuming exclusive custody."
         )
     _STRAY_PROBE_CACHE["ts"] = now
     _STRAY_PROBE_CACHE["note"] = note
