@@ -13,6 +13,25 @@ except ImportError:  # pragma: no cover - CI supports Python 3.10.
     from typing_extensions import NotRequired, TypedDict  # type: ignore[assignment]
 
 
+class WorkDependency(TypedDict):
+    """Authored operation context, never executable prerequisites or satisfaction."""
+    waiting_for: str
+    why: str
+    release: str
+    on: List[str]
+
+
+class WorkTarget(TypedDict):
+    task_id: str
+    name: str
+    state: str  # live | ended | unknown; ended does not satisfy the release
+    selected_as_wake: bool
+    work_id: NotRequired[str]
+    room: NotRequired[Any]
+    project_id: NotRequired[str]
+    activity: NotRequired[str]
+
+
 class WorkReason(TypedDict):
     """One typed reason: ``code`` is closed per release, ``text`` its English sentence (unknown codes stay raw)."""
 
@@ -24,6 +43,8 @@ class WorkReason(TypedDict):
     observed_at: NotRequired[Any]  # chooser observation, not the beginning of a wait
     by: NotRequired["PauseAuthor"]
     wake: NotRequired["WakeSources"]
+    dependency: NotRequired[WorkDependency]
+    targets: NotRequired[List[WorkTarget]]
 
 
 class WakeService(TypedDict):

@@ -198,7 +198,7 @@ html[data-layout="docked"] .chat-page-header .app-page-title-row {
 .rw-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto var(--rw-more);
-    grid-template-areas: "main verb more" "detail detail detail";
+    grid-template-areas: "main verb more" "dependencies dependencies dependencies" "detail detail detail";
     column-gap: var(--rw-gap);
     align-items: center;
     padding-right: var(--space-1);
@@ -208,6 +208,14 @@ html[data-layout="docked"] .chat-page-header .app-page-title-row {
     animation-delay: calc(var(--rw-i, 0) * 24ms);
 }
 .rw-row:hover { background: var(--rw-hover); }
+.rw-dependencies { grid-area: dependencies; min-width: 0; padding: 0 var(--space-2) var(--space-2); }
+.rw-dependencies, .rw-wait-back {
+    font-size: var(--type-meta); color: var(--text-secondary); overflow-wrap: anywhere;
+}
+.rw-dependencies[hidden], .rw-wait-back[hidden] { display: none; }
+.rw-dependencies p { margin: var(--space-1) 0; }
+.rw-wait-target, .rw-wait-back { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.rw-wait-back { padding: var(--space-2); }
 @keyframes rw-row-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .rw-main {
     grid-area: main;

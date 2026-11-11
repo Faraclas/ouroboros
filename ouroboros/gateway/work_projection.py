@@ -191,6 +191,14 @@ def _member_raw(row: Mapping[str, Any], raw: Mapping[str, Any], obs: _Observatio
     pause = raw.get("_budget_pause") if isinstance(raw.get("_budget_pause"), dict) else {}
     facts: Dict[str, Any] = {"hold": hold, "paused_at": pause.get("paused_at") or pause.get("requested_at"),
                              "running": bool(raw.get("running", row.get("live"))), **dict(raw)}
+    import time
+    now = time.time()
+    facts["wait_for_tasks"] = list(dict.fromkeys(task_id
+        for lease in (raw.get("active_operation_leases") or {}).values()
+        if isinstance(lease, dict) and lease.get("kind") == "in_slot_wait"
+        and lease.get("task_attempt") == int(row.get("task_attempt") or 1)
+        and isinstance(lease.get("until_ts"), (int, float)) and lease["until_ts"] > now
+        for task_id in lease.get("wait_for_tasks", []) if isinstance(task_id, str)))
     if row.get("phase") in {"budget_pausing", "budget_paused"} and (raw.get("owner_pause_warm") or row.get("kind") == "direct_chat"):
         # Parked warm under a Pause still settling: the review it already sent still runs beside it.
         facts["sent_review"] = obs.sent_review(str(row.get("activity_id") or ""))
@@ -319,6 +327,62 @@ def works_snapshot(drive_root: Any, owners: Iterable[Mapping[str, Any]], raw_fac
                 "works_complete": False, "works_gaps": [{"reason": "work_projection_unavailable"}]}
 
 
+def _wait_targets(works: List[Dict[str, Any]], drive_root: Any) -> None:
+    """Resolve explicit identities in this census, never infer a graph or satisfy a release.
+
+    Missing live targets get a single batched typed-column status read, not full task
+    bodies on every poll. No live room proof means no navigation destination.
+    """
+    from ouroboros.task_status import SETTLED_STATUSES
+    from ouroboros.task_store import task_versions
+
+    live = {task_id: (work, member) for work in works
+            for task_id, member in work.get("members", {}).get("states", {}).items()}
+    entries = []
+    seen = set()
+    for work in works:
+        reasons = [*work.get("because", []), *(reason for member in work.get("members", {}).get("states", {}).values()
+                    for reason in member.get("because", member.get("reasons", [])))]
+        for reason in reasons:
+            if id(reason) in seen:
+                continue
+            seen.add(id(reason))
+            wake = reason.get("wake") or {}
+            wake_ids = wake.get("tasks", []) + wake.get("senders", [])
+            selected = set(wake_ids)
+            if reason.get("code") == "in_slot_wait":
+                wake_ids = reason.get("ids", [])
+                selected.update(wake_ids)
+            dependency = reason.get("dependency") or {}
+            ids = list(dict.fromkeys([*dependency.get("on", []), *wake_ids,
+                        *(reason.get("ids", []) if reason.get("code") in {"project_busy", "earlier_attempt_finishing"} else [])]))
+            if ids:
+                entries.append((reason, ids, selected))
+    missing = {task_id for _, ids, _ in entries for task_id in ids if task_id not in live}
+    try:
+        stored = task_versions(drive_root, missing)
+    except Exception:
+        stored = {}  # no status or destination is invented on a failed read
+    for reason, ids, selected in entries:
+        targets = []
+        for task_id in ids:
+            found = live.get(task_id)
+            ref = {"task_id": task_id, "name": task_id, "state": "unknown",
+                   "selected_as_wake": task_id in selected}
+            if found:
+                target, member = found
+                name = target.get("name") or task_id
+                if task_id != target.get("episode", {}).get("task_id"):
+                    name = f"{task_id} — {name}"
+                ref.update(work_id=target["work_id"], name=name,
+                           room=target.get("room"), project_id=target.get("project_id", ""),
+                           state="live" if member.get("confirmed") else "unknown", activity=member["activity"])
+            elif task_id in stored and stored[task_id][1] in SETTLED_STATUSES and not stored[task_id][2]:
+                ref["state"] = "ended"
+            targets.append(ref)
+        reason["targets"] = targets
+
+
 def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, Mapping[str, Any]],
               complete: bool, bindings: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     obs = _Observations(drive_root)
@@ -444,6 +508,7 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
         if cmid:
             work["client_message_id"] = cmid
         works.append(work)
+    _wait_targets(works, drive_root)
     works.sort(key=lambda work: (str(work.get("room") or ""), ws._rank(work["activity"]),
                                  -float(work.get("since") or 0.0), work["work_id"]))
     by_room: Dict[str, List[Dict[str, Any]]] = {}

@@ -57,7 +57,7 @@ export function nameProjectReference(node, project = targets.get(node)) {
 }
 
 /** `beside` is the title element the reference stands next to, if any; the reference holds no watch on it. */
-export function projectReference(project, { layout = 'inline', taskId = '', quizId = '', beside = null } = {}) {
+export function projectReference(project, { layout = 'inline', taskId = '', quizId = '', workId = '', waitTrail = [], beside = null } = {}) {
     const target = { ...(project || {}) };
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -79,7 +79,8 @@ export function projectReference(project, { layout = 'inline', taskId = '', quiz
     if (beside) besides.set(btn, beside);
     nameProjectReference(btn, target);
     btn.addEventListener('click', () => window.dispatchEvent(new CustomEvent('ouro:open-project', {
-        detail: { project: { ...target }, task_id: String(taskId || ''), quiz_id: String(quizId || '') },
+        detail: { project: { ...target }, task_id: String(taskId || ''), quiz_id: String(quizId || ''),
+            ...(workId ? { work_id: workId, wait_trail: waitTrail } : {}) },
     })));
     return btn;
 }

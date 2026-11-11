@@ -31,6 +31,7 @@ import {
 } from './work_status.js';
 import { showToast } from './toast.js';
 import { motionMs, reducedMotion } from './motion.js';
+import { paintWaitDependencies, paintWaitBack } from './wait_dependencies.js';
 
 // The closed list rises back as it fades (room_work.css rw-unfold, reversed).
 const SHADE_FOLDS = [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(-6px)' }];
@@ -153,6 +154,10 @@ export function createRoomWork({
     // Names are authored text: the chrome in here is translated at the producer, so the overlay never walks it.
     surface.setAttribute('data-i18n-authored', '');
     const list = element('div', 'rw-list');
+    const waitBack = element('div', 'rw-wait-back');
+    waitBack.hidden = true;
+    let waitTrail = [];
+    let waitMember = '', pendingWaitTarget = '';
     const note = element('p', 'rw-note');
     note.hidden = true;
     // The commands a narrow bar keeps in its list (Main's Restart and budget: page_header.js); empty, it takes no room.
@@ -166,7 +171,7 @@ export function createRoomWork({
     const olderHistory = element('button', 'btn btn-sm', tr('activity.older', 'Older activity'));
     refreshHistory.type = olderHistory.type = 'button';
     historyActions.append(refreshHistory, olderHistory);
-    surface.append(composition, list, historyNote, historyActions, note, extras);
+    surface.append(waitBack, composition, list, historyNote, historyActions, note, extras);
     // A zero-height anchor under the bar: the list follows the bar's real height at every width. Main's
     // header floats over the transcript, so its anchor is the header's own last child at its bottom edge.
     const shadeAnchor = element('div', 'rw-shade-anchor');
@@ -474,6 +479,8 @@ export function createRoomWork({
         focus.hidden = true;
         const observations = element('span', 'rw-observations');
         observations.hidden = true;
+        const dependencies = element('div', 'rw-dependencies');
+        dependencies.hidden = true;
         main.append(nameEl, state, observations, focus);
         const verb = element('span', 'rw-verb');
         const moreSlot = element('span', 'rw-more-slot');
@@ -486,10 +493,10 @@ export function createRoomWork({
         observations.id = `${detail.id}-observations`;
         main.setAttribute('aria-describedby', observations.id);
         detail.hidden = true;
-        el.append(main, verb, moreSlot, detail, activityGap, events);
+        el.append(main, verb, moreSlot, dependencies, detail, activityGap, events);
         view = { el, main, nameEl, mark, word, secondary, focus, observations, where, chev, verb, moreSlot,
             detail, question: null, resume: null, resumeTarget: '', more: null, row: null, full: null, detailKey: '',
-            episode: undefined, events, activityGap, errorLabel };
+            episode: undefined, events, activityGap, errorLabel, dependencies };
         // The name stays selectable text: a drag that selected it does not navigate.
         bindContentButton(main, () => activateRow(view.row), () => rowIsTarget(view.row));
         // Keyboard focus shows the whole name (CSS unclamps it), and only the row keyboard reads shows it. Not
@@ -596,6 +603,11 @@ export function createRoomWork({
         const observations = row.settled ? '' : String(row.view.observationLine || '');
         if (view.observations.textContent !== observations) view.observations.textContent = observations;
         view.observations.hidden = !observations;
+        const selected = row.work?.members?.states?.[waitMember];
+        const waitWork = selected && waitMember !== row.work?.episode?.task_id
+            ? { ...row.work, because: selected.because, work_id: waitMember,
+                episode: { task_id: waitMember }, name: `${waitMember} — ${row.work.name}` } : row.work;
+        paintWaitDependencies(view.dependencies, row.settled ? null : { ...waitWork, confirmed: row.confirmed }, waitTrail);
         view.chev.hidden = !detailable;
         view.where.hidden = !detailable;
         view.detail.hidden = !isOpen;
@@ -762,6 +774,15 @@ export function createRoomWork({
         rows = arrange(collect()).map((row) => Object.assign(row, { lookup: lookupOf(row) }));
         paintTrigger();
         paintNote();
+        const snapshot = stateSnapshots?.latest?.();
+        const trail = waitTrail.map(target => {
+            const current = snapshot?.works?.find(work => work.members?.ids?.includes(target.task_id));
+            return { ...target, work_id: current?.work_id || target.work_id,
+                room: current?.room ?? target.room, project_id: current?.project_id ?? target.project_id,
+                name: current?.name || target.name,
+                state: connected() && hostReady() && current?.members?.states?.[target.task_id]?.confirmed ? 'live' : 'unknown' };
+        });
+        paintWaitBack(waitBack, trail);
         if (!open) return;
         composition.textContent = connected() && hostReady() ? roomActivityComposition(works())
             : tr('activity.composition_unknown', 'Current activity composition is unconfirmed.');
@@ -804,6 +825,16 @@ export function createRoomWork({
         reconcileActivityOrder(list, children, doc);
         if (keepPosition && firstVisible?.isConnected && Number.isFinite(visibleOffset))
             surface.scrollTop += firstVisible.getBoundingClientRect().top - visibleOffset;
+        if (pendingWaitTarget) {
+            const row = rows.find(row => row.id === pendingWaitTarget || row.work?.members?.ids?.includes(pendingWaitTarget));
+            if (row) {
+                if (doc.activeElement === surface) {
+                    views.get(row.key)?.main.focus({ preventScroll: true });
+                    views.get(row.key)?.el.scrollIntoView?.({ block: 'nearest' });
+                }
+                pendingWaitTarget = '';
+            } else live.textContent = tr('wait.no_target', 'Target work is not in this room’s current list; waiting for fresh work facts.');
+        }
     }
 
     // The word goes whole or not at all (DESIGN "Shell"): shown, measured, dropped when the row would cut it, in one
@@ -899,6 +930,8 @@ export function createRoomWork({
         menuIntent += 1;
         if (!open) return;
         open = false;
+        waitTrail = []; waitMember = ''; pendingWaitTarget = '';
+        paintWaitBack(waitBack, []);
         projectInfo?.close();
         activity.close();
         closeTaskControlMenu();
@@ -1179,6 +1212,13 @@ export function createRoomWork({
     render();
     return {
         update: schedule,
+        revealWork(taskId, trail = []) {
+            openSurface();
+            waitTrail = trail; waitMember = taskId; pendingWaitTarget = taskId;
+            surface.focus({ preventScroll: true });
+            render();
+            return true;
+        },
         explanation: visibility?.element,
         extras,
         close: () => close({ restoreFocus: false }),

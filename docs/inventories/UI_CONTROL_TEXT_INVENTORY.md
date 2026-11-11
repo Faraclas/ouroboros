@@ -289,7 +289,7 @@ An owner intent that has a door is raised by exactly one module (`ouro:open-proj
 | `ouro:layout-changed` | theme.js |
 | `ouro:open-project` | modules/project_reference.js |
 | `ouro:open-skills` | modules/dictation_chooser.js, modules/place_sheet.js |
-| `ouro:open-task` | modules/consciousness_dashboard.js |
+| `ouro:open-task` | modules/consciousness_dashboard.js, modules/wait_dependencies.js |
 | `ouro:open-widgets` | modules/contributions.js |
 | `ouro:page-shown` | app.js ×2 |
 | `ouro:panic` | modules/chat_activity.js |

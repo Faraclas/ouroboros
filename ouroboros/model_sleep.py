@@ -89,7 +89,8 @@ def _canonical_root(ctx: Any) -> pathlib.Path:
 
 
 def selectors(ctx: Any, *, senders: Any = None, tasks: Any = None, runs: Any = None, services: Any = None,
-              wake_at: Any = None, wake_after_sec: Any = None, reviewers: Any = None) -> Dict[str, Any]:
+              wake_at: Any = None, wake_after_sec: Any = None, reviewers: Any = None,
+              dependency: Any = None) -> Dict[str, Any]:
     """Validate the selected sources; ``ValueError`` names the first bad one.
 
     Senders and tasks must be tasks this installation knows (a readable result);
@@ -100,6 +101,18 @@ def selectors(ctx: Any, *, senders: Any = None, tasks: Any = None, runs: Any = N
 
     chosen = {"senders": _ids(senders, "senders"), "tasks": _ids(tasks, "tasks"), "runs": _ids(runs, "runs"),
               "wake_at": _wake_at(wake_at, wake_after_sec)}
+    if dependency is not None:
+        if not isinstance(dependency, dict) or set(dependency) != {"waiting_for", "why", "release", "on"}:
+            raise ValueError("dependency requires waiting_for, why, release and on")
+        for key in ("waiting_for", "why", "release"):
+            if not isinstance(dependency[key], str) or not dependency[key].strip():
+                raise ValueError(f"dependency.{key} must be nonempty text")
+        targets = _ids(dependency["on"], "dependency.on")
+        for task_id in targets:
+            validate_task_id(task_id)
+            if not load_task_result(_canonical_root(ctx), task_id, strict=True):
+                raise ValueError(f"dependency.on: task {task_id} is unknown")
+        chosen["dependency"] = {**dependency, "on": targets}
     if chosen["senders"] or chosen["tasks"]:  # the root is read only when a task id needs checking
         root = _canonical_root(ctx)
         for key in ("senders", "tasks"):
@@ -126,6 +139,18 @@ def selectors(ctx: Any, *, senders: Any = None, tasks: Any = None, runs: Any = N
 # stop/start reuses, so the start time and process identity (pid/pgid on the host,
 # the backend pid on an executor) tell a replacement apart.
 _SERVICE_IDENTITY = ("service_id", "started_at", "pid", "pgid", "backend_pid")
+
+
+def public_dependency(sleep: Any) -> Dict[str, Any]:
+    """Authored operation context, not a prerequisite evaluator or a wake selector."""
+    if not isinstance(sleep, dict) or sleep.get("mode") not in {"warm", "cold"}:
+        return {}
+    value = sleep.get("dependency")
+    if not isinstance(value, dict) or any(not isinstance(value.get(key), str) or not value[key].strip()
+                                          for key in ("waiting_for", "why", "release")):
+        return {}
+    return {**{key: value[key] for key in ("waiting_for", "why", "release")},
+            "on": [item for item in value.get("on") or [] if isinstance(item, str) and item]}
 
 
 def public_wake_sources(sleep: Any) -> Dict[str, Any]:

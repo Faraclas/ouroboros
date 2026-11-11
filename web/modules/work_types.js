@@ -3,6 +3,24 @@
 // Words come from the server's codes through tr(); a client never derives a state, mark or control.
 
 /**
+ * @typedef {Object} WorkDependency
+ * @property {string} waiting_for
+ * @property {string} why
+ * @property {string} release
+ * @property {Array<string>} on
+ */
+/**
+ * @typedef {Object} WorkTarget
+ * @property {string} task_id
+ * @property {string} name
+ * @property {string} state  // live | ended | unknown; not release satisfaction
+ * @property {boolean} selected_as_wake
+ * @property {string=} work_id
+ * @property {*=} room
+ * @property {string=} project_id
+ * @property {string=} activity
+ */
+/**
  * @typedef {Object} WorkReason
  * @property {string} code  // closed per release; an unknown code renders its text
  * @property {string} text  // the English sentence for this code
@@ -12,6 +30,8 @@
  * @property {*=} observed_at  // chooser observation, not the beginning of a wait
  * @property {PauseAuthor=} by  // the declared author of a decided Pause
  * @property {WakeSources=} wake
+ * @property {WorkDependency=} dependency
+ * @property {Array<WorkTarget>=} targets
  */
 /**
  * @typedef {Object} WakeService

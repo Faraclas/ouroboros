@@ -23,6 +23,38 @@
         "h0",
         "h1",
         "h2"
+       ],
+       "targets": [
+        {
+         "task_id": "h0",
+         "name": "h0 — Ouroboros 7.7.0 — finish the saved release",
+         "state": "live",
+         "selected_as_wake": false,
+         "work_id": "p",
+         "room": 42,
+         "project_id": "",
+         "activity": "working"
+        },
+        {
+         "task_id": "h1",
+         "name": "h1 — Ouroboros 7.7.0 — finish the saved release",
+         "state": "live",
+         "selected_as_wake": false,
+         "work_id": "p",
+         "room": 42,
+         "project_id": "",
+         "activity": "working"
+        },
+        {
+         "task_id": "h2",
+         "name": "h2 — Ouroboros 7.7.0 — finish the saved release",
+         "state": "live",
+         "selected_as_wake": false,
+         "work_id": "p",
+         "room": 42,
+         "project_id": "",
+         "activity": "working"
+        }
        ]
       }
      ],
@@ -2958,6 +2990,9 @@
   },
   "project_busy": {
    "": "Waiting for another task in this project to finish or release its writer lane"
+  },
+  "in_slot_wait": {
+   "": "Waiting for selected task results while keeping its worker slot"
   },
   "subagent_capacity": {
    "": "Waiting for capacity in this task's helper tree"

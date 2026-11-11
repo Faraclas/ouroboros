@@ -920,7 +920,7 @@ def _wait_window(
 
 def _await_messages(ctx: ToolContext, timeout_sec: int = 0, mode: str = "in_slot", senders: Any = None,
                     tasks: Any = None, runs: Any = None, wake_at: Any = None, wake_after_sec: Any = None,
-                    services: Any = None) -> str:
+                    services: Any = None, dependency: Any = None) -> str:
     """Hold this task's worker slot until an unread mailbox entry exists or the
     window elapses. Delivers nothing: the round-top drain owns delivery and
     acknowledgement, exactly as after a wait_task early return. An owner Stop
@@ -944,9 +944,9 @@ def _await_messages(ctx: ToolContext, timeout_sec: int = 0, mode: str = "in_slot
     """
     from ouroboros.model_sleep import wake_reason
 
-    if mode != "in_slot" or senders or tasks or runs or services or wake_at or wake_after_sec:
+    if mode != "in_slot" or senders or tasks or runs or services or wake_at or wake_after_sec or dependency is not None:
         return _await_as_sleep(ctx, mode, senders=senders, tasks=tasks, runs=runs, services=services,
-                               wake_at=wake_at, wake_after_sec=wake_after_sec)
+                               wake_at=wake_at, wake_after_sec=wake_after_sec, dependency=dependency)
     try:
         requested = int(timeout_sec)
     except (TypeError, ValueError):
@@ -1059,6 +1059,13 @@ def await_messages_entry() -> ToolEntry:
                      "description": "Requires mode=warm or cold. Sleep: your delegated run ids whose terminal wakes you."},
             "services": {"type": "array", "items": {"type": "string"},
                          "description": "Requires mode=warm or cold. Warm sleep: names of your own running services whose exit wakes you."},
+            "dependency": {"type": "object", "description":
+                "Optional warm/cold sleep explanation shown in status: what next operation waits, why, and what releases it. "
+                "on lists readable task ids to follow into their rooms. This authored explanation lasts only for this sleep; "
+                "it adds no wake selector and does not declare the whole assignment blocked. Choose executable OR wake sources separately.",
+                "properties": {"waiting_for": {"type": "string"}, "why": {"type": "string"},
+                               "release": {"type": "string"}, "on": {"type": "array", "items": {"type": "string"}}},
+                "required": ["waiting_for", "why", "release", "on"], "additionalProperties": False},
             "wake_at": {"type": "string", "description": "Requires mode=warm or cold. Sleep: an absolute ISO-8601 wake time (with timezone)."},
             "wake_after_sec": {"type": "integer", "description": "Requires mode=warm or cold. Sleep: wake after this many seconds."},
         }},
