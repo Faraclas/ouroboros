@@ -149,6 +149,11 @@ def _sleep_facts(sleep: Any) -> Dict[str, Any]:
         facts["services"] = services
     if sleep.get("any_mail") is True:
         facts["any_mail"] = True
+    from ouroboros.model_sleep import public_dependency
+
+    dependency = public_dependency(sleep)
+    if dependency:
+        facts["dependency"] = dependency
     return facts
 
 
@@ -593,7 +598,7 @@ def roster_fingerprint(roster: Dict[str, Any], *, exclude: str = "") -> tuple:
 _WAIT_LABELS = {"owner": "owner answer", "review": "review", "model": "model access", "budget": "budget pause",
                 "sleep": "sleep", "owner_pause": "owner Pause", "hold": "held", "unknown": "unknown wait"}
 _WAIT_DETAILS = ("quiz_id", "reason", "text", "by", "release", "role", "mode", "retained", "state", "settlement", "rail", "until",
-                 "reset_at", "wake_at", "senders", "tasks", "runs", "services", "any_mail")
+                 "reset_at", "wake_at", "senders", "tasks", "runs", "services", "any_mail", "dependency")
 # What a source this read could not open (``row["unavailable"]``) leaves unknown on its row, never absent.
 _UNAVAILABLE_MEANS = {"task_result": "its waits, open questions and settlement are unknown, not ended",
                       "project": "its project binding is unknown"}

@@ -68,6 +68,7 @@ REASON_TEXT = {
     "tree_selection": "Waiting for this task to be selected after its tree resumes",
     "evolution_budget": "Waiting for evolution's spending reserve",
     "project_busy": "Waiting for another task in this project to finish or release its writer lane",
+    "in_slot_wait": "Waiting for selected task results while keeping its worker slot",
     "subagent_capacity": "Waiting for capacity in this task's helper tree",
     "restart_pending": "Waiting for the accepted restart",
     "dispatch_ready": "Dispatch eligibility checked; waiting for assignment",
@@ -130,7 +131,7 @@ def _current_waits(row: Mapping[str, Any]) -> List[tuple]:
 
 
 def _sleep_reason(wait: Mapping[str, Any]) -> Dict[str, Any]:
-    from ouroboros.model_sleep import public_wake_sources
+    from ouroboros.model_sleep import public_dependency, public_wake_sources
     from ouroboros.peer_roster import _iso_text, iso_from_epoch
 
     entry = reason("sleeping", since=_iso_text(wait.get("parked_at"))
@@ -139,6 +140,9 @@ def _sleep_reason(wait: Mapping[str, Any]) -> Dict[str, Any]:
     wake = public_wake_sources(wait.get("sleep"))
     if wake:
         entry["wake"] = wake
+    dependency = public_dependency(wait.get("sleep"))
+    if dependency:
+        entry["dependency"] = dependency
     return entry
 
 
@@ -187,7 +191,7 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
             if recorded_attempt == int(row.get("task_attempt") or 1):
                 sleep_reason = _sleep_reason(pause)
                 view["reason"].update({key: value for key, value in sleep_reason.items()
-                                       if key in {"since", "wake"}})
+                                       if key in {"since", "wake", "dependency"}})
         state["resumable"] = view["resumable"]
         state["activity"] = "waiting" if view["waiting"] else "paused"
         state["release"] = ("owner" if view["release"] == "owner" else "mind" if view["resumable"]
@@ -259,6 +263,8 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
         return state
     if phase in {"working", "thinking", "preparing"}:
         state.update(activity="working", call=_call(row), live=True)
+        if raw.get("wait_for_tasks"):
+            state["reasons"].append(reason("in_slot_wait", ids=raw["wait_for_tasks"]))
         step = str(row.get("turn_phase") or "")
         if phase == "preparing" and step in _TURN_STEPS:
             state["reasons"].append(reason(f"turn_{step}"))

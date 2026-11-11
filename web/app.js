@@ -780,12 +780,12 @@ async function revealMountedProjectSource(project, inst, sourceReveal, navigatio
     }
 }
 
-async function openProjectPanel(project, { closeDrawer = true, openOnly = false, taskId = '', quizId = '', sourceReveal = null, besideSource = null, composerFocus = false, navigationCurrent = () => true } = {}) {
+async function openProjectPanel(project, { closeDrawer = true, openOnly = false, taskId = '', quizId = '', workId = '', waitTrail = [], sourceReveal = null, besideSource = null, composerFocus = false, navigationCurrent = () => true } = {}) {
     if (!navigationCurrent() || sourceReveal && !sourceReveal.current()) return null;
     if (!project?.id || String(project.lifecycle || 'active') !== 'active') return;
     const navigation = ++projectNavigationGeneration;
     if (besideSource && panes.keeps(project.id)) panes.select(project.id, true);
-    if (panes.keeps(project.id) && navState.activeProjectId !== project.id && !sourceReveal && !taskId && projectInstances.has(project.id)) {
+    if (panes.keeps(project.id) && navState.activeProjectId !== project.id && !sourceReveal && !taskId && !workId && projectInstances.has(project.id)) {
         navState.activeProjectId = project.id; if (closeDrawer) navState.mobileDrawerOpen = false; syncNavigationState(); if (composerFocus) focusRoomComposer(projectInstances.get(project.id)); else focusProjectRoom(); return;
     }
     if (navState.activeProjectId === project.id) {
@@ -793,6 +793,7 @@ async function openProjectPanel(project, { closeDrawer = true, openOnly = false,
         if (sourceReveal) return revealMountedProjectSource(project, projectInstances.get(project.id), sourceReveal, navigation);
         if (!openOnly && !panes.collaborating()) closeProjectPanel();
         else if (taskId && quizId) await revealProjectQuestion(project, projectInstances.get(project.id), taskId, quizId);
+        if (workId) projectInstances.get(project.id)?.revealWork?.(workId, waitTrail);
         if (composerFocus && !sourceReveal && !taskId) focusRoomComposer(projectInstances.get(project.id));
         return;
     }
@@ -845,6 +846,7 @@ async function openProjectPanel(project, { closeDrawer = true, openOnly = false,
             void inst.revealQuestion?.(taskId, quizId);
             await acknowledgeProjectAfterPaint(project, inst, { forcePaint: !inst.hasPaintedHistory?.() });
         }
+        if (workId && navigation === projectNavigationGeneration) inst.revealWork?.(workId, waitTrail);
     } finally {
         projectPanelOpeningSince = 0;
     }
@@ -875,6 +877,7 @@ async function revealQuotedSource(address, chatId, isCurrent) {
 
 window.addEventListener('ouro:open-task', async ({ detail }) => {
     if (!detail?.task_id || detail.chat_id !== 1 || !await showPage('chat')) return;
+    if (detail.work_id) { mainChat?.revealWork?.(detail.work_id, detail.wait_trail || []); return; }
     try {
         const result = await revealQuotedSource(`task:${detail.task_id}`, detail.chat_id, () => state.activePage === 'chat');
         if (result && result.state !== 'found') showToast(tr('consciousness.task_unavailable', 'This task is unavailable.'), 'warn');
@@ -1441,7 +1444,8 @@ window.addEventListener('ouro:open-project', (event) => {
     const project = event?.detail?.project;
     if (!project?.id) return;
     const resolved = lastProjectRows.find((item) => item.id === project.id) || project;
-    openProjectPanel(resolved, { openOnly: true, taskId: event.detail.task_id || '', quizId: event.detail.quiz_id || '' });
+    openProjectPanel(resolved, { openOnly: true, taskId: event.detail.task_id || '', quizId: event.detail.quiz_id || '',
+        workId: event.detail.work_id || '', waitTrail: event.detail.wait_trail || [] });
 });
 
 // A contribution's `open.tab` (contributions.js): the Widgets page, at that skill's first card once it is drawn.

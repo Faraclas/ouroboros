@@ -162,6 +162,8 @@ def scan_occurrences(inventory: ci.CodeInventory, query: str | None, *, mode: st
     for references. Missing grammar in callers is therefore an explicit limit,
     never evidence that the file has no calls. Import extraction is syntactic;
     candidate joins happen separately over the current complete path list.
+    Literal absence skips the escaped exact-token regex, not source admission or
+    decoding. Literal presence still requires the identifier/dollar boundaries.
     Complete local import facts are reused only for these exact source bytes;
     legacy, overflowed or changed facts require a fresh parse.
     Inventory call facts and definition ranges also apply only to the bytes the
@@ -212,7 +214,7 @@ def scan_occurrences(inventory: ci.CodeInventory, query: str | None, *, mode: st
             text = raw.decode("utf-8", "replace")
             scan.limits["invalid UTF-8 replaced"] += 1
         scan.files_scanned += 1
-        matches = list(pattern.finditer(text)) if pattern else []
+        matches = list(pattern.finditer(text)) if pattern and query in text else []
         if pattern and not matches:
             continue
         scan.files_matched += 1

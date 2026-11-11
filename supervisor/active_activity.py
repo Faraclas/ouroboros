@@ -286,12 +286,15 @@ class DirectActivityEntry:
         wait_availability: Dict[str, Any] = {}
         row.update(self._live_model_wait_projection(availability=wait_availability))
         if isinstance(self.parked_wait, dict) and self.parked_wait.get("reason") == "sleep":
-            from ouroboros.model_sleep import public_wake_sources
+            from ouroboros.model_sleep import public_dependency, public_wake_sources
 
             wake = public_wake_sources(self.parked_wait.get("sleep"))
             row["sleep_wait"] = {key: self.parked_wait.get(key) for key in (
                 "state", "reason", "task_attempt", "parked_at", "sleep_started_at")}
             row["sleep_wait"]["sleep"] = {**wake, "wake_at": wake.get("at")}
+            dependency = public_dependency(self.parked_wait.get("sleep"))
+            if dependency:
+                row["sleep_wait"]["sleep"]["dependency"] = dependency
         observed = getattr(self.actor, "_service_observations", None)
         if isinstance(observed, dict) and observed.get("task_id") == self.activity_id:
             row["service_observations"] = observed

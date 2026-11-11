@@ -319,3 +319,90 @@ def test_scoped_and_restricted_bounded_views_never_replace_the_full_cache(projec
         bounded.setattr(ci, "_MAX_ENUMERATION_PATHS", 1)
         ci.build_code_inventory(repo, drive_root=data, parse=False)
     assert cache.read_bytes() == before
+
+
+@pytest.mark.parametrize("mode", ["references", "callers", "definition", "imports", "callees"])
+def test_literal_absence_avoids_regex_without_skipping_source_admission(project, monkeypatch, mode):
+    """The optimization saves regex work, not reads, policy or decoding evidence."""
+    repo, _ = project
+    write(repo, "absent.py", "# unrelated\n" * 20000)
+    write(repo, "boundary.py", "# needle_suffix $needle needle$\n")
+    write(repo, "hit.py", "def needle():\n    return needle()\n")
+    (repo / "invalid.py").write_bytes(b"# unrelated\xff\n")
+    inventory = ci.build_code_inventory(repo, parse=False)
+    seen, admitted = [], []
+    compile_pattern = occ.re.compile
+
+    def compile_counted(pattern):
+        compiled = compile_pattern(pattern)
+
+        def finditer(text):
+            seen.append(text)
+            return compiled.finditer(text)
+
+        return SimpleNamespace(finditer=finditer)
+
+    monkeypatch.setattr(occ, "re", SimpleNamespace(compile=compile_counted, split=occ.re.split, escape=occ.re.escape))
+
+    def allowed(path):
+        admitted.append(path.name)
+        return True
+
+    scan = occ.scan_occurrences(inventory, "needle", mode=mode, path_allowed=allowed)
+    assert admitted == ["absent.py", "boundary.py", "hit.py", "invalid.py"]
+    assert len(seen) == 2  # literal-present boundary decoy still needs the regex
+    assert scan.files_selected == scan.files_scanned == 4
+    assert scan.files_matched == 1 and scan.matched_paths == ["hit.py"]
+    assert scan.occurrences == 2 and scan.limits["invalid UTF-8 replaced"] == 1
+    assert not scan.incomplete
+    if mode in {"references", "callers", "definition"}:
+        assert scan.rows and all(row.path == "hit.py" for row in scan.rows)
+
+
+@pytest.mark.parametrize("query", ["needle", "λ", "é", "ﬁx", "fix", "a$b", "$", "foo.bar",
+                                    "a+b", "[x]", "?", "\\", "x\ny", "�", "", None])
+def test_literal_prefilter_preserves_exact_text_rows_and_counters(project, monkeypatch, query):
+    import re
+
+    repo, _ = project
+    text = "needle needle_suffix $needle needle$\r\nλ λx é café ﬁx fix\ra$b $ foo.bar a+b [x] ? \\ x\ny\n"
+    (repo / "data.cfg").write_bytes(text.encode("utf-8") + b"\xff\n")
+    decoded = text + "�\n"
+    inventory = ci.build_code_inventory(repo, parse=False)
+    monkeypatch.setattr(ci, "_ts_parser", lambda grammar: None)
+    pattern = re.compile(r"(?<![\w$])" + re.escape(query) + r"(?![\w$])") if query else None
+    matches = list(pattern.finditer(decoded)) if pattern else []
+    scan = occ.scan_occurrences(inventory, query)
+    assert scan.files_scanned == 1 and scan.limits["invalid UTF-8 replaced"] == 1
+    assert scan.occurrences == len(matches)
+    assert scan.files_matched == int(pattern is None or bool(matches))
+    expected = {}
+    for match in matches:
+        line = decoded.count("\n", 0, match.start()) + 1
+        start = decoded.rfind("\n", 0, match.start()) + 1
+        expected.setdefault(line, len(decoded[start:match.start()].encode("utf-8")) + 1)
+    assert [(row.line, row.column, row.slot) for row in scan.rows] == [
+        (line, column, "text") for line, column in expected.items()]
+    assert not scan.incomplete
+
+
+def test_literal_prefilter_keeps_fresh_reads_row_selection_and_deadline(project, monkeypatch):
+    repo, _ = project
+    write(repo, "a.cfg", "absent\n")
+    write(repo, "b.cfg", "needle\n" * 5000)
+    inventory = ci.build_code_inventory(repo, parse=False)
+    write(repo, "a.cfg", "needle\n")  # bytes after inventory, not cached absence
+    scan = occ.scan_occurrences(inventory, "needle", max_rows=2)
+    assert [(r.path, r.line) for r in scan.rows] == [("a.cfg", 1), ("b.cfg", 1)]
+    assert scan.occurrences == 5001 and scan.incomplete
+    assert scan.limits["selected row cap 2"] == 1
+    selected = occ.scan_occurrences(inventory, "needle", max_rows=2,
+                                    select_rows=lambda rows: rows[-1:])
+    assert [(r.path, r.line) for r in selected.rows] == [("a.cfg", 1), ("b.cfg", 5000)]
+    assert not selected.incomplete
+    clock = fake_clock(monkeypatch)
+    stopped = occ.scan_occurrences(inventory, "needle", deadline=-1)
+    assert stopped.files_scanned == 0 and stopped.incomplete
+    assert stopped.limits["wall budget hit; remaining files not scanned"] == 1
+    denied = occ.scan_occurrences(inventory, "needle", path_allowed=lambda path: False)
+    assert denied.files_scanned == 0 and denied.limits["policy excluded"] == 2
