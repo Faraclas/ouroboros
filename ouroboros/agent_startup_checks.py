@@ -594,23 +594,21 @@ def check_review_continuations(env: Any) -> Tuple[dict, int]:
 
 
 def check_stray_server_processes(env: Any) -> Tuple[Dict[str, Any], int]:
-    """Report ouroboros-server processes that belong to NO current install (v6.70.0).
+    """Report extra server-like processes, never stop them or infer shared-state writes.
 
-    Field incident: four foreign `ouroboros server` processes lived on the
-    owner's machine for weeks without any invariant noticing. This check only
-    REPORTS (never kills — a sibling install may be legitimate): a pid counts
-    as stray when its command line looks like an ouroboros server and it is
-    neither this process tree, the recorded server process, nor any pid ever
-    recorded in the custody ledger (conservative under-reporting: a reused
-    ledger pid masks a stray rather than false-flagging a legitimate one). Scans
-    only THIS user's processes; non-POSIX platforms skip (pgrep-based).
+    Scan this user's processes on POSIX. Exclude current/parent/recorded PIDs
+    and their groups (legacy PID reuse can conservatively mask a candidate).
+    Also exclude descendants of the main service only while its measured
+    binding remains live across one PID/PPID snapshot. Missing identity or
+    ancestry leaves candidates reportable; no recursive fallback scan is needed.
 
-    Each report carries a ``scope``: ``same_install`` when the command line names
-    THIS install's ``<REPO_DIR>/server.py``, else ``foreign``. The launcher reaps
-    proven same-install strays before every generation
-    (``ouroboros.launcher_server_reaper``), so a same_install WARN that persists
-    means one of: a direct (unmanaged) run of this checkout, a process spared for
-    lack of readable env proof, or a pid that survived the kill passes."""
+    Scope describes command evidence, not custody: ``same_install`` names this
+    checkout's server, ``foreign`` another command, ``unknown`` unavailable scope
+    classification. A same-install candidate may be a direct run or a survivor
+    of the launcher's separate sweep. This report grants no signalling authority.
+    Descendant PID churn between snapshot and command read can suppress a warning;
+    this bounded observation is not a process-lifetime or exclusive-custody proof.
+    """
     import os as _os
     import pathlib as _pathlib
     import re as _re
@@ -672,6 +670,7 @@ def check_stray_server_processes(env: Any) -> Tuple[Dict[str, Any], int]:
             same_install_paths = set()
             _names_our_server = None
         stray: list[dict[str, Any]] = []
+        serving_tree: set[int] | None = None
         for line in (out.stdout or "").splitlines():
             try:
                 pid = int(line.strip())
@@ -681,6 +680,24 @@ def check_stray_server_processes(env: Any) -> Tuple[Dict[str, Any], int]:
                 continue
             command = process_command(pid)
             if not server_shape.search(command or ""):
+                continue
+            if serving_tree is None:
+                serving_tree = set()
+                try:
+                    from ouroboros import platform_layer as _pl, server_process as _server
+
+                    binding = _server.read_service_bindings(drive_root).get("main", {})
+                    if binding and _server.service_binding_is_live(binding):
+                        children = _pl._process_children()
+                        if children is not None:
+                            descendants = _pl._snapshot_descendants(int(binding["pid"]), children)
+                            if _server.service_binding_is_live(binding):
+                                serving_tree.update(descendants)
+                                serving_tree.add(int(binding["pid"]))
+                except Exception:
+                    # A failed observation is not proof of ownership.
+                    pass
+            if pid in serving_tree:
                 continue
             # Same process group as a known pid => part of a known tree.
             # (Per-pid defensiveness: most ledger pids are dead, and one
@@ -707,7 +724,7 @@ def check_stray_server_processes(env: Any) -> Tuple[Dict[str, Any], int]:
                          else "foreign")
             stray.append({"pid": pid, "command": command[:160], "scope": scope})
         if stray:
-            log.warning("Stray ouroboros server process(es) outside this install: %s", stray)
+            log.warning("Extra ouroboros server-like process(es), scope and custody require inspection: %s", stray)
             return {"status": "stray_processes", "processes": stray}, 1
         return {"status": "ok"}, 0
     except Exception:

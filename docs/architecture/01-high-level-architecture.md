@@ -111,7 +111,7 @@ ouroboros/ — agent core and shared runtime (§6)
   startup_historical_audit.py — explicit seal-audit child in its own process group (`python -m ouroboros.startup_historical_audit`; §2; docs/MODEL_SEND_OBSERVABILITY.md)
   maintenance.py, maintenance_jobs.py, maintenance_retirement.py, plan_collection_job.py, record_compression.py, temp_sweep.py — the maintenance child's history-sized jobs and durable `job:<name>` facts (§5)
   focus.py — authored focus with typed source ref; no dialogue or path escapes
-  agent_startup_checks.py — agent-boot verification (warning-only health) and native-host adoption for self-restart (§2)
+  agent_startup_checks.py — report-only scoped process/boot health and native-host adoption (§2)
   agent_task_pipeline.py — task execution pipeline: result, artifacts, frozen cost snapshot, the review lens, root-only post-task work (§6 Task lifecycle)
   agent_dispatch.py, post_task_synthesis.py — delegated-child dispatch seam; post-task workers (§6 Post-task work)
   task_finalization.py, swarm_rollup.py, swarm_receipt.py, swarm_receipt_sources.py, swarm_wait_facts.py — delivery, fan-out facts, tree receipts (§6)
