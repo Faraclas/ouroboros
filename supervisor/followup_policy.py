@@ -133,7 +133,7 @@ def resolve_relation(root, origin, kind, *, declared_by):
     return relation
 
 
-def policy_view(root, data, record):
+def policy_view(root, data, record, *, _read_result=None):
     """Pure current projection; callers that authorize starts hold control locks.
 
     A read that met confirmed store contention also says ``busy``: the same
@@ -144,6 +144,8 @@ def policy_view(root, data, record):
     from ouroboros.deadline_utils import parse_deadline_ts
     from supervisor.schedule_occurrence import contention
     import datetime
+
+    load_task_result = _read_result if _read_result is not None else load_task_result
 
     kind = relation_kind(record)
     if kind == "independent":
@@ -156,7 +158,8 @@ def policy_view(root, data, record):
             wait = "owner_restart_in_progress"
         origin = origin_of(record)
         origin_ids = set(origin.values()) - {""}
-        control_ids = origin_ids | {_validated_single_cancel_target(root, tid) for tid in origin_ids}
+        control_ids = origin_ids | {_validated_single_cancel_target(root, tid, **(
+            {"read_result": _read_result} if _read_result is not None else {})) for tid in origin_ids}
         for tid in sorted(control_ids):
             row = load_task_result(pathlib.Path(root), tid, strict=True)
             # A published row outlives its collected origin (no recorded Stop
@@ -238,10 +241,32 @@ def current_hold(record):
 
 
 def observed_store(root, data):
-    """Read-only views disclose new controls even before the next producer pass."""
+    """Read-only views disclose controls, reusing unchanged full documents per row.
+
+    Signed strict loads retain admission/occupied semantics. Each reuse checks the
+    current store signature; policy-relevant writes/deletion force a strict load. No
+    memo survives a row, and live intent/fence/restart reads are never memoized.
+    Action callers use policy_view's default reader, not this observation scope.
+    """
+    from ouroboros.task_results import load_task_result
+    from ouroboros.task_store import signature
+
     out = copy.deepcopy(data)
     for row in out.get("tasks", []):
-        view = policy_view(root, out, row)
+        documents = {}
+
+        def read_result(drive, tid, *, strict=True):
+            cached = documents.get(tid)
+            if cached is not None and signature(drive, tid) == cached[1]:
+                return cached[0]
+            document, stamp = load_task_result(drive, tid, strict=strict, signed=True)
+            if document is not None and stamp is not None:
+                documents[tid] = (document, stamp)
+            else:
+                documents.pop(tid, None)
+            return document
+
+        view = policy_view(root, out, row, _read_result=read_result)
         durable = row.get("followup_hold")
         observed = view.get("hold") or current_hold(row)
         row.pop("followup_hold", None)
