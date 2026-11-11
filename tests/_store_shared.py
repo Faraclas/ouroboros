@@ -92,6 +92,7 @@ def unreadable_result(monkeypatch, task_id: str, *, root=None) -> dict:
     from ouroboros import task_store
 
     real_views = task_store.display_documents
+    real_focus = task_store.focus_objects
 
     def display_documents(root, task_ids, versions=None):  # a batch holding the row fails like a single read of it
         ids = [str(tid) for tid in task_ids]
@@ -99,6 +100,13 @@ def unreadable_result(monkeypatch, task_id: str, *, root=None) -> dict:
                 wanted_root is None or pathlib.Path(root).resolve() == wanted_root):
             raise store.StoreError(f"simulated unreadable row: {task_id}")
         return real_views(root, ids, versions)
+
+    def focus_objects(root, task_ids):
+        ids = [str(tid) for tid in task_ids]
+        if switch["on"] and str(task_id) in ids and (
+                wanted_root is None or pathlib.Path(root).resolve() == wanted_root):
+            raise store.StoreError(f"simulated unreadable row: {task_id}")
+        return real_focus(root, ids)
 
     from ouroboros import store_hot_facts
 
@@ -113,6 +121,7 @@ def unreadable_result(monkeypatch, task_id: str, *, root=None) -> dict:
     monkeypatch.setattr(store.Txn, "body_text", body_text)
     monkeypatch.setattr(store.Txn, "row", row)
     monkeypatch.setattr(task_store, "display_documents", display_documents)
+    monkeypatch.setattr(task_store, "focus_objects", focus_objects)
     monkeypatch.setattr(store_hot_facts, "_read_rows", hot_rows)
     return switch
 

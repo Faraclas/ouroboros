@@ -510,6 +510,25 @@ def display_documents(root: Any, task_ids: Iterable[str],
             for task_id, text, _seq in found}
 
 
+def focus_objects(root: Any, task_ids: Iterable[str]) -> Dict[str, Optional[Dict[str, Any]]]:
+    """Complete body-backed focus by stored row id, without display/card/handoff assembly.
+
+    Non-object values are rejected as None; object validation and latest selection belong
+    to the focus consumer. JSON travels as TEXT (including nested REAL values), decoded
+    after the short read closes. No stored source handle or unknown object field is cut.
+    """
+    ids = sorted({str(task_id) for task_id in task_ids if str(task_id or "").strip()})
+    if not ids:
+        return {}
+    with open_store(root, write=False) as txn:
+        found = capture(txn.conn, "SELECT t.task_id, CASE WHEN json_type(b.body, '$.focus') = 'object' "
+                        "THEN '' || json_extract(b.body, '$.focus') END AS focus FROM tasks AS t "
+                        "JOIN task_bodies AS b ON b.task_id = t.task_id "
+                        "WHERE t.task_id IN (SELECT value FROM json_each(?))", (json.dumps(ids),),
+                        ("task_id", "focus"))
+    return {task_id: json.loads(text) if text is not None else None for task_id, text in found.tuples()}
+
+
 def task_versions(root: Any, task_ids: Iterable[str]) -> Dict[str, Tuple[int, str, bool]]:
     """Each stored task's ``(write_seq, status, owes_synthesis)``, typed columns only, in ONE
     aggregated row: whether documents a window shows changed since it read them, and which of them
