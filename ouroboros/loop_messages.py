@@ -301,6 +301,10 @@ def _initialize_owner_directives(ctx: Any, messages: List[Dict[str, Any]]) -> No
     # A task-drafted objective, or the host's Continue work order (its facts are
     # the host's; the owner's exact words ride ``owner_corpus``).
     if isinstance(author, dict) and author.get("kind") in {"task", "continuation"}:
+        # A carried list is a recorded boundary even when empty; an absent
+        # carrier here remains subject to legacy recovery and its gaps.
+        if isinstance(metadata.get("owner_corpus"), list) and not isinstance(existing, list):
+            ctx._owner_directives = []
         for row in metadata.get("owner_corpus") or []:
             if isinstance(row, dict) and row.get("source") in {
                     "owner_mailbox", "owner_quiz_answer", "origin_message", "owner_corpus", "direct_incoming",
