@@ -233,3 +233,29 @@ def test_legacy_saved_reply_coordinates_keep_live_debt_when_fresh_rows_overlap(t
     assert current._owner_directives == [ORIGINAL, saved["owner_directives"][0]]
     assert owner_source_sha256(current) != before
     assert current._owner_inherited_revision == 1 and owner_reply_owed(current)
+
+
+@pytest.mark.parametrize("recover_first", [True, False])
+def test_anonymous_carried_row_and_recovered_copy_are_one_source(tmp_path, monkeypatch, recover_first):
+    from ouroboros import task_results
+    anonymous = {"source": "initial_user", "content": "Exact anonymous original"}
+    metadata = {"objective_author": {"kind": "task"}, "followup_origin": {"task_id": "ancestor"},
+                "owner_corpus": [anonymous], "owner_corpus_gaps": ["old gap"]}
+    ready = recover_first
+    def load(*_a, **_k):
+        if not ready:
+            raise PermissionError("fixture initially unavailable")
+        return {"review_evidence": {"task_inputs": {
+            "owner_requirements_and_decisions": [anonymous], "owner_corpus_gaps": []}}}
+    monkeypatch.setattr(task_results, "load_task_result", load)
+    current = actor(tmp_path, metadata)
+    _initialize_owner_directives(current, current.messages)
+    ready = True
+    ensure_followup_owner_evidence(current)
+    assert len(current._owner_directives) == 1
+    assert current._owner_directives[0]["content"] == anonymous["content"]
+    assert current._owner_inherited_revision == 1 and not owner_reply_owed(current)
+    digest = owner_source_sha256(current)
+    _initialize_owner_directives(current, current.messages)
+    restore(current, save(current))
+    assert len(current._owner_directives) == 1 and owner_source_sha256(current) == digest

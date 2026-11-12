@@ -483,11 +483,11 @@ def _recover_followup_owner_evidence(ctx: Any) -> None:
     if groups and not gaps and not isinstance(getattr(ctx, "_owner_directives", None), list):
         ctx._owner_directives = []  # successful recovery can prove intentional absence
     for source_task, rows in reversed(groups if not gaps else []):
-        for index, row in enumerate(rows):
+        for row in rows:
             _record_owner_directive(ctx, source=row["source"], content=row.get("content"), media=row.get("media"),
                 owner_text=row.get("owner_text", ""),
                 inherited=True,
-                msg_id=str(row.get("msg_id") or f"retained:{source_task}:{index}"),
+                msg_id=str(row.get("msg_id") or ""),
                 origin={key: row[key] for key in ("source_task_id", "relayed_from_task_id", "quiz_id") if row.get(key)})
     owned_gaps = list(dict.fromkeys([*previous_gaps, *gaps])) if gaps else []
     ctx._owner_evidence_recovery = {"source_tasks": sorted(seen), "gaps": owned_gaps}
