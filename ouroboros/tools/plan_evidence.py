@@ -281,7 +281,11 @@ def resolve_evidence(
         # redaction is disclosed on the row.
         from ouroboros.tools.review_helpers import redact_prompt_secrets
 
-        payload["text"], redacted = redact_prompt_secrets(payload["text"])
+        # Host chat readers return already-masked JSONL (live or retained).
+        # A prose redactor here would consume its framing a second time.
+        redacted = False
+        if kind != "chat":
+            payload["text"], redacted = redact_prompt_secrets(payload["text"])
         head_bytes = len(payload["text"].encode("utf-8"))
         if head_bytes > remaining:
             omissions.append({"locator": locator, "reason": "budget_exhausted"})

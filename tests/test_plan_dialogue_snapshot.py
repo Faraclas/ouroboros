@@ -22,6 +22,38 @@ from tests.test_plan_task_tool import harness as _plan_task_harness
 
 harness = _plan_task_harness
 
+
+@pytest.mark.parametrize("model", ["openai/test-model", "anthropic/test-model"])
+def test_plan_preparation_dispatches_complete_masked_room_without_provider(harness, model):
+    """The real handler prepares/persists its source before a fenced substrate."""
+    from hashlib import sha256
+    from ouroboros import plan_record
+    from tests.test_plan_task_tool import _slots
+
+    harness.state["slots"] = _slots(("s1", model))
+    ctx = harness.make_ctx()
+    ctx.current_chat_id = 1
+    dialogue_store.append(harness.drive, "chat", {"direction": "in", "chat_id": 1,
+        "text": 'Keep café "quoted" \\path\nhttps://example.invalid/?token=synthetic123',
+        "ts": "2026-09-01T10:00:00Z"})
+    substrate = harness.install({"s1": CLEAN})  # no network/provider executor
+    text, result = _write(ctx, ask=["s1"], attach=["chat:1::lines=2-2"])
+    assert "PLAN_ASK_FAILED" not in text and result.status == "ok"
+    assert len(substrate.calls) == 1
+    [ask] = plan_record.load_plan_record(harness.drive, ctx.task_id)["asks"]
+    ref = ask["dialogue_ref"]["ref"]
+    raw = read_actor_source_bytes(harness.drive, ctx.task_id, ref)
+    rows = [json.loads(line) for line in raw.decode().split("\n") if line]
+    assert len(rows) == 2 and rows[0]["rows"] == 1
+    assert rows[1]["author"] == "User" and 'Keep café "quoted" \\path\n' in rows[1]["text"]
+    assert "synthetic123" not in raw.decode()
+    assert sha256(raw).hexdigest() == ask["dialogue_ref"]["sha256"]
+    request = substrate.calls[0]["request"]
+    delivered = user_text(request.slot_messages["s1"][-1]["content"])
+    assert "synthetic123" not in delivered and "***REDACTED***" in delivered
+    # The attachment and automatic source both reached the fenced dispatch.
+    assert rows[1]["text"].replace("\n", "\n  ") in delivered
+
 _ASK = "plan-ask-task-1-a1"  # the request id plan_ask.prepare_ask gives a task's first ask
 
 
