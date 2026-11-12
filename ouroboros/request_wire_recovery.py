@@ -230,7 +230,7 @@ def _candidate_spec_for_action(
     action: Mapping[str, Any],
 ) -> WireCandidateSpec:
     dialect = infer_tool_dialect(payload)
-    effort = payload_effort(payload)
+    effort = payload_effort(payload) or "provider_default"
     if action.get("kind") == "replace_dialect":
         dialect = str(action.get("to") or dialect)
     elif action.get("kind") == "set_value":
@@ -723,11 +723,6 @@ def _wire_rejection(error: Any) -> _WireRejection:
                           str(rejected).lower() if rejected is not None else None, routing_step)
 
 
-def _status_and_message_from_exception(exc: BaseException) -> Tuple[Optional[int], str]:
-    evidence = _wire_rejection(exc)
-    return evidence.status, evidence.message
-
-
 def _context_overflow_evidence(error: Any) -> bool:
     try:
         from ouroboros.context_budget import CONTEXT_OVERFLOW_CODES
@@ -799,6 +794,12 @@ def _value_evidence(message: str) -> bool:
     return bool(tokens.intersection({"value", "tier"})) or any(
         marker in message for marker in _VALUE_REJECTION_MARKERS
     )
+
+
+def _value_rejection(evidence: _WireRejection) -> bool:
+    return (evidence.value_constraint or evidence.rejected_value is not None
+            or _value_evidence(evidence.message)
+            or evidence.code in {"invalid_value", "invalid_enum_value", "invalid_option"})
 
 
 def _classify_action(
@@ -878,7 +879,7 @@ def _classify_action(
     if effort_implicated and evidence.rejected_value is not None and evidence.rejected_value != current_effort:
         return None
     named_effort_value = _names_exact_effort_value(low, current_effort)
-    value_implicated = evidence.value_constraint or _value_evidence(low) or evidence.code in {"invalid_value", "invalid_enum_value", "invalid_option"}
+    value_implicated = _value_rejection(evidence)
     if (
         profile.provider == "anthropic"
         and profile.reasoning_carrier == "anthropic.disabled"
@@ -1144,33 +1145,25 @@ def plan_nonlearning_optional_retry(
         return None
     if _context_overflow_evidence(error):
         return None
-    if body_error:
-        if not isinstance(error, Mapping):
-            return None
-        raw_status = error.get("status_code", error.get("status", error.get("code")))
-        message = str(error.get("message") or "")
-        try:
-            status = int(raw_status) if raw_status is not None else None
-        except (TypeError, ValueError, OverflowError):
-            status = None
-    else:
-        if not isinstance(error, BaseException):
-            return None
-        status, message = _status_and_message_from_exception(error)
+    if not isinstance(error, Mapping if body_error else BaseException):
+        return None
+    evidence = _wire_rejection(error)
+    status, message = evidence.status, evidence.message
     if (
         status is None
         or not 400 <= status < 500
         or status in _NON_COMPATIBILITY_4XX
     ):
         return None
+    if any(token in evidence.code for token in ("quota", "rate_limit", "billing", "auth", "context", "policy")):
+        return None
     low = message.lower()
     if not any(marker in low for marker in (
         *_VALUE_REJECTION_MARKERS, *_CAPABILITY_REJECTION_MARKERS,
     )):
         return None
-    if _value_evidence(low):
+    if _value_rejection(evidence):
         return None
-    evidence = _wire_rejection(error)
     if _parameter_filter_refusal(evidence):
         filtered = _parameter_filter_drop(payload, evidence)
         if filtered is None:
@@ -1180,6 +1173,7 @@ def plan_nonlearning_optional_retry(
         named = [
             field for field in _NON_REASONING_OPTIONAL_FIELDS
             if field in payload and (
+                evidence.param in {field, field.replace(".", "_"), field.split(".")[-1]} if evidence.param else
                 (field in _error_tokens(low)) if field in {"stream", "stream_options"}
                 else (field in low or field.replace("_", ".") in low)
             )
@@ -1287,6 +1281,8 @@ def plan_next_wire_retry(
     )
     if dialect_retry is not None:
         return dialect_retry
+    if registered is not None:
+        return None  # A registered decline (including its action bound) is final, not a weaker prose retry.
     return plan_nonlearning_optional_retry(
         current,
         error=error,
