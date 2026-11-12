@@ -202,7 +202,7 @@ def continuation_state(ctx: Any, messages: list, trace: dict, usage: dict,
         "round_idx": round_idx, "tool_schemas": tool_schemas,
         **({"actor_loaded_tool_names": sorted(ctx._actor_loaded_tool_names)}
            if hasattr(ctx, "_actor_loaded_tool_names") else {}),
-        "seen": sorted(seen), "owner_directives": getattr(ctx, "_owner_directives", []),
+        "seen": sorted(seen), "owner_directives": getattr(ctx, "_owner_directives", None),
         "sleep_interaction_seen": dict(getattr(ctx, "_sleep_interaction_seen", None) or {}),
         "held_owner_messages": dict(getattr(ctx, "_held_owner_messages", None) or {}),
         "open_relays": dict(getattr(ctx, "_open_relays", None) or {}),
@@ -1106,7 +1106,9 @@ def restore_continuation_state(tools: Any, state: dict, messages: list, trace: d
     seen.update(state["seen"])
     ctx._loop_mailbox_seen_ids = seen
     ctx._sleep_interaction_seen = dict(state.get("sleep_interaction_seen") or {})
-    ctx._owner_directives = state["owner_directives"]
+    fresh_owner_rows = getattr(ctx, "_owner_directives", None)
+    fresh_inherited = int(getattr(ctx, "_owner_inherited_revision", 0) or 0)
+    ctx._owner_directives = state.get("owner_directives")
     # Legacy reply marks counted the whole corpus. Keep that coordinate system,
     # not a freshly seeded inherited count from this process's different input.
     ctx._owner_inherited_revision = int(state.get("delivery", {}).get("_owner_inherited_revision", 0) or 0)
@@ -1131,6 +1133,7 @@ def restore_continuation_state(tools: Any, state: dict, messages: list, trace: d
               if key in {"_acceptance_pending_review_choice", "_left_review_wait"}}
     for key, value in {**state["route"], **state["delivery"], **review}.items():
         setattr(ctx, key, value)
+    _restore_owner_evidence(ctx, fresh_owner_rows, fresh_inherited)
     from ouroboros.route_choice import restored_choice
 
     ctx.route_choice = restored_choice(ctx, state)  # a saved choice, else the legacy classification (D5)
@@ -1143,6 +1146,30 @@ def restore_continuation_state(tools: Any, state: dict, messages: list, trace: d
         if value.control_episode_seen or value.finalization_control not in {"candidate", "owner_revision_required"}:
             ctx._delivery_control_required = True
             value.control_episode_seen = True
+
+
+def _restore_owner_evidence(ctx: Any, fresh: Any, inherited: int) -> None:
+    """Compose startup evidence with saved cognition without changing saved reply coordinates."""
+    from ouroboros.owner_words import OWNER_SOURCES
+
+    saved = ctx._owner_directives
+    rows = list(saved) if isinstance(saved, list) else []
+    extra, overlapping_owner_rows = [], 0
+    for row in fresh if isinstance(fresh, list) else []:
+        if isinstance(saved, list) and (not isinstance(row, dict) or row.get("source") not in OWNER_SOURCES):
+            continue  # A fresh work-order/transcript projection is not additional owner evidence.
+        mid = row.get("msg_id") if isinstance(row, dict) else None
+        if row in rows or mid and any(isinstance(old, dict) and old.get("msg_id") == mid for old in rows):
+            overlapping_owner_rows += int(isinstance(row, dict) and row.get("source") in OWNER_SOURCES)
+        else:
+            extra.append(row)
+    if isinstance(saved, list) or isinstance(fresh, list):
+        ctx._owner_directives = extra + rows
+    # Startup inheritance can overlap saved live input. Subtract every overlap
+    # conservatively; never turn a saved unanswered row into inherited authority.
+    ctx._owner_inherited_revision += max(0, inherited - overlapping_owner_rows)
+    # Completeness belongs to this process's admitted metadata/source recovery,
+    # which already ran before restore; an old checkpoint cannot clear its gaps.
 
 
 def rebind_restored_route(tools: Any, state: dict, messages: list) -> tuple:

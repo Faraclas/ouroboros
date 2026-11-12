@@ -257,6 +257,8 @@ def _record_owner_directive(
     if stable_id:
         row["msg_id"] = stable_id
     row.update({key: str(value) for key, value in (origin or {}).items() if value})
+    if inherited and not stable_id and row in directives:
+        return  # Re-initialization may revisit a carried row without a mailbox id.
     directives.append(row)
     if inherited:
         from ouroboros.owner_words import OWNER_SOURCES
@@ -285,7 +287,9 @@ def _initialize_owner_directives(ctx: Any, messages: List[Dict[str, Any]]) -> No
     from ouroboros.owner_words import ensure_followup_owner_evidence
     ensure_followup_owner_evidence(ctx)  # recover legacy inputs before the first solve's source identity
     existing = getattr(ctx, "_owner_directives", None)
-    if isinstance(existing, list) and existing:
+    author = metadata.get("objective_author")
+    drafted = isinstance(author, dict) and author.get("kind") in {"task", "continuation"}
+    if isinstance(existing, list) and existing and not drafted:
         return
     from ouroboros.owner_quiz import late_answer_ref, late_answer_owner_text
     late = late_answer_ref(metadata.get("late_answer"))
@@ -297,10 +301,9 @@ def _initialize_owner_directives(ctx: Any, messages: List[Dict[str, Any]]) -> No
         _loop()._record_owner_directive(ctx, source="owner_quiz_answer", content=late_answer_owner_text(answered),
                                       origin={"source_task_id": late["task_id"], "quiz_id": late["quiz_id"]})
         return
-    author = metadata.get("objective_author")
     # A task-drafted objective, or the host's Continue work order (its facts are
     # the host's; the owner's exact words ride ``owner_corpus``).
-    if isinstance(author, dict) and author.get("kind") in {"task", "continuation"}:
+    if drafted:
         # A carried list is a recorded boundary even when empty; an absent
         # carrier here remains subject to legacy recovery and its gaps.
         if isinstance(metadata.get("owner_corpus"), list) and not isinstance(existing, list):
