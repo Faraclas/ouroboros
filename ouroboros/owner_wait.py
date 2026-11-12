@@ -231,6 +231,7 @@ def continuation_state(ctx: Any, messages: list, trace: dict, usage: dict,
             "_presence_selection_seq", "_presence_released",
             "_task_acceptance_sealed_fence_token", "_task_acceptance_sealed_fence_generation", "_owner_reply_revision",
             "_owner_message_sent",
+            "_owner_inherited_revision",
         ) if getattr(ctx, key, None) is not None},
         # The block keeps its stored name; the task-acceptance flags it once carried are gone
         # (a pre-fold continuation still has them: ``restore_continuation_state`` ignores them).
@@ -1106,6 +1107,9 @@ def restore_continuation_state(tools: Any, state: dict, messages: list, trace: d
     ctx._loop_mailbox_seen_ids = seen
     ctx._sleep_interaction_seen = dict(state.get("sleep_interaction_seen") or {})
     ctx._owner_directives = state["owner_directives"]
+    # Legacy reply marks counted the whole corpus. Keep that coordinate system,
+    # not a freshly seeded inherited count from this process's different input.
+    ctx._owner_inherited_revision = int(state.get("delivery", {}).get("_owner_inherited_revision", 0) or 0)
     ctx._held_owner_messages = dict(state.get("held_owner_messages") or {})
     ctx._open_relays = dict(state.get("open_relays") or {})
     ctx.unconfirmed_routing_acts = [dict(act) for act in state.get("unconfirmed_routing_acts") or [] if isinstance(act, dict)]
