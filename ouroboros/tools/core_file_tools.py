@@ -498,13 +498,13 @@ def _tree_list(ctx: ToolContext, binding: ResolvedResourceBinding, depth: int, i
             if hidden_by_policy(child) or (user_files and user_files_path_block_reason(ctx, child, operation="list")):
                 hidden += 1
                 continue
-            rel, link = shown(child), child.is_symlink()
+            link = child.is_symlink()
             is_dir = not link and child.is_dir()
             gap = ("symlink_not_followed" if link else "" if not is_dir else "depth_limit" if level >= depth
                    else "generated_not_descended" if binding.root in {"active_workspace", "system_repo", "skill_payload"} and child.name in SKIP_DIRS
                    else "protected_not_descended" if block_reason_for_path(ctx, child, "static_introspection", binding) else "")
             if gap:
-                gaps[gap].append(rel + ("/" if is_dir else ""))
+                gaps[gap].append(shown(child) + ("/" if is_dir else ""))
             elif is_dir:
                 queue.append((child, level + 1))
             if (include and is_dir) or not matches_include(child.name, include):
@@ -512,7 +512,7 @@ def _tree_list(ctx: ToolContext, binding: ResolvedResourceBinding, depth: int, i
             if len(entries) >= max_entries:
                 stop = "entry_cap"
                 break
-            entries.append(rel + ("/" if is_dir else ""))
+            entries.append(shown(child) + ("/" if is_dir else ""))
         stop = stop or ("scan_cap" if cut else "")
     rows: List[Dict[str, Any]] = [{"kind": stop, "detail": (
         f"stopped at {'max_scan' if stop == 'scan_cap' else 'max_entries'} after examining {scanned} entries; "
