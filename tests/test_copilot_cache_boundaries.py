@@ -365,3 +365,17 @@ def test_system_string_does_not_add_failure_retries(cache_wire, model, status):
         cache_wire.invoke([{'role': 'system', 'content': [marked('retained')]}], model=model)
     assert len(cache_wire.sent) == 1
     assert cache_wire.sent[0]['body']['messages'][0] == {'role': 'system', 'content': 'retained'}
+
+
+@pytest.mark.parametrize('asynchronous', [False, True])
+@pytest.mark.parametrize('stream', [False, True])
+def test_native_input_container_schema_refusal_keeps_marker_free_recovery(cache_wire, asynchronous, stream):
+    cache_wire.state.update(status=400, error=lambda body: bool(native_markers(body)),
+        error_body={'param': 'input[0].content', 'message': 'Input should be a valid string',
+                    'type': 'invalid_request_error'})
+    _, usage = cache_wire.invoke([{'role': 'system', 'content': [marked('stable')]}],
+                                 asynchronous=asynchronous, stream=stream)
+    assert len(cache_wire.sent) == 2
+    assert native_markers(cache_wire.sent[0]['body']) and not native_markers(cache_wire.sent[1]['body'])
+    assert usage['request_wire']['compatibility_learning'] == 'not_performed_translated_surface'
+    assert not (cache_wire.wire_root / 'state' / 'request_wire_compatibility.json').exists()

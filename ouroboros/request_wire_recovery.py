@@ -642,6 +642,12 @@ class _WireRejection:
     structured_param: str = ""
 
     @property
+    def permits_cache_hint_recovery(self) -> bool:
+        """A marker or its reshaped container may be refused, not an unrelated field."""
+        root = self.structured_param.partition(".")[0].partition("[")[0]
+        return not self.structured_param or root in {"cache_control", "messages", "system", "tools", "input"}
+
+    @property
     def permits_replay_fallback(self) -> bool:
         """Explicit unrelated fields own their error; missing binding stays compatible."""
         root = self.structured_param.partition(".")[0].partition("[")[0]
@@ -993,7 +999,8 @@ def _named_cache_hint(payload: Mapping[str, Any], evidence: _WireRejection, low:
     optional field of the loop in ``_classify_action``.
     """
     named = f"{evidence.param} {low}"
-    if "cache_control" not in named or not any(marker in low for marker in _HINT_REFUSAL_MARKERS):
+    if (not evidence.permits_cache_hint_recovery or "cache_control" not in named
+            or not any(marker in low for marker in _HINT_REFUSAL_MARKERS)):
         return ""
     for field, implicated in (
         ("cache_control.ttl", "ttl" in _error_tokens(named)),
@@ -1010,7 +1017,8 @@ def _field_less_hint_drop(payload: Mapping[str, Any], evidence: _WireRejection, 
     the request carries markers (a strict server refusing the one-part text list a marked row
     became, say). Like every reactive drop it is learned only if that retry succeeds; when it
     fails too, the markers are gone and the provider's own error stands."""
-    if (evidence.status in {400, 422} and any(marker in low for marker in _SCHEMA_VALIDATION_MARKERS)
+    if (evidence.permits_cache_hint_recovery and evidence.status in {400, 422}
+            and any(marker in low for marker in _SCHEMA_VALIDATION_MARKERS)
             and _field_is_present(payload, "cache_control")):
         return {"kind": "drop_field", "fields": ["cache_control"], "reason_code": "provider_unsupported_field"}
     return None
