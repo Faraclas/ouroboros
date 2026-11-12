@@ -480,6 +480,8 @@ def _recover_followup_owner_evidence(ctx: Any) -> None:
             break
     # Keep current owner answers beside ancestral words, never replace either.
     current_count = len(getattr(ctx, "_owner_directives", None) or [])
+    if groups and not gaps and not isinstance(getattr(ctx, "_owner_directives", None), list):
+        ctx._owner_directives = []  # successful recovery can prove intentional absence
     for source_task, rows in reversed(groups if not gaps else []):
         for index, row in enumerate(rows):
             _record_owner_directive(ctx, source=row["source"], content=row.get("content"), media=row.get("media"),

@@ -66,6 +66,15 @@ def test_task_draft_without_owner_evidence_remains_unattested(tmp_path):
     [record] = queue.list_scheduled_tasks(tmp_path / "data")["tasks"]
     assert record["owner_corpus"] == []
     assert record["task"]["metadata"]["objective_author"]["kind"] == "task"
+    from ouroboros.post_task_synthesis import capture_task_inputs
+    fresh = SimpleNamespace(task_id="empty-successor", drive_root=tmp_path / "data",
+                            task_metadata=queue._task_from_schedule(record)["metadata"],
+                            messages=[{"role": "user", "content": "task draft, not owner words"}])
+    _initialize_owner_directives(fresh, fresh.messages)
+    captured = capture_task_inputs(fresh, {"id": fresh.task_id}, fresh.drive_root, [])
+    assert captured["owner_requirements_and_decisions"] == []
+    assert captured["owner_corpus_gaps"] == []
+    assert "owner_requirements_and_decisions" not in captured["unavailable_sections"]
 
 
 def test_template_cannot_supply_owner_corpus(tmp_path):
