@@ -46,7 +46,7 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
 skills/browser_speech/, skills/device_voice/, skills/templates/ — built-ins (`skills/builtin.json`): speech engines (ui/stt.js, ui/tts.js) and the "+" starters
 skills/copilot-credits/, skills/project-orientation/, skills/project-boards/ — source-only UI backend seeds; normal install/grant/enablement, no migration of same-name external state (§13)
 supervisor/ — background thread inside server.py (§5)
-  active_activity.py — process-local direct actors/start phases/call observations for `/api/state`; private reply expectation/handoff facts, no queue rows (§3 Direct turns and the activity block)
+  active_activity.py — direct actors/phases/calls; bound-thread CPU in receipts/completed phase-watch rows (unknown across bindings/backdates); private reply expectation/handoff, no queue rows (§3)
   message_bus.py — local message bus for the Web UI and transport skills; re-exports the ingress names
   message_ingress.py — one accepted row per message id, its dispatch a durable obligation (§4 WebSocket chat)
   workers.py — worker pool: forkserver on Linux, spawn elsewhere, never fork (a child forked from the multi-threaded supervisor inherits a held import lock and wedges)

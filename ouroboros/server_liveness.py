@@ -412,6 +412,8 @@ class _TurnPhaseWatch:
     stands, and one ``direct_turn_stall_end`` once it advances (``then``: the next phase,
     ``stood_sec`` up to that phase's own stamp), the turn ends in it (``then: "ended"``, up
     to its end) or this watchdog stops (``then: "unwatched"``; a next one opens its own).
+    Completed same-binding endpoints add ``thread_cpu_sec``; onset/unwatched/foreign or
+    backdated endpoints cannot. Low CPU does not identify a particular waiting cause.
     Heartbeat age decides nothing: a turn blocked before its heartbeat starts and one
     blocked under a live heartbeat are watched alike, and the onset row only reports the
     heartbeat's age (null before it started). Journal only, as invariant 20 binds the
@@ -467,8 +469,10 @@ class _TurnPhaseWatch:
             then, until = "ended", execution.ended_at
         else:
             then, until = "unwatched", now
+        cpu = execution.phase_cpu(index, until) if then != "unwatched" else None
         self._journal({"type": "direct_turn_stall_end", **self._ids(execution), "phase": phase, "then": then,
                        "stood_sec": round(until - at, 1), "samples": sum(episode["samples"].values()),
+                       **({"thread_cpu_sec": cpu} if cpu is not None else {}),
                        "top_frames": _top_frames(episode["samples"]), "last_stack": episode["last_stack"]})
 
     @staticmethod

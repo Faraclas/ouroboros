@@ -50,6 +50,7 @@ DISPATCH_BASES = ("observed_send", "unobserved_call_start", "not_observed")
 DIRECT_TURNS_KEPT = 100  # the receipt ring's length: a memory bound, never a judgment
 _DIRECT_TURNS: Deque[Dict[str, Any]] = deque(maxlen=DIRECT_TURNS_KEPT)
 _RING_LOCK = threading.Lock()
+cpu_clock = time.thread_time
 
 
 def _iso(epoch: float) -> str:
@@ -88,7 +89,7 @@ class TurnExecution:
     owner_turn: bool = False
     execution_id: str = field(default_factory=lambda: f"turn_{uuid.uuid4().hex[:12]}")
     thread: Tuple[int, str] = field(default_factory=_calling_thread)
-    marks: List[Tuple[str, float]] = field(default_factory=lambda: [("accepted", time.monotonic())])
+    marks: List[Tuple[str, float]] = field(default_factory=list)
     call: Optional[Tuple[str, float, bool]] = None
     ended_at: Optional[float] = None
     accepted_at: str = ""
@@ -97,6 +98,45 @@ class TurnExecution:
     meter: Optional[Dict[str, Any]] = field(default=None, repr=False, compare=False)
     request_meter: Optional[Dict[str, Any]] = field(default=None, repr=False, compare=False)
     census: Dict[str, Any] = field(default_factory=dict)
+    _cpu_binding: Any = field(default_factory=lambda: (threading.current_thread(), object()), init=False, repr=False)
+    _cpu_marks: dict = field(default_factory=dict, init=False, repr=False)
+    _end_cpu: Any = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.marks:
+            at = time.monotonic()
+            self._cpu_marks["accepted"] = self._cpu_sample(at)
+            self.marks.append(("accepted", at))
+
+    def _cpu_sample(self, at: float) -> Any:
+        """Only this binding's executing thread can sample its CPU; no foreign clock reads."""
+        binding = self._cpu_binding  # thread and epoch are one immutable publication
+        if threading.current_thread() is not binding[0] or threading.get_ident() != self.thread[0]:
+            return None
+        try:
+            return (at, binding, cpu_clock())
+        except (OSError, NotImplementedError):
+            return None  # optional diagnostics cannot replace the turn's primary result
+
+    def phase_cpu(self, index: int, until: float, endpoint: Any = None) -> Optional[float]:
+        """CPU of a completed mark interval, or an explicitly supplied same-thread live endpoint.
+
+        Points precede mark/end publication. Exact monotonic endpoints and binding tokens must
+        agree; legacy marks, foreign frames, rebinding and backdated dispatch remain unknown.
+        The watchdog only reads these points, never samples its own thread on the turn's behalf.
+        """
+        marks = list(self.marks)
+        phase, at = marks[index]
+        start = self._cpu_marks.get(phase)
+        if index + 1 < len(marks):
+            end_phase, end_at = marks[index + 1]
+            endpoint = self._cpu_marks.get(end_phase) if end_at == until else None
+        elif self.ended_at is not None:
+            endpoint = self._end_cpu if self.ended_at == until else None
+        if (start is None or endpoint is None or start[0] != at or endpoint[0] != until
+                or start[1] is not endpoint[1] or until < at or endpoint[2] < start[2]):
+            return None
+        return round(endpoint[2] - start[2], 6)
 
     @property
     def phase(self) -> str:
@@ -104,12 +144,17 @@ class TurnExecution:
 
     def bind_thread(self) -> None:
         """The calling thread runs this execution from now on (a wake is admitted on its alarm's thread)."""
+        current = threading.current_thread()
+        if current is not self._cpu_binding[0]:
+            self._cpu_binding = (current, object())
         self.thread = _calling_thread()
 
     def advance(self, phase: str, at: Optional[float] = None) -> bool:
         if TURN_PHASES.index(phase) <= TURN_PHASES.index(self.phase):
             return False
-        self.marks.append((phase, time.monotonic() if at is None else at))
+        stamp = time.monotonic() if at is None else at
+        self._cpu_marks[phase] = self._cpu_sample(stamp) if at is None else None
+        self.marks.append((phase, stamp))
         if phase == "dispatched" and self.owner_turn:  # once per execution: facts only move forward
             try:
                 from ouroboros.update_generation_facts import observe_direct_dispatch
@@ -128,8 +173,9 @@ class TurnExecution:
             return
         call_id, phase = str(data.get("llm_call_id") or ""), data.get("phase")
         if phase == "started":
-            self.call = (call_id, time.monotonic(), False)
-            if self.advance("requested", self.call[1]) and self.owner_turn:
+            advanced = self.advance("requested")
+            self.call = (call_id, self.marks[-1][1] if advanced else time.monotonic(), False)
+            if advanced and self.owner_turn:
                 self.request_meter = store_timing.snapshot(self.meter)
             return
         if self.call is None or self.call[0] != call_id:
@@ -160,17 +206,26 @@ class TurnExecution:
         ``not_observed`` while none happened; ``dispatched_at`` from the monotonic delta once it did.
         ``meter``: counts at receipt publication, not a backdated phase's counts; ``request_meter``:
         the frozen counts at the first Main request, absent if none was seen. It excludes later call
-        bookkeeping, but is not a claim of physical dispatch. ``census``: the registry's count at entry."""
+        bookkeeping, but is not a claim of physical dispatch. ``census``: the registry's count at entry.
+        Optional ``phase_cpu_sec`` holds same-binding endpoint deltas only; missing is unknown,
+        not zero. CPU excludes offloaded threads/processes."""
         marks = list(self.marks)
+        endpoint = None
         if until is None:
             until = self.ended_at if self.ended_at is not None else time.monotonic()
+            if self.ended_at is None:
+                endpoint = self._cpu_sample(until)
         dispatched = marks[-1][0] == "dispatched"
         phases: Dict[str, float] = {}
+        phase_cpu: Dict[str, float] = {}
         for index, (phase, at) in enumerate(marks):
             if phase == "dispatched":
                 break
             end = marks[index + 1][1] if index + 1 < len(marks) else until
             phases[phase] = round(end - at, 3)
+            cpu = self.phase_cpu(index, end, endpoint)
+            if cpu is not None:
+                phase_cpu[phase] = cpu
         handler_wait = (marks[-1][1] if dispatched else until) - marks[0][1]
         row: Dict[str, Any] = {
             "type": "direct_turn", "chat_id": self.chat_id, "task_id": self.task_id,
@@ -181,6 +236,8 @@ class TurnExecution:
             "meter": store_timing.snapshot(self.meter), "census": dict(self.census)}
         if self.request_meter is not None:
             row["request_meter"] = dict(self.request_meter)
+        if phase_cpu:
+            row["phase_cpu_sec"] = phase_cpu
         if phases:
             row["slowest_phase"], row["slowest_phase_sec"] = max(phases.items(), key=lambda item: item[1])
         accepted = _epoch(self.accepted_at)
@@ -334,7 +391,9 @@ class DirectActivityRegistry:
         """Under the lock: the execution ends now, the instant a stall episode it stood in closes
         at; returns it when it was still registered (its receipt, if owed, is written after the lock)."""
         if execution is not None and self._executions.pop(execution.execution_id, None) is not None:
-            execution.ended_at = time.monotonic()
+            at = time.monotonic()
+            execution._end_cpu = execution._cpu_sample(at)
+            execution.ended_at = at
             return execution
         return None
 
