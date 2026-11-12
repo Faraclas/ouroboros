@@ -24,10 +24,11 @@ import pytest
 
 
 def test_bounded_path_set_discloses_its_omitted_count_and_a_durable_hash():
-    """Defect 1: `paths[:20]` used to drop data with NO record that anything was
-    dropped. The bound may stay; the SILENCE may not (BIBLE P1). Every bounded path
-    set now reports how many it omitted, plus a hash of the FULL normalized identity
-    set so the bounded list stays checkable against the whole thing."""
+    """Projection bounds disclose omissions from the retained canonical set.
+
+    Producer-to-store completeness is exercised by test_artifact_receipt_identity;
+    this hand-made receipt alone cannot establish what the writer retained.
+    """
     import hashlib
 
     from ouroboros._outcome_receipts import (
@@ -1083,9 +1084,8 @@ def test_every_receipt_writer_that_renders_a_check_stamps_its_rendering():
     assert stamped == 3, f"expected 3 check-writing receipt updates, found {stamped}"
 
 
-def test_the_masked_and_path_identities_have_no_mixed_version_hole():
-    """The same question asked of the other two identities. Neither has the hole, and both
-    reasons are structural rather than lucky."""
+def test_check_rendering_does_not_change_masked_or_path_identity():
+    """Check-rendering versions do not own masked or artifact-path identity."""
     from ouroboros import _outcome_receipts as R
 
     # MASKED: keys on `criterion_id` alone and never consults check text, so a rendering
@@ -1099,10 +1099,8 @@ def test_the_masked_and_path_identities_have_no_mixed_version_hole():
     assert R.unreconciled_masked([legacy_masked, versioned_clean]) == []
     assert R.receipt_disclosed_reconciliation_key(legacy_masked) == ("criterion_id", "c1")
 
-    # ARTIFACT PATHS: stored RAW by the writer and canonicalized by the READER, so both
-    # eras go through today's `canonical_path_set` and compare on equal terms. The one
-    # path-side change this phase made (dropping `.strip()`) was a comparator change, not
-    # a stored-format change, so it applies to old and new receipts alike.
+    # Check stamps do not alter path keys. Path completeness has its OWN namespace;
+    # these two unstamped path rows retain their historical comparison semantics.
     legacy_observation = {"status": "fail", "paths": ["report.md", "notes.md"]}
     versioned_observation = {"status": "observed", "paths": ["notes.md", "report.md"],
                              "check_rendering": R.CHECK_RENDERING_SHLEX_JOIN}

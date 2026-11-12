@@ -2,6 +2,10 @@
 
 Verification receipts are written only by ``tools/verify.py``; shell/process tools write
 none. Receipts reconcile by one typed identity key (kind + value), never across kinds.
+Artifact observations retain all input paths. ``paths_complete: True`` namespaces
+their path keys; absent stamps mean unknown historical completeness. Old keys/hashes
+and old-to-old comparisons stay unchanged, including their lost-tail ambiguity.
+New path-only observations cannot clear those old reds; criterion/check keys do not change.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from ouroboros.utils import truncate_review_artifact
 
 # How many observed paths one reviewer projection carries inline. The bound stays;
 # what may never happen is bounding SILENTLY — `receipt_identity_projection` always
-# emits the omitted COUNT and a durable hash of the FULL normalized path-set identity.
+# emits the omitted COUNT and a hash of the complete RETAINED path-set identity.
 IDENTITY_PATH_LIMIT = 20
 
 # A failed verification receipt (``status=="fail"``) is "reconciled" ONLY by a LATER
@@ -225,6 +229,7 @@ class ReceiptIdentity:
     check: str
     paths: tuple[str, ...]
     check_rendering: str = CHECK_RENDERING_UNVERSIONED
+    paths_complete: bool = False
 
     @property
     def key(self) -> tuple[str, str]:
@@ -293,12 +298,17 @@ class ReceiptIdentity:
     @property
     def paths_identity_source(self) -> str:
         """The INJECTIVE serialization of the path set that ``paths_identity_sha256``
-        hashes — empty when there is no path set, so a receipt without one claims no
-        hash. JSON rather than ``paths_text``: a path may legally contain a newline,
+        hashes, including its completeness namespace — empty without paths.
+        JSON rather than ``paths_text``: a path may legally contain a newline,
         and a line-joined rendering would hash ``["a\\nb"]`` and ``["a", "b"]``
         identically — a hash that cannot separate two different sets is not an
         identity."""
-        return json.dumps(list(self.paths), ensure_ascii=False) if self.paths else ""
+        if not self.paths:
+            return ""
+        # Old writers retained only the first 20 inputs. Keep their key unchanged,
+        # but never let a complete current set clear an unknowably truncated red.
+        source = ["complete", list(self.paths)] if self.paths_complete else list(self.paths)
+        return json.dumps(source, ensure_ascii=False)
 
 
 # THE closed set of reconciliation identity KINDS, in precedence order (most specific
@@ -340,6 +350,7 @@ def receipt_canonical_identity(receipt: Dict[str, Any]) -> ReceiptIdentity:
         check=canonical_command_text(receipt.get("check")),
         paths=canonical_path_set(receipt.get("paths")),
         check_rendering=receipt_check_rendering(receipt),
+        paths_complete=receipt.get("paths_complete") is True,
     )
 
 
@@ -625,6 +636,7 @@ def receipt_identity_projection(
         # renderings differ — without this the reviewer would see an unreconciled red beside
         # a byte-identical green and read the host as broken (round 8).
         "check_rendering": receipt_check_rendering(receipt),
+        **({"paths_complete": True} if identity.paths_complete else {}),
         # WHICH identity clears this receipt (`criterion_id` | `check` |
         # `artifact_paths` | `none`), and whether it is canonical TEXT, not an id. Read
         # off the SHARED mode-aware key `_reconciles`/`_reconciles_masked` compare, so a
