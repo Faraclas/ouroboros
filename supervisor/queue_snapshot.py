@@ -613,6 +613,14 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
                 project_hold = {"reason": "project_routing_fence_lookup_failed", "detail": (
                     "The schedule receipt was busy at restore; recovery is checked automatically when it is readable.")}
             saved_or_accepted = never_started(task) or isinstance(task.get("_working_recovery"), dict)
+            returning_saved = (str(task.get("id") or "") in returning_queue
+                               and isinstance(task.get("_working_recovery"), dict))
+            if returning_saved and not schedule_replay:
+                # Returning saved work is not first-dispatch replay. Its existing
+                # custody reader validates source/attempt/Project before release;
+                # a transient read must not create an independent Resume hold.
+                project_hold = project_hold or {"reason": "project_routing_fence_lookup_failed",
+                                                "detail": "The saved restart return needs continuation verification."}
             kept = retained_pending(task, sleep_hold_reason=sleep_hold_reason)
             if panicked and not current_stop(task):
                 # This also covers a planned delegate return under Project custody:
@@ -620,7 +628,9 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
                 row = hold_stopped_queue(dict(task), _queue().DRIVE_ROOT, stop_door)
             elif kept:
                 row = task
-            elif str(task.get("id") or "") in returning_queue and (saved_or_accepted and schedule_replay or recheck):
+            elif str(task.get("id") or "") in returning_queue and (
+                    returning_saved
+                    or never_started(task) and schedule_replay or recheck):
                 row = task  # the fresh Restart returns it: ordinary admission, at any age
             elif owner_restart and (never_started(task) and schedule_replay or recheck):
                 row = hold_for_owner_restart(dict(task), _queue().DRIVE_ROOT)
@@ -651,9 +661,14 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
     from supervisor.restart_retention import _record_refused_returns
 
     kept_ids = {str(task.get("id") or "") for task in retained}
-    _record_refused_returns(_queue().DRIVE_ROOT, {
-        str(task["id"]): "planned_handoff_not_retained" for task in snapshot_pending
-        if task.get("id") in set(transaction.get("task_ids") or []) and task["id"] not in kept_ids}, stop_door)
+    refused_returns = {str(task["id"]): "planned_handoff_not_retained" for task in snapshot_pending
+                       if task.get("id") in set(transaction.get("task_ids") or []) and task["id"] not in kept_ids}
+    for task in retained:
+        if str(task.get("id") or "") in returning_queue:
+            stop = current_stop(task)
+            if stop:
+                refused_returns[str(task["id"])] = str(stop.get("reason") or "return_held")
+    _record_refused_returns(_queue().DRIVE_ROOT, refused_returns, stop_door)
     return retained, unseen, consumed, prior_roots
 
 
