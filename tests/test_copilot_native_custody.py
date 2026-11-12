@@ -8,6 +8,7 @@ import pytest
 
 from ouroboros import net_transport as nt, request_wire_recovery as recovery, usage_accounting as ua
 from ouroboros.llm import LLMClient
+from ouroboros.send_clock import main_send_scope
 from tests.test_copilot_client_paths import target, native
 
 
@@ -95,7 +96,7 @@ def sdk_exchange(scope, bodies, *, asynchronous=False, stream=False, turn=None):
             result_messages = []
             with ua.usage_scope(scope):
                 for n in range(2):
-                    with recovery.request_wire_call_scope():
+                    with main_send_scope(None, canonical=messages), recovery.request_wire_call_scope():
                         payload = initial_payload(client, t, messages, stream)
                         result = await client._create_chat_completion_with_retries_async(remote.chat.completions.create, payload, t)
                         msg, usage = client._normalize_remote_response(result.model_dump(), t, skip_cost_fetch=True, wire_completion=result)
@@ -111,7 +112,7 @@ def sdk_exchange(scope, bodies, *, asynchronous=False, stream=False, turn=None):
             result_messages = []
             with ua.usage_scope(scope):
                 for n in range(2):
-                    with recovery.request_wire_call_scope():
+                    with main_send_scope(None, canonical=messages), recovery.request_wire_call_scope():
                         payload = initial_payload(client, t, messages, stream)
                         result = client._create_chat_completion_with_retries(remote.chat.completions.create, payload, t)
                         msg, usage = client._normalize_remote_response(result.model_dump(), t, skip_cost_fetch=True, wire_completion=result)
@@ -201,11 +202,12 @@ def test_supplied_image_detail_is_not_lost_or_invented(detail):
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("stream", [False, True])
-def test_rejected_receipt_strips_once_and_canonical_adopts(offline, asynchronous, stream):
+@pytest.mark.parametrize("param", [None, "input[1].encrypted_content", "messages.1.content"])
+def test_rejected_receipt_strips_once_and_canonical_adopts(offline, asynchronous, stream, param):
     import openai
     from ouroboros.send_clock import main_send_scope
     hm, t, client, sent = nt._openai_httpx_module(), target(), LLMClient(), []
-    replies = [native_turn(), (400, {"error": {"message": "reasoning item invalid", "type": "invalid_request_error"}}), native(), native()]
+    replies = [native_turn(), (400, {"error": {"message": "reasoning item invalid", "type": "invalid_request_error", "param": param}}), native(), native()]
     messages = [{"role": "user", "content": "fixture"}]
     def handler(request):
         sent.append(json.loads(request.content))
@@ -267,6 +269,31 @@ def test_retry_classification_is_carrier_and_failure_scoped(status):
     from ouroboros.copilot_responses import CopilotPendingResponse, CopilotRejectedResponse
     for failure in (CopilotPendingResponse({}), CopilotRejectedResponse({}, "refusal")):
         assert client._openrouter_signature_retry_kwargs(target(), payload, failure) is None
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("error", [
+    {"param": "unrelated_option", "message": "Unsupported parameter: unrelated_option"},
+    {"param": "temperature", "code": "invalid_value", "message": "temperature value is invalid", "value": 0.7},
+    {"param": "reasoning_effort", "message": "Invalid value high", "allowed_values": ["unrecognized-tier"], "value": "high"},
+])
+def test_unrelated_structured_rejection_preserves_native_history(offline, asynchronous, stream, error):
+    import openai
+
+    retained = []
+    def remember(n, messages):
+        if n == 0:
+            retained.append(messages)
+    # A permissive next reply exposes an unjustified retry rather than hiding
+    # it behind the provider returning the same error again.
+    with pytest.raises(openai.APIStatusError):
+        sdk_exchange(offline, [native_turn(), (400, {"error": error}), native()],
+                     asynchronous=asynchronous, stream=stream, turn=remember)
+    history = retained[0]
+    assert custody.COPILOT_NATIVE_KEY in history[1]
+    payload = initial_payload(LLMClient(), target(), history, stream)
+    assert any("OPAQUE_CIPHER" in json.dumps(row) for row in payload["messages"])
 
 
 @pytest.mark.parametrize("status,detail", [("incomplete", {"reason": "max_output_tokens"}), ("completed", None)])

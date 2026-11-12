@@ -638,6 +638,14 @@ class _WireRejection:
     # OpenRouter's typed routing receipt (``error.metadata.failed_routing_step``): the step
     # of the endpoint funnel that emptied the roster, e.g. "filter by parameters".
     routing_step: str = ""
+    # Provider binding is separate from a parameter inferred from enum prose.
+    structured_param: str = ""
+
+    @property
+    def permits_replay_fallback(self) -> bool:
+        """Explicit unrelated fields own their error; missing binding stays compatible."""
+        root = self.structured_param.partition(".")[0].partition("[")[0]
+        return not self.structured_param or root in {"messages", "input"}
 
 
 def _wire_rejection(error: Any) -> _WireRejection:
@@ -662,7 +670,8 @@ def _wire_rejection(error: Any) -> _WireRejection:
     except (TypeError, ValueError, OverflowError):
         status = None
     message = str(node.get("message") or str(error or "")).lower()
-    param = str(node.get("param") or getattr(error, "param", "") or "").lower()
+    param = str(node.get("param") or getattr(error, "param", "") or "").strip().lower()
+    structured_param = param
     code = str(node.get("code") or getattr(error, "code", "") or "").lower()
     metadata = node.get("metadata") if isinstance(node.get("metadata"), Mapping) else {}
     routing_step = str(metadata.get("failed_routing_step") or "").strip().lower()
@@ -675,7 +684,8 @@ def _wire_rejection(error: Any) -> _WireRejection:
             value_constraint = True
             prefix = message[:clause.start()]
             if re.search(r"\b(?:not|no|unsupported|disallowed)\s*$", prefix):
-                return _WireRejection(status, message, param, code, value_constraint=True)
+                return _WireRejection(status, message, param, code, value_constraint=True,
+                                      structured_param=structured_param)
             if not param:
                 fields = {*OPTIONAL_REQUEST_FIELDS, "reasoning", "reasoning.effort",
                           "extra_body.reasoning", "extra_body.reasoning.effort", "output_config.effort", "thinking.type"}
@@ -720,7 +730,7 @@ def _wire_rejection(error: Any) -> _WireRejection:
         scalar = re.search(r"\b(?:value|tier)\s+['\"]?([a-z][a-z0-9_-]*)", message)
         rejected = scalar.group(1) if scalar and scalar.group(1) in EFFORT_SCALE else None
     return _WireRejection(status, message, param, code, allowed, value_constraint,
-                          str(rejected).lower() if rejected is not None else None, routing_step)
+                          str(rejected).lower() if rejected is not None else None, routing_step, structured_param)
 
 
 def _context_overflow_evidence(error: Any) -> bool:

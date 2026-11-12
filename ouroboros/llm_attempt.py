@@ -30,7 +30,7 @@ from ouroboros.context_budget import (
     CONTEXT_OVERFLOW_CODES, HOST_CONTEXT_KIND_KEY, HOST_TEXT_SHA_KEY, context_overflow_message,
 )
 from ouroboros.request_wire_contract import physical_candidate_bytes as _canonical_candidate_bytes
-from ouroboros.request_wire_recovery import prepare_wire_payload_for_send
+from ouroboros.request_wire_recovery import _wire_rejection, prepare_wire_payload_for_send
 from ouroboros.transport_custody import ProviderNotDispatched, is_loopback_base_url
 from ouroboros.tool_result_record import TOOL_RESULT_RECORD_KEY
 from ouroboros.review_history_view import REVIEW_HISTORY_MESSAGE_KEY, REVIEW_CONTEXT_INDEX_KEY
@@ -451,10 +451,12 @@ def processing_refusal(target: Dict[str, Any], payload: Dict[str, Any],
 
 
 def reasoning_strip_retry_allowed(exc: BaseException) -> bool:
-    """A 400 may omit replay unless an existing refusal/overflow path owns it."""
+    """An unbound or transcript-bound 400 may omit replay; other fields may not."""
     if getattr(exc, "stream_incomplete", False) or isinstance(exc, ProcessingNotStarted):
         return False
     if _is_structured_context_overflow_exception(exc) or _is_provider_policy_refusal(exc):
+        return False
+    if not _wire_rejection(exc).permits_replay_fallback:
         return False
     # The loop's size recovery owns textual overflow too, including aggregated errors.
     return not context_overflow_message(str(exc)) and _is_http_status(exc, 400)

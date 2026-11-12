@@ -49,6 +49,7 @@ from ouroboros.reasoning_artifacts import (
     transcript_has_sealed_reasoning,
 )
 from ouroboros.request_wire_recovery import (
+    _wire_rejection,
     note_wire_send_failed,
     note_wire_send_succeeded,
     plan_next_wire_retry,
@@ -395,7 +396,7 @@ class _RecoveryLadderMixin:
             code = int(body_err.get("code") or 0)
         except (TypeError, ValueError):
             code = 0
-        if code != 400:
+        if code != 400 or not _wire_rejection(body_err).permits_replay_fallback:
             return None
         if "encrypted content" not in str(body_err.get("message") or "").lower():
             return None
