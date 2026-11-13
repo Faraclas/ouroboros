@@ -51,6 +51,14 @@ _RETAINED = "Its work is retained; Resume continues it."
 GAP_ROWS = 20  # a membership gap names this many unattributed rows and counts all of them
 
 
+def recovery_fields(current: dict, task_id: str, episode_id: str, text: str) -> dict:
+    """Retain a recovery disclosure through the existing local-notice receipt owner."""
+    pending = dict(current.get("pause_notices") or {})
+    pending.setdefault(f"recovery:{task_id}:{episode_id}", {
+        "reason": "recovery", "text": text, "confirmed_at": utc_now_iso()})
+    return {"pause_notices": pending}
+
+
 def gap_fact(rows: list, prior: Any = None) -> dict:
     """The damaged rows a tree census tied to no tree, as one bounded fact (``membership_gaps``). Joined to
     ``prior`` (a closed Pause's fact, at its Resume) each row is named once, the Pause's first, and the count
@@ -78,6 +86,8 @@ def gap_words(gaps: Any, lead: str = "The Pause did not wait for") -> str:
 
 def notice_text(notice: dict) -> str:
     """The sentence one owed notice says; an owner Pause names the author its own fence declared."""
+    if notice.get("reason") == "recovery":
+        return str(notice["text"])
     if notice.get("reason") == "owner":
         by = notice.get("by") if isinstance(notice.get("by"), dict) else {}  # a notice saved before ``by``: nobody
         said = " ".join(str(by.get("text") or "").split())

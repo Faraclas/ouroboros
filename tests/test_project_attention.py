@@ -556,3 +556,31 @@ def test_recent_wake_published_cause_contract_includes_project_idle():
     from typing import get_args, get_type_hints
     from ouroboros.gateway.client_contracts import RecentWake
     assert set(get_args(get_type_hints(RecentWake)['cause'])) == {'own', 'focus', 'project_idle'}
+
+
+@pytest.mark.parametrize("newer", [False, True])
+def test_thread_start_refusal_keeps_opportunity_without_nonterminal_residue(runtime, monkeypatch, newer):
+    import threading
+    from ouroboros import agent, obligations, task_store
+    root, project, duty, queue, registry = runtime
+    body = Mock()
+    monkeypatch.setattr(agent, "make_agent", lambda **kw: SimpleNamespace(handle_task=body))
+    attention.note_admission(root, ordinary(project))
+
+    def refuse(thread):
+        if newer:
+            attention.note_admission(root, ordinary(project, "newer"))
+            attention.flush_admissions(root)
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    lap(duty)
+    assert duty.last_result[project["id"]]["reason"] == "admission_failed"
+    assert not body.called and not registry.actors()
+    assert episode(root, project["id"])["eligible"]
+    if not newer:
+        assert episode(root, project["id"])["pending"]
+    rows = task_store.list_documents(root)
+    failed = [row for row in rows if row.get("reason_code") == "wake_thread_start_failed"]
+    assert len(failed) == 1 and failed[0]["admission_outcome"] == "never_admitted"
+    assert not obligations.members(root, "nonterminal")

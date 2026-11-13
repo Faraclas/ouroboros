@@ -19,6 +19,8 @@ import time
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
+
 from supervisor import workers
 from supervisor.active_activity import get_direct_activity_registry
 
@@ -642,3 +644,81 @@ def test_a_wake_whose_thread_cannot_start_leaves_no_registered_turn(monkeypatch,
     receipt = workers.handle_wake_direct(1, "wake", dict(WAKE_META))
     assert receipt == {"admitted": False, "task_id": "", "reason": "admission_failed"}
     assert get_direct_activity_registry().snapshot() == []
+
+
+@pytest.mark.parametrize("project_idle", [False, True])
+def test_refused_wake_start_settles_the_named_result_and_obligations(monkeypatch, tmp_path, project_idle):
+    from ouroboros import agent as agent_module, obligations
+    from ouroboros.task_results import load_task_result
+    from supervisor import worker_chat_lane
+
+    _lane(monkeypatch, tmp_path)
+    body, finished, tasks = [], [], []
+    monkeypatch.setattr(agent_module, "make_agent", lambda **kw: SimpleNamespace(handle_task=body.append))
+    original = worker_chat_lane.name_wake_on_admission
+
+    def named(root, task):
+        tasks.append(task)
+        original(root, task)
+        assert task["id"] in obligations.members(root, "nonterminal")
+
+    monkeypatch.setattr(worker_chat_lane, "name_wake_on_admission", named)
+    metadata = dict(WAKE_META)
+    if project_idle:
+        metadata.update(wake_cause="project_idle", consciousness_cause="project_idle",
+                        project_attention={"name": "Example"})
+
+    def refuse(thread):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    receipt = workers.handle_wake_direct(1, "wake", metadata, bind_required=project_idle,
+        on_finished=lambda *args: finished.append(args))
+    assert receipt == {"admitted": False, "task_id": "", "reason": "admission_failed"}
+    assert len(tasks) == 1 and not body and not finished
+    task_id = tasks[0]["id"]
+    stored = load_task_result(tmp_path, task_id, strict=True)
+    assert stored["status"] == "failed", stored
+    assert stored["admission_outcome"] == "never_admitted"
+    assert stored["reason_code"] == "wake_thread_start_failed"
+    assert stored.get("terminal_origin") != "model_final"
+    assert stored["suggested_name"]
+    from ouroboros.terminal_projection import terminal_projection_owed
+    from ouroboros.owner_continue import TECHNICAL_REASON_CODES
+    assert not terminal_projection_owed(task_id, stored)
+    assert stored["reason_code"] not in TECHNICAL_REASON_CODES
+    for name in ("nonterminal", "synthesis", "terminal_projection"):
+        assert task_id not in obligations.members(tmp_path, name), name
+    assert get_direct_activity_registry().snapshot() == []
+
+
+@pytest.mark.parametrize("fields", [{"status": "cancelled"}, {"execution_owner": {"kind": "direct_chat"}},
+                                    {"started_at": TS}, {"outcome_axes": {"execution": {"status": "ok"}}}])
+def test_unstarted_wake_settlement_preserves_another_lifecycle(monkeypatch, tmp_path, fields):
+    from ouroboros.task_results import write_task_result, load_task_result
+    from supervisor.worker_chat_lane import conclude_unstarted_wake
+    write_task_result(tmp_path, "wake", "running", suggested_name="Own time")
+    status = fields.get("status", "running")
+    write_task_result(tmp_path, "wake", status, **{k: v for k, v in fields.items() if k != "status"})
+    before = load_task_result(tmp_path, "wake")
+    conclude_unstarted_wake(tmp_path, "wake")
+    assert load_task_result(tmp_path, "wake") == before
+    conclude_unstarted_wake(tmp_path, "absent")
+    assert load_task_result(tmp_path, "absent") is None
+
+
+def test_restart_after_wake_admission_settles_without_running_body(monkeypatch, tmp_path):
+    from ouroboros import agent as agent_module, server_restart, obligations
+    from ouroboros.task_results import load_task_result
+    _lane(monkeypatch, tmp_path)
+    body, finished, tasks = [], [], []
+    monkeypatch.setattr(agent_module, "make_agent", lambda **kw: SimpleNamespace(handle_task=body.append))
+    monkeypatch.setattr(server_restart, "agent_restart_holds", lambda task: True)
+    receipt = workers.handle_wake_direct(1, "wake", dict(WAKE_META), bind_input=tasks.append,
+        on_finished=lambda *args: finished.append(args))
+    assert receipt["admitted"] and _wait_for(lambda: bool(finished))
+    assert not body and finished == [(receipt["task_id"], False)]
+    row = load_task_result(tmp_path, receipt["task_id"], strict=True)
+    assert row["status"] == "failed" and row["reason_code"] == "wake_restart_pending"
+    assert row["admission_outcome"] == "never_admitted"
+    assert receipt["task_id"] not in obligations.members(tmp_path, "nonterminal")

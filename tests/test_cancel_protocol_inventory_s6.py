@@ -59,6 +59,8 @@ TERMINAL_WRITERS = {
     # refuses a status regression (_is_status_regression), so a stale read
     # cannot reopen a finished wake.
     ('supervisor/worker_chat_lane.py::name_wake_on_admission', 'current.get("status") or STATUS_RUNNING'): 'dynamic',
+    # A bare naming row ends only when the wake body definitively never began.
+    ('supervisor/worker_chat_lane.py::conclude_unstarted_wake', 'STATUS_FAILED'): 'terminal',
     # Names the mind's surviving notes after an applied fold; its locked projector
     # preserves CURRENT lifecycle, including terminal state, and writes only the pointer.
     ('ouroboros/main_context_authority.py::publish_working_notes', '"running"'): 'dynamic',

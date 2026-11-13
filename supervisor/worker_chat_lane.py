@@ -260,6 +260,25 @@ def name_wake_on_admission(drive_root: Any, task: dict) -> None:
         log.debug("wake admission title failed for %s", task.get("id"), exc_info=True)
 
 
+def conclude_unstarted_wake(drive_root: Any, task_id: str, reason: str = "wake_thread_start_failed") -> None:
+    """Settle admission naming after definite thread-start refusal, never another lifecycle.
+
+    Keep the named record as a host failure, not model output or a completed turn.
+    The existing terminal writer retires nonterminal obligations; never-admitted
+    records owe no completion message. Missing or already-settled rows stay untouched.
+    """
+    from ouroboros.task_results import STATUS_FAILED, STATUS_RUNNING, write_task_result
+
+    try:
+        write_task_result(drive_root, task_id, STATUS_FAILED,
+            reason_code=reason, admission_outcome="never_admitted",
+            _field_projector=lambda current, incoming: incoming
+                if current.get("status") == STATUS_RUNNING
+                and not any(current.get(key) for key in ("execution_owner", "started_at", "outcome_axes")) else None)
+    except Exception:
+        log.warning("Unstarted wake %s could not be concluded", task_id, exc_info=True)
+
+
 def _run_chat_task(
     agent: Any,
     chat_id: int,
@@ -595,8 +614,10 @@ def _execute_chat_task(admitted: Dict[str, Any]) -> bool:
                 execution.bind_thread()
                 execution.advance("started")  # the direct execution commits under the same lock as intent
         if deferred:
-            if not is_consciousness_origin(task):
+            if not is_consciousness_origin(task.get("metadata")):
                 _defer_chat_for_restart(task, chat_id, admitted.get("task_metadata"))
+            else:
+                conclude_unstarted_wake(_pool().DRIVE_ROOT, str(task["id"]), "wake_restart_pending")
             return False
         # The turn's live emits (loop_llm_call and friends publish
         # straight to the agent's event queue DURING handle_task) and its
@@ -820,6 +841,7 @@ def handle_wake_direct(
         # A registered turn nobody runs would read as a live owner turn forever.
         log.warning("wake turn %s could not start its thread", task_id, exc_info=True)
         admitted["registry"].unregister(task_id)
+        conclude_unstarted_wake(_pool().DRIVE_ROOT, task_id)
         return {"admitted": False, "task_id": "", "reason": "admission_failed"}
     return {"admitted": True, "task_id": task_id, "reason": ""}
 

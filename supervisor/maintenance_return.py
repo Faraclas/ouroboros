@@ -83,15 +83,31 @@ def _return_one(root, task):
     else:
         with mind_control(tid, "Returning explicitly maintenance-paused work after restart"):
             outcome = resume_budget_paused_task(tid, expected_owner_fence_id=str(fence["fence_id"]))
+    from ouroboros.pause_notices import recovery_fields
+    reason = {"_project_admission_restore_hold": "the original project identity needs verification",
+                  "_budget_pause_hold": "an independent pause still applies",
+                  "pause_not_settled": "the maintenance pause did not finish saving safely",
+                  "owner_pause_effects_unsettled": "previous effects have not settled"}.get(
+                      outcome.get("error"), str(outcome.get("error") or "unknown blocker").replace("_", " "))
+    text = ("Maintenance recovery returned this work to the queue; execution has not yet been confirmed."
+                if outcome.get("ok") else f"Maintenance recovery kept this work held: {reason}. Check its task controls.")
+    if outcome.get("eligible_descendants") or outcome.get("held_descendants"):
+        text += " Its child work remains paused pending individual selection."
     def annotate(current):
         actual = current.get("owner_pause") or {}
+        notice = recovery_fields(current, root_id, f"{fence['fence_id']}:{_PROCESS_GENERATION}", text)
         if actual.get("fence_id") != fence["fence_id"] or actual.get("maintenance_return") != intent:
-            return None
+            return {**current, **notice}  # historical outcome, never overwrite a newer Pause
         # Field-only annotation: preserve the original pause/state timestamps.
         return {**current, "owner_pause": {**actual, "maintenance_return": {**intent,
-                "observed_generation": _PROCESS_GENERATION, "observed_at": utc_now_iso(), "outcome": outcome}}}
-    with launch_lock(source, root_id):
-        patch_document(source, root_id, annotate)
+                "observed_generation": _PROCESS_GENERATION, "observed_at": utc_now_iso(), "outcome": outcome}},
+                **notice}
+    try:
+        with launch_lock(source, root_id):
+            patch_document(source, root_id, annotate)
+    except Exception as exc:
+        # Resume has already answered: do not relabel an accepted selection as refused.
+        outcome = {**outcome, "notice_error": str(exc)}
     return {"task_id": tid, "title": str(task.get("title") or task.get("suggested_name") or tid), **outcome}
 
 
@@ -105,8 +121,6 @@ def resume_maintenance_pauses(root) -> list[dict]:
     """
     from supervisor import queue as q
     from ouroboros.installation_stop import installation_panic
-    from supervisor.message_bus import send_with_budget
-    from supervisor.state import load_state
     from ouroboros.utils import append_jsonl
     root = pathlib.Path(root)
     if installation_panic(root):
@@ -120,24 +134,20 @@ def resume_maintenance_pauses(root) -> list[dict]:
         except Exception as exc:
             outcome = {"task_id": str(task["id"]), "title": str(task.get("title") or task["id"]),
                        "ok": False, "error": "maintenance_authority_unavailable", "detail": str(exc)}
+            from ouroboros.pause_notices import recovery_fields
+            from ouroboros.task_store import patch_document
+            tid = str(task.get("root_task_id") or task["id"])
+            try:
+                patch_document(pathlib.Path(task.get("budget_drive_root") or root), tid,
+                    lambda current: {**current, **recovery_fields(current, tid,
+                        f"unavailable:{_PROCESS_GENERATION}",
+                        "Recovery could not read this task's saved recovery authority. "
+                        "No automatic return was confirmed; check its current task controls.")} if current else None)
+            except Exception as notice_exc:
+                outcome["notice_error"] = str(notice_exc)
         if outcome is not None:
             outcomes.append(outcome)
     if outcomes:
         append_jsonl(root / "logs" / "supervisor.jsonl", {
             "ts": utc_now_iso(), "type": "maintenance_return", "outcomes": outcomes})
-        chat = (load_state() or {}).get("owner_chat_id")
-        if chat is not None:
-            lines = ["Maintenance restart recovery:"]
-            for row in outcomes:
-                reasons = {"_project_admission_restore_hold": "the original project identity needs verification",
-                           "_budget_pause_hold": "an independent pause still applies",
-                           "pause_not_settled": "the maintenance pause did not finish saving safely",
-                           "owner_pause_effects_unsettled": "previous effects have not settled",
-                           "maintenance_authority_unavailable": "saved recovery authority could not be read"}
-                reason = reasons.get(row.get("error"), str(row.get("error") or "unknown blocker").replace("_", " "))
-                status = "returned to queue" if row.get("ok") else "still held: " + reason
-                lines.append(f"{row['title']}: {status}.")
-                if row.get("eligible_descendants") or row.get("held_descendants"):
-                    lines.append("Its child work remains paused pending individual selection.")
-            send_with_budget(int(chat), "\n".join(lines), role="system", system_type="startup_notice")
     return outcomes

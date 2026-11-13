@@ -825,6 +825,8 @@ TASK_CAUSE_PHRASES = {
     "reaper_wedged_worker_alive": "The task timed out and its worker could not be confirmed stopped",
     "workers_unavailable": "The worker pool was unavailable, so the task was not scheduled",
     "worker_pool_unavailable": "No worker was available to run the task",
+    "wake_thread_start_failed": "The wake's thread could not start; its body did not run",
+    "wake_restart_pending": "A restart prevented this wake from running",
     "worker_crash_signal": "The worker process running the task crashed",
     "worker_crash_retry_exhausted": "The worker process running the task kept crashing until its retries ran out",
     "worker_crash_owner_wait": "The worker process died while the task was waiting; completed actions were not retried",

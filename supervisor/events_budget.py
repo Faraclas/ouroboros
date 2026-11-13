@@ -909,6 +909,15 @@ def hold_budget_row(task: Dict[str, Any], *, reason: str, detail: str = "",
     policy = reason_policy(str(reason))
     if result_root is not None:
         try:
+            def project(current, incoming):
+                if existing_result_only and not current:
+                    return None
+                if reason == HOLD_SAVED_WORK:
+                    from ouroboros.pause_notices import recovery_fields
+                    incoming.update(recovery_fields(current, str(task["id"]), hold["held_at"],
+                        "The app stopped with this work saved. It was kept paused, not restarted automatically. "
+                        "Use Resume on this task when available; existing holds still apply."))
+                return incoming
             write_task_result(
                 result_root, str(task.get("id") or ""), STATUS_SCHEDULED,
                 reason_code=policy["ui_code"],
@@ -916,8 +925,7 @@ def hold_budget_row(task: Dict[str, Any], *, reason: str, detail: str = "",
                                 "resume_policy": "explicit_selection_same_seam", **hold},
                 # Restoring accepted work must not manufacture a scheduled
                 # receipt over missing/corrupt authority. Keep the queue hold.
-                _field_projector=(lambda current, incoming: incoming if current else None)
-                    if existing_result_only else None,
+                _field_projector=project,
                 strict_existing_dict=existing_result_only,
             )
         except Exception:
