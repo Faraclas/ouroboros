@@ -137,8 +137,8 @@ def test_confirmed_window_below_target_wins_even_when_target_fits(monkeypatch, t
 
 @pytest.mark.parametrize("profile,preferred,window,known,boundary", [
     ("owner_max", "max", 70_000, True, 70_000),  # capacity binds a Max route
-    ("owner_low", "low", 500_000, True, 250_000),  # the economy target binds Low
-    ("owner_low", "low", 0, False, 250_000),  # unknown capacity: the target alone binds
+    ("owner_low", "low", 500_000, True, 95_000),  # the economy target binds Low
+    ("owner_low", "low", 0, False, 95_000),  # unknown capacity: the target alone binds
 ])
 def test_low_water_margin_follows_the_binding_boundary(
     monkeypatch, tmp_path, profile, preferred, window, known, boundary,
@@ -240,7 +240,7 @@ def test_main_fit_plans_the_reply_allowance_and_keeps_the_capacity_trigger(monke
     assert nano.raw_input_tokens > 75_000 and nano.estimated_input_tokens == math.ceil(nano.raw_input_tokens * 0.9)
     assert nano.reply_allowance_tokens == 128_000 - nano.raw_input_tokens - math.ceil(128_000 / RECLAIM_LOW_WATER_DIVISOR)
     assert nano.capacity_deficit_tokens == max(0, nano.estimated_input_tokens + NANO_MIN_HEADROOM_TOKENS - 128_000)
-    assert nano.target_deficit_tokens == max(0, nano.estimated_input_tokens + NANO_MIN_HEADROOM_TOKENS - 85_000)
+    assert nano.target_deficit_tokens == max(0, nano.estimated_input_tokens + NANO_MIN_HEADROOM_TOKENS - 35_000)
 
     small = replace(plan, output_reserve_tokens=4_096)  # a local lane's quarter window is its own ceiling
     local = _measure(monkeypatch, tmp_path, plan=small, profile="owner_nano", mode="nano", messages=messages).measurement

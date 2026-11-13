@@ -64,7 +64,7 @@ def host_row_intact(row: Any) -> bool:
 # route capacity W, requests at most one useful reclaim pass, then sends best
 # effort. Crossing T never creates a task failure. Low 250K and Nano 85K are the
 # owner's choice of 2026-09-29.
-OWNER_LOW_TARGET_TOKENS = 250_000
+OWNER_LOW_TARGET_TOKENS = 95_000
 
 # Nano's owner-selected target sizes what the host adds to the request unasked (the
 # memory view floor, the book form, the schema selection, unsolicited tool output, the
@@ -75,7 +75,7 @@ OWNER_LOW_TARGET_TOKENS = 250_000
 # reply floor R of ``reply_allowance_tokens``; the reply itself follows the known
 # window up to the caller's ceiling (owner decisions 2026-10-05: Q1=A reply follows
 # the window, Q3=A slack W/8 on approximate counts).
-OWNER_NANO_TARGET_TOKENS = 85_000
+OWNER_NANO_TARGET_TOKENS = 35_000
 NANO_MIN_HEADROOM_TOKENS = 8_192
 
 # The owner's return-after-fold slack (L33 2=A): a recovery pass after a size refusal

@@ -19,8 +19,8 @@ def test_agent_context_budget_values_pinned():
     """Values are the SSOT; changing them is a deliberate, visible edit."""
     # Owner choice of 2026-09-29 (Low 250K, Nano 85K); the memory view's working room
     # is two low-water levels under a window, one under an owner Low/Nano target.
-    assert cb.OWNER_LOW_TARGET_TOKENS == 250_000
-    assert cb.OWNER_NANO_TARGET_TOKENS == 85_000
+    assert cb.OWNER_LOW_TARGET_TOKENS == 95_000
+    assert cb.OWNER_NANO_TARGET_TOKENS == 35_000
     assert cb.start_room_levels("integrator") == cb.start_room_levels("consciousness") == 2
     assert cb.start_room_levels("presence", focus_wake=True) == 2
     assert cb.start_room_levels("integrator", direct_chat=True) == cb.start_room_levels("presence") == 1

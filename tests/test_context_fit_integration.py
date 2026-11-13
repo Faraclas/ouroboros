@@ -90,7 +90,7 @@ def test_bare_env_low_keeps_p3_owner_max_but_gets_main_target(monkeypatch, tmp_p
         rendered_mode="low",
         round_id="exec:round:1",
     )
-    assert fit.measurement.target_total_tokens == 250_000
+    assert fit.measurement.target_total_tokens == 95_000
 
     monkeypatch.setenv("OUROBOROS_CONTEXT_MODE_AUTO_LOW", "false")
     assert config.get_owner_context_mode() == "low"

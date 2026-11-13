@@ -22,7 +22,7 @@ from ouroboros.chronicle_store import ChronicleStore
 from tests import _memory_inventory_shared as shared
 
 MAIN = {"id": "turn0001", "chat_id": 1}
-KID = {"id": "kid00001", "chat_id": 1, "delegation_role": "subagent"}
+KID = {"id": "kid00001", "chat_id": 1, "delegation_role": "subagent", "memory_view": {"story": True, "room_page": True}}
 HELPER = {"kind": "helper", "route": "configured-light"}
 OLD = "### Old memory retold by a helper before the update (not lived; "
 WHOLE = OLD + "exact sources readable by id)"
@@ -290,7 +290,7 @@ def test_the_story_is_byte_identical_for_every_integrator_and_changes_only_with_
     tasks = [MAIN, {"id": "rootA001", "chat_id": rooms["alpha"]}, {"id": "rootB001", "chat_id": rooms["beta"]},
              {"id": "wake0001", "chat_id": 1, "metadata": {"usage_category": "consciousness"}},
              {"id": "pres0001", "chat_id": 555, "metadata": {"presence": {"binding_id": "b"}}},
-             {"id": "kid00001", "chat_id": 1, "delegation_role": "subagent"}]
+             KID]
     clock = iter(f"2026-10-0{n}T00:00:00+00:00" for n in range(1, 9))
     monkeypatch.setattr("ouroboros.utils.utc_now_iso", lambda: next(clock))
     stories = {task["id"]: _story(tmp_path, task) for task in tasks}

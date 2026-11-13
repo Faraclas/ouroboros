@@ -30,7 +30,7 @@ def test_role_defaults_are_the_table_of_the_spec():
         "integrator": (True, True, True, True, "lines", "all", True, False),
         "consciousness": (True, True, True, True, "directory", "all", True, False),
         "presence": (True, True, True, False, "none", "room_and_global", True, False),
-        "child": (True, True, False, True, "none", "room_and_global", False, True),
+        "child": (False, False, False, True, "none", "room_and_global", False, True),
         "nanny": (False, True, False, True, "none", "room_and_global", False, True),
     }
     assert set(mv.ROLE_DEFAULTS) == set(table) == set(mv.ROLES)
@@ -67,7 +67,12 @@ def test_a_nanny_sees_no_story_and_an_api_child_does(tmp_path):
     nanny = mv.view_spec_for_task({"id": "n1", "chat_id": 1, "delegation_role": "subagent", **NANNY_ROUTE}, tmp_path)
     child = mv.view_spec_for_task({"id": "c1", "chat_id": 1, "delegation_role": "subagent", **API_ROUTE}, tmp_path)
     assert (nanny.role, nanny.story, nanny.knowledge, nanny.owner_words) == ("nanny", False, False, True)
-    assert (child.role, child.story, child.knowledge, child.owner_words) == ("child", True, False, True)
+    assert (child.role, child.story, child.room_page, child.knowledge, child.owner_words) == (
+        "child", False, False, False, True)
+    child_story = mv.view_spec_for_task(
+        {"id": "c2", "chat_id": 1, "delegation_role": "subagent", **API_ROUTE,
+         "memory_view": {"story": True, "knowledge": True}}, tmp_path)
+    assert (child_story.role, child_story.story, child_story.knowledge) == ("child", True, True)
 
 
 _FOCUS = {"initiator": "consciousness", "usage_category": "consciousness", "wake_cause": "focus",
@@ -149,7 +154,10 @@ def test_an_explicit_spec_is_taken_after_its_fields_check_and_a_bad_one_falls_ba
 # --- the helper's role line -----------------------------------------------------------------------
 
 def test_the_working_sources_line_lists_exactly_what_the_spec_loads():
-    child = dataclasses.replace(mv.ROLE_DEFAULTS["child"], room_id="1")
+    default_child = dataclasses.replace(mv.ROLE_DEFAULTS["child"], room_id="1")
+    default_loaded, default_missing = mv.working_sources_line(default_child).split("Loaded above: ", 1)[1].split(" Not loaded: ", 1)
+    assert "the top level of your story" in default_missing and "the page of your parent's room" not in default_loaded
+    child = dataclasses.replace(mv.ROLE_DEFAULTS["child"], room_id="1", story=True, room_page=True)
     line = mv.working_sources_line(child)
     assert line.startswith("## Working sources\n\nLoaded above: ") and line.endswith(mv.CHILD_ROLE_TEXT)
     loaded, missing = line.split("Loaded above: ", 1)[1].split(" Not loaded: ", 1)
@@ -188,7 +196,7 @@ def test_the_working_sources_line_lists_exactly_what_the_spec_loads():
 
 def test_before_activation_the_role_line_names_no_memory_item_as_loaded():
     """The line cannot disagree with the view; until the import the view holds none of my memory."""
-    child = dataclasses.replace(mv.ROLE_DEFAULTS["child"], room_id="1")
+    child = dataclasses.replace(mv.ROLE_DEFAULTS["child"], room_id="1", story=True, room_page=True)
     items = ("the top level of your story", "the page of your parent's room Project Alpha",
              "the words that started that work", "the memory marks of that room and global ones")
     pending = mv.MemoryViewSnapshot(spec=child, store_status={"state": "import_pending", "reason": "another importer"},
@@ -555,8 +563,9 @@ def test_main_room_page_shows_the_room_less_retellings_whole_to_a_nanny_and_the_
     wake = mv.capture_memory_view(tmp_path, wake_task, mv.view_spec_for_task(wake_task, tmp_path))
     assert wake.spec.room_id == "1" and wake.room == main.room  # the wake's Main is Main's integrator's
     assert mv.render_story(wake) == story
-    # A child starts with the top level of the life account: the same story, and a room page that repeats none of it.
-    kid = {"id": "kid1", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root1"}
+    # A child with explicit story/room_page starts with the top level of the life account.
+    kid = {"id": "kid1", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root1",
+           "memory_view": {"story": True, "room_page": True}}
     child = mv.capture_memory_view(tmp_path, kid, mv.view_spec_for_task(kid, tmp_path))
     assert mv.render_story(child) == story and "## This room (Main)" in mv.render_room(child)
     assert "Main talk." not in mv.render_room(child) and "A room-less era." not in mv.render_room(child)
@@ -583,7 +592,7 @@ def test_each_role_sees_its_parts_of_the_live_view(tmp_path):
     assert f"memory_read(room_id='{rooms['alpha']}', rows=true)" in live
     assert "alpha words" not in main_text and "beta words" not in main_text  # the Main turn keeps its one line per room
     child_task = {"id": "kid9", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root1",
-                  "metadata": words}
+                  "memory_view": {"story": True, "room_page": True}, "metadata": words}
     child, child_text = _view(tmp_path, child_task)
     assert mv.render_story(child).startswith("## My story\n") and "## This room (Main) — head " in child_text
     assert "  Old Main talk." in mv.render_story(child)  # the retold record is in its story, whole, as in Main's
@@ -591,7 +600,8 @@ def test_each_role_sees_its_parts_of_the_live_view(tmp_path):
     assert "## Live rooms" not in child_text and "Watch alpha" not in child_text and "Watch root1" in child_text
     assert child_text.startswith("## Words of my human that caused this work (verbatim)\n")
     assert "Find the cause" in child_text and "Find the cause" not in main_text
-    nanny_task = {**child_task, "id": "nan9", "configured_subagent": {"route": {"kind": "agent_session"}}}
+    nanny_task = {**child_task, "id": "nan9", "memory_view": {"story": False, "room_page": True},
+                  "configured_subagent": {"route": {"kind": "agent_session"}}}
     nanny, nanny_text = _view(tmp_path, nanny_task)
     assert mv.render_story(nanny) == "" and "Find the cause" in nanny_text and "### Retold before the update" in nanny_text
     assert "### Pages of this room" not in nanny_text and "### Pages of this room" not in child_text  # nothing sealed yet
@@ -662,7 +672,7 @@ def test_a_nanny_keeps_its_rooms_sealed_pages_on_its_room_page_and_a_child_reads
     nanny, nanny_text = _view(tmp_path, {**base, "id": "nan9", "configured_subagent": {"route": {"kind": "agent_session"}}})
     assert mv.render_story(nanny) == ""
     assert "I sealed the opening of Main." in _section(nanny_text, "### Pages of this room")
-    child, child_text = _view(tmp_path, base)
+    child, child_text = _view(tmp_path, {**base, "memory_view": {"story": True, "room_page": True}})
     assert "I sealed the opening of Main." in mv.render_story(child) and "### Pages of this room" not in child_text
     # A helper's draft reaches the nanny with its evidence, as the story prints it: who drafted it,
     # the host stamp of its tasks and the verified words it quotes — never as unattributed prose.

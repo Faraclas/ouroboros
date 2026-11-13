@@ -21,8 +21,8 @@ def _frame(**overrides):
 
 
 def test_owner_targets_and_an_explicit_working_level():
-    assert cb.OWNER_LOW_TARGET_TOKENS == 250_000
-    assert cb.OWNER_NANO_TARGET_TOKENS == 85_000
+    assert cb.OWNER_LOW_TARGET_TOKENS == 95_000
+    assert cb.OWNER_NANO_TARGET_TOKENS == 35_000
     # One level under the owner's targets, the full reply reserve (the arithmetic in the comment).
     low = cb.request_context_budget(window_tokens=1_050_000, output_reserve_tokens=65_536, non_memory_tokens=0,
                                     target_tokens=cb.OWNER_LOW_TARGET_TOKENS,
@@ -30,8 +30,8 @@ def test_owner_targets_and_an_explicit_working_level():
     nano = cb.request_context_budget(window_tokens=1_050_000, output_reserve_tokens=cb.NANO_MIN_HEADROOM_TOKENS,
                                      non_memory_tokens=0, target_tokens=cb.OWNER_NANO_TARGET_TOKENS,
                                      margin_count=1)
-    assert low["with_margin_tokens"] == 153_214 and low["without_margin_tokens"] == 184_464
-    assert nano["with_margin_tokens"] == 66_183 and nano["without_margin_tokens"] == 76_808
+    assert low["with_margin_tokens"] == 17_589 and low["without_margin_tokens"] == 29_464
+    assert nano["with_margin_tokens"] == 22_433 and nano["without_margin_tokens"] == 26_808
 
 
 @pytest.mark.parametrize("margin_count", [0, 1, 2])
@@ -107,9 +107,9 @@ def test_unknown_reply_space_is_an_optimistic_estimate_marked_unknown():
 
 
 @pytest.mark.parametrize("mode,owner_mode,expected", [
-    ("low", "low", (250_000, 65_536)),  # owner Low carries its target
+    ("low", "low", (95_000, 65_536)),  # owner Low carries its target
     ("low", "max", (None, 65_536)),  # task-local Low keeps Max's window
-    ("nano", "nano", (85_000, 8_192)),  # Nano: its target and its own minimum headroom
+    ("nano", "nano", (35_000, 8_192)),  # Nano: its target and its own minimum headroom
     ("nano", "max", (None, 8_192)),  # a Nano the window chose: its headroom, no owner target
     ("nano", "low", (None, 8_192)),
     ("max", "max", (None, 65_536)),
@@ -120,6 +120,6 @@ def test_context_mode_limits(mode, owner_mode, expected):
 
 def test_nano_reserve_is_the_reply_floor_never_above_the_callers_ceiling():
     # A local lane's quarter window (4,096 on 16K) is its own ceiling: the floor and the send agree on it.
-    assert cb.context_mode_limits("nano", "nano", 4_096) == (85_000, 4_096)
+    assert cb.context_mode_limits("nano", "nano", 4_096) == (35_000, 4_096)
     assert cb.context_mode_limits("nano", "max", 2_048) == (None, 2_048)
-    assert cb.context_mode_limits("low", "low", 4_096) == (250_000, 4_096)
+    assert cb.context_mode_limits("low", "low", 4_096) == (95_000, 4_096)

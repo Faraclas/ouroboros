@@ -470,7 +470,7 @@ def test_a_fallback_and_its_return_resend_the_shown_history_byte_for_byte_on_the
     sent = payloads[1]["messages"]
     notice = next(row["content"] for row in sent if str(row["content"]).startswith("[SYSTEM NOTICE]"))
     facts = [row["content"] for row in sent if str(row["content"]).startswith("[CONTEXT_FACTS]")]
-    assert f"window {width[fallback]:,}" in facts[-1] and "target 250,000" in facts[-1]  # the acting route, fresh
+    assert f"window {width[fallback]:,}" in facts[-1] and "target 95,000" in facts[-1]  # the acting route, fresh
     assert ("### Physical floor" in notice) == bool(built.low_projection.memory_facts["floor"]["steps"])
     rebound = [row for row in _drained(events) if row.get("checkpoint_kind") == "context_fit_route_rebound"]
     assert [(row["window_tokens"], row["view_kept"]) for row in rebound] == [(width[fallback], True), (width[primary], True)]
@@ -500,10 +500,12 @@ def _shown_low(main_call, monkeypatch, tmp_path, cut):
     """The owner's Low view on account-a, with the window or the Low target setting its one start budget
     (``budget``: this room's retold records about five times as long):
     ``(ctx, tools, events, windows, built)``. Account-b reports a 100,000-token window."""
+    from ouroboros import context_budget as cb
     from ouroboros.memory_view import snapshot_json
     from ouroboros.tool_policy import initial_tool_schemas
     from tests import _memory_view_synthetic as syn
 
+    monkeypatch.setattr(cb, "OWNER_LOW_TARGET_TOKENS", 250_000)
     actor = syn.actor("main")
     if cut == "budget":
         actor = dataclasses.replace(actor, room={**actor.room, "legacy": syn.room("1", legacy=23, legacy_chars=40_000)[
@@ -511,7 +513,7 @@ def _shown_low(main_call, monkeypatch, tmp_path, cut):
     ctx, _gateway, tools, events, plan, windows = _native(main_call, monkeypatch, tmp_path, view=snapshot_json(actor))
     # A Low-cut starting window must fit the fixed core/tool catalog. Its exact
     # size is incidental; keep the actual 100K Nano/deficit/tail oracles below.
-    windows.update({"account-a": 151_000 if cut == "window" else 1_000_000, "account-b": 100_000})
+    windows.update({"account-a": 160_000 if cut == "window" else 1_000_000, "account-b": 100_000})
     built = plan(windows["account-a"])
     assert built.initial_mode == "low" and built.low_projection.memory_facts["floor"]["by_budget"] > 0
     ctx.tools, ctx.context_fit_plan, ctx.active_context_mode = tools, built, "low"
@@ -549,9 +551,8 @@ def test_an_account_reprepare_that_selects_nano_narrows_the_shown_low_view_and_k
     whose window cannot hold Low even with my shortest memory, so Nano is selected: it narrows the view the
     task showed by that window alone, never the Nano view prepared at startup and never sent. Every address
     stays an address, the budget that took some of them is still the Low budget, and the tail is untouched."""
-    from ouroboros.context_budget import OWNER_LOW_TARGET_TOKENS
-
     ctx, tools, events, _windows, built = _shown_low(main_call, monkeypatch, tmp_path, cut)
+    from ouroboros.context_budget import OWNER_LOW_TARGET_TOKENS
     shown_floor = built.low_projection.memory_facts["floor"]
     tail, addressed = copy.deepcopy(ctx.messages[1:]), _addressed(built, "low")
     prepared = _reprepare_onto(ctx, "account-b")
@@ -587,10 +588,10 @@ def test_a_second_narrowing_in_nano_still_names_what_the_low_budget_took(main_ca
     with the Low target, and named as the Low budget's -- never a Nano budget's -- and nothing unfolds."""
     from ouroboros import loop
     from ouroboros import memory_floor as mf
-    from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS, OWNER_LOW_TARGET_TOKENS
     from ouroboros.loop_round_limits import _coarsen_memory_view
 
     ctx, _tools, events, windows, built = _shown_low(main_call, monkeypatch, tmp_path, "budget")
+    from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS, OWNER_LOW_TARGET_TOKENS
     by_budget = built.low_projection.memory_facts["floor"]["by_budget"]
     _reprepare_onto(ctx, "account-b")
     first = ctx.context_fit_plan
@@ -621,9 +622,8 @@ def test_a_second_narrowing_in_nano_still_names_what_the_low_budget_took(main_ca
 def test_a_selected_lower_view_with_an_unsent_ones_counts_still_carries_the_shown_budget(main_call, monkeypatch, tmp_path):
     """Unsent book forms share the start's memory choices. Selecting Nano later preserves the shown
     Low budget provenance, including when another projection already has the same floor counts."""
-    from ouroboros.context_budget import OWNER_LOW_TARGET_TOKENS
-
     ctx, _tools, _events, _windows, built = _shown_low(main_call, monkeypatch, tmp_path, "budget")
+    from ouroboros.context_budget import OWNER_LOW_TARGET_TOKENS
     frame = dict(window_tokens=100_000, known_window=True, ratio=1.0, output_reserve=built.output_reserve_tokens,
                  tool_schemas=ctx.tool_schemas, current_messages=ctx.messages)
     unsent = built.reproject_for_route(**frame, start_mode="nano").nano_projection.memory_facts["floor"]
@@ -655,8 +655,8 @@ def test_an_owner_max_task_in_task_local_low_rebinds_a_fallback_and_its_return_f
 
     ctx, gateway, tools, events, plan, windows = _native(main_call, monkeypatch, tmp_path, owner_mode="max",
                                                          view=snapshot_json(syn.actor("main")))
-    windows.update({"account-a": 151_000, "account-b": {"roomy": 900_000, "tight": 100_000}[fallback]})
-    built = dataclasses.replace(plan(151_000), initial_mode="low")  # the owner's Max plan, task-local Low shown
+    windows.update({"account-a": 160_000, "account-b": {"roomy": 900_000, "tight": 100_000}[fallback]})
+    built = dataclasses.replace(plan(160_000), initial_mode="low")  # the owner's Max plan, task-local Low shown
     low = built.messages_for("low")[0]
     assert built.preferred_mode == "max" and low != built.messages_for("max")[0]
     ctx.messages[:] = [*built.messages_for("low"), result()["message"],
@@ -919,8 +919,10 @@ def test_a_chosen_read_on_an_unknown_window_stays_whole_after_an_unmeasured_engi
     """Claudexor's private engine message is no provider-authored numeric limit. With no usable-input
     fact the chosen body stays whole, including on the configured fallback's larger known window."""
     import functools
+    from ouroboros import context_budget as cb
 
-    from ouroboros.context_budget import OWNER_LOW_TARGET_TOKENS
+    monkeypatch.setattr(cb, "OWNER_LOW_TARGET_TOKENS", 250_000)
+    OWNER_LOW_TARGET_TOKENS = cb.OWNER_LOW_TARGET_TOKENS
 
     task_text = "Read giant.txt whole and report its LAST line verbatim. Keep the old API alive."
     ctx, gateway, tools, events, plan, windows = _native(main_call, monkeypatch, tmp_path, task_text=task_text)

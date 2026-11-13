@@ -141,7 +141,7 @@ ROLE_DEFAULTS: Mapping[str, ViewSpec] = MappingProxyType({
     # A wake sees ordinary Main and one directory line per other room.
     "consciousness": ViewSpec("consciousness", live_rooms="directory"),
     "presence": ViewSpec("presence", origin_words=False, live_rooms="none", marks="room_and_global"),
-    "child": ViewSpec("child", room_lanes=False, live_rooms="none", marks="room_and_global", knowledge=False,
+    "child": ViewSpec("child", story=False, room_page=False, room_lanes=False, live_rooms="none", marks="room_and_global", knowledge=False,
                       owner_words=True),
     "nanny": ViewSpec("nanny", story=False, room_lanes=False, live_rooms="none", marks="room_and_global",
                       knowledge=False, owner_words=True),

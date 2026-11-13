@@ -257,10 +257,10 @@ def test_a_declared_input_child_carries_no_view_fact(tmp_path):
     assert not (memory.drive_root / "memory" / "chronicle").exists()  # no capture, no activation
 
 
-@pytest.mark.parametrize("route,story", [("api_model", True), ("agent_session", False)])
-def test_a_helpers_role_line_names_exactly_what_its_request_holds(tmp_path, route, story):
-    """The child (with my story) and the nanny (without): each loaded item is a section of the
-    request, each unloaded one is absent from it."""
+@pytest.mark.parametrize("route,story,room_page", [("api_model", False, False), ("agent_session", False, True)])
+def test_a_helpers_role_line_names_exactly_what_its_request_holds(tmp_path, route, story, room_page):
+    """The child (story=False, room_page=False) and the nanny (story=False, room_page=True):
+    each loaded item is a section of the request, each unloaded one is absent from it."""
     env, memory, rooms = world(tmp_path)
     helper = {"id": "kid", "chat_id": 1, "delegation_role": "subagent", "parent_task_id": "bound",
               "root_task_id": "bound", "configured_subagent": {"id": "h", "route": {"kind": route}}}
@@ -268,7 +268,9 @@ def test_a_helpers_role_line_names_exactly_what_its_request_holds(tmp_path, rout
     line = section(c, "## Working sources")
     loaded, missing = line.split("Loaded above: ", 1)[1].split(" Not loaded: ", 1)
     alpha = f"Project Alpha [chat_id={rooms['alpha']}]"
-    assert f"the page of your parent's room {alpha}" in loaded and f"## This room ({alpha})" in c
+    assert f"## This room ({alpha})" in c
+    assert (f"the page of your parent's room {alpha}" in loaded) == room_page
+    assert "the page of your parent's room" not in missing
     assert ("the top level of your story" in loaded) == story == ("## My story" in b)
     assert ("the top level of your story" in missing) == (not story)
     assert "the index arrives with your first delegation" in missing and "## Shared understanding" not in c
@@ -329,6 +331,7 @@ def test_a_nano_floor_names_only_the_path_its_own_request_sends(tmp_path, monkey
     env, memory, _rooms = world(tmp_path)
     task = {"type": "task", "text": "hi", **(MAIN if actor == "root" else {
         "id": "kid", "chat_id": 1, "delegation_role": "subagent", "parent_task_id": "bound", "root_task_id": "bound",
+        "memory_view": {"story": True, "room_page": True},
         "configured_subagent": {"id": "h", "route": {"kind": "api_model"}}})}
     (tmp_path / "registry").mkdir()
     registry = ToolRegistry(repo_dir=tmp_path / "registry", drive_root=tmp_path / "registry")
@@ -529,7 +532,7 @@ def test_the_task_input_pointer_is_a_physical_rescue_and_the_floor_counts_reside
     store = artifacts.store_actor_source_bytes
     monkeypatch.setattr(artifacts, "store_actor_source_bytes", lambda *a, **kw: writes.append(a) or store(*a, **kw))
     with pytest.raises(context_fit.MinimumViewUnfit, match="Core, assignment, resident control tools and work room") as unfit:
-        plan(heavy_meta, 1.0, full + 10_000)  # holds the request, not its ~21K start work room
+        plan(heavy_meta, 1.0, full + 5_000)  # holds the request, not its ~8.75K start work room
     assert not unfit.value.physical and writes == []
     assert not pointer(plan(heavy_meta, 1.0, full + 30_000)) and writes == []  # and with the room: text, as above
     # Owner 7A: a window that cannot hold the pointer request either names the impossible frame before any send.

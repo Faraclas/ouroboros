@@ -627,6 +627,7 @@ def build_knowledge_sections(
     *,
     project_id: str = "",
     warn_large: bool = False,
+    compact_overview: bool = False,
 ) -> List[str]:
     sections: List[str] = []
     # One mind keeps its authored common orientation across rooms. The generated
@@ -641,7 +642,13 @@ def build_knowledge_sections(
         overview = read_knowledge_note(global_address)
         overview_text = overview.source.text_at(overview.source.body_span) if overview.source else overview.text
         if overview_text.strip():
-            sections.append(f"## Shared understanding\n\nSource: knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global').\n\n" + overview_text)
+            if compact_overview:
+                sections.append(
+                    f"## Shared understanding (compact pointer — BIBLE P1 disclosed)\n\n"
+                    f"Full orientation ({len(overview_text)} chars) available via `knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global')`."
+                )
+            else:
+                sections.append(f"## Shared understanding\n\nSource: knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global').\n\n" + overview_text)
         else:
             sections.append(_SHARED_UNDERSTANDING_GAP)  # present but empty is still unauthored
     except FileNotFoundError:
@@ -1141,7 +1148,7 @@ def _capture_context_core(
         semi_stable_parts.append(always_on)
     # Knowledge leads the changing block (its edits never cost the cached story) and
     # rides only where the view holds it: a child or nanny reads it by knowledge_read.
-    head_parts = (build_knowledge_sections(context_env, project_id=resolve_project_id(task))
+    head_parts = (build_knowledge_sections(context_env, project_id=resolve_project_id(task), compact_overview=is_child)
                   if view_spec.knowledge else [])
     if design_nav:
         head_parts.append(design_nav)
@@ -1330,11 +1337,19 @@ def build_context_fit_plan(
 ) -> ContextFitPlan:
     """Compatibility wrapper over the cohesive context-fit implementation."""
     core = _capture_context_core(env, memory, task, review_context_builder, ctx, tool_registry)
+    task_meta = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    is_child = (
+        str(task.get("delegation_role") or task_meta.get("delegation_role") or "") == "subagent"
+        or bool(task.get("parent_task_id") or task_meta.get("parent_task_id"))
+    )
+    subagent_id = str(task.get("subagent_id") or task_meta.get("subagent_id") or "")
+    default_mode = ("nano" if subagent_id == "fast-scout" else "low") if is_child else (get_context_mode() or "low")
+    resolved_mode = str(preferred_mode or default_mode)
     return _build_context_fit_plan(
         env,
         core,
         task,
-        preferred_mode=str(preferred_mode or get_context_mode() or "max"),
+        preferred_mode=resolved_mode,
         route_resolver=_context_fit_route,
         tool_schemas=tool_schemas,
     )
