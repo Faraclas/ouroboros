@@ -350,7 +350,10 @@ def scenario(root, *, tree=False, managed=False):
         server = RecordedServer(clone, data, data / "settings.json", evidence, injection)
         try:
             server.start()
-            yield server, model, workspace, evidence
+            from ouroboros.install_identity import acting_as
+
+            with acting_as(data):  # observe the isolated installation this scenario launched
+                yield server, model, workspace, evidence
         except BaseException:
             (evidence / "failure.txt").write_text(traceback.format_exc(), encoding="utf-8")
             raise

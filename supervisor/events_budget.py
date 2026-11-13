@@ -912,7 +912,7 @@ def hold_budget_row(task: Dict[str, Any], *, reason: str, detail: str = "",
             def project(current, incoming):
                 if existing_result_only and not current:
                     return None
-                if reason == HOLD_SAVED_WORK:
+                if policy["cause"] == "app_stop":
                     from ouroboros.pause_notices import recovery_fields
                     incoming.update(recovery_fields(current, str(task["id"]), hold["held_at"],
                         "The app stopped with this work saved. It was kept paused, not restarted automatically. "

@@ -73,6 +73,30 @@ def test_app_stop_hold_is_retained_and_disclosed_locally_once(recovery):
     assert len(_dialogue.chat_rows(root)) == 1
 
 
+@pytest.mark.parametrize("reason", ["saved_work_hold", "owner_restart_hold", "saved_sleep_recovery"])
+def test_app_stop_policy_not_transport_spelling_selects_disclosure(recovery, reason):
+    from supervisor.events_budget import hold_budget_row
+    root, workers, sent = recovery
+    project, task = project_task(root, workers, "alpha")
+    hold_budget_row(task, reason=reason, result_root=root)
+    before = dict(task["_budget_pause_hold"])
+    pause_notices.reconcile_pause_notices(root)
+    rows = _dialogue.chat_rows(root)
+    assert len(rows) == 1 and rows[0]["chat_id"] == project["chat_id"]
+    assert "app stopped" in rows[0]["text"] and "Resume" in rows[0]["text"]
+    assert task["_budget_pause_hold"] == before
+
+
+@pytest.mark.parametrize("reason", ["owner", "panic_hold", "budget"])
+def test_other_stop_causes_do_not_acquire_an_app_stop_disclosure(recovery, reason):
+    from supervisor.events_budget import hold_budget_row
+    root, workers, sent = recovery
+    project, task = project_task(root, workers, "alpha")
+    hold_budget_row(task, reason=reason, result_root=root)
+    pause_notices.reconcile_pause_notices(root)
+    assert not _dialogue.chat_rows(root)
+
+
 def test_failed_recovery_append_stays_owed_and_retries_without_resuming(recovery, monkeypatch):
     from ouroboros import obligations
     from supervisor.restart_retention import hold_stopped_queue
