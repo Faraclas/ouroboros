@@ -514,6 +514,43 @@ def _hold(ctx, tool_name, reason, *, status="UNAVAILABLE"):
     return _Assessment(False, f"⚠️ {marker}: {reason}. This call was not checked. {next_step}", status=status)
 
 
+_ROOM_OWNER_MESSAGES, _ROOM_OWNER_CHARS = 8, 2000
+
+
+def _earlier_room_owner_messages(ctx, metadata, sources):
+    """The owner's recent words in this turn's own room, read from the retained room record.
+
+    A fresh owner-door turn carries only its newest message, so approval given earlier in the
+    same room (before a restart or stop) never reaches the checker. These rows are host-sourced
+    context for judgment, bounded and apart from the run's corpus; they grant nothing.
+    """
+    ref = metadata.get("origin_message_ref")
+    author = metadata.get("objective_author")
+    if not isinstance(ref, dict) or (isinstance(author, dict) and author.get("kind") in {"task", "continuation"}):
+        return [], None
+    chat_id = ref.get("chat_id")
+    if not isinstance(chat_id, int) or isinstance(chat_id, bool):
+        return [], None
+    try:
+        from ouroboros import dialogue_store as ds
+        from ouroboros.owner_words import _owner_row
+        from ouroboros.tool_access import canonical_data_root
+        from ouroboros.utils import truncate_within_limit
+
+        own = {str(r.get("content")) for r in sources if isinstance(r, dict)}
+        room = [e.row for e in reversed(ds.probe_rows(canonical_data_root(ctx), "chat", [("chat_id", chat_id)], limit=200))]
+        rows = [r for r in room if _owner_row(r) and r.get("client_message_id") != ref.get("client_message_id")
+                and str(r.get("text")) not in own]
+        # what a short owner answer ("lets do it", "continue") most plausibly answers: the agent's last reply
+        said = next((r for r in reversed(room) if r.get("direction") == "out" and not r.get("system_type")
+                     and str(r.get("text") or "").strip()), None)
+    except Exception:  # an unreadable room record only withholds context; it never blocks the check
+        return [], None
+    said = {"ts": said.get("ts", ""), "text": truncate_within_limit(str(said["text"]), _ROOM_OWNER_CHARS)} if said else None
+    return [{"ts": r.get("ts", ""), "text": truncate_within_limit(str(r["text"]), _ROOM_OWNER_CHARS)}
+            for r in rows[-_ROOM_OWNER_MESSAGES:]], said
+
+
 def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, ctx=None, resolved_binding=None,
                         image_parts=None):
     """Fixed host evidence, with authorship separate from semantic authorization."""
@@ -568,6 +605,7 @@ def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, 
                     image_parts=image_parts)}
                    if isinstance(row, dict) and "content" in row else row for row in sources]
     target = asdict(resolved_binding) if is_dataclass(resolved_binding) else resolved_binding
+    earlier_owner, agent_said = _earlier_room_owner_messages(ctx, metadata, sources) if kind == "owner" else ([], None)
     with _PRIOR_LOCK:
         root = _root_id(ctx)
         history = _PRIOR_VERDICTS.get(root, {})
@@ -599,7 +637,9 @@ def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, 
         "occasion": {"cause": occasion, "consciousness_cause": metadata.get("consciousness_cause"),
                      "origin_wake_task_id": metadata.get("origin_wake_task_id"), "focus": focus,
                      "sources": sources, "retained_host_sources": isinstance(directives, list),
-                     "source_recovery": getattr(ctx, "_owner_evidence_recovery", None)},
+                     "source_recovery": getattr(ctx, "_owner_evidence_recovery", None),
+                     **({"earlier_room_owner_messages": earlier_owner} if earlier_owner else {}),
+                     **({"agent_last_reply_in_room": agent_said} if agent_said else {})},
         "subject": {"tool": tool_name, "physical_target": target, "place": place},
         "standing_delegation": {"owner_rules": runtime_setting("OUROBOROS_SAFETY_OWNER_RULES", ""),
                                 "place_notes": notes, "consciousness_autonomy": autonomy},
