@@ -1,4 +1,4 @@
-"""A real verdict permits one deliberate identical speech re-issue, never a hold."""
+"""A DANGEROUS verdict permits one deliberate identical speech re-issue, never a hold; SUSPICIOUS speech just sends with its warning."""
 import pytest
 
 from tests._safety_fixtures import supervisor as supervisor_fixture
@@ -6,7 +6,19 @@ supervisor = supervisor_fixture
 
 
 @pytest.mark.parametrize("mode", ["advanced", "cyber_pro"])
-@pytest.mark.parametrize("status", ["SUSPICIOUS", "DANGEROUS"])
+@pytest.mark.parametrize("name", ["place_reply", "connector_send"])
+def test_suspicious_speech_sends_with_the_warning(supervisor, monkeypatch, mode, name):
+    h = supervisor
+    from ouroboros import tool_effects
+    monkeypatch.setattr(h.module, "get_runtime_mode", lambda: mode)
+    monkeypatch.setattr(tool_effects, "effect_of", lambda *a, **kw: tool_effects.ToolEffect("message", declared=True))
+    h.replies.append({"status": "SUSPICIOUS", "reason": "borderline"})
+    ok, message = h.module.check_safety(name, {"text": "hello", "destination": "room"}, ctx=h.ctx)
+    assert ok and "suspicious" in message.lower() and len(h.calls) == 1
+
+
+@pytest.mark.parametrize("mode", ["advanced", "cyber_pro"])
+@pytest.mark.parametrize("status", ["DANGEROUS"])
 @pytest.mark.parametrize("name", ["place_reply", "connector_send"])
 def test_speech_flag_retry_and_changed_subject(supervisor, monkeypatch, mode, status, name):
     h = supervisor

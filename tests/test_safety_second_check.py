@@ -54,7 +54,7 @@ def test_second_verdict_final_for_write(supervisor, second, allowed):
 def test_speech_returns_both_reasons_even_when_second_overturns(supervisor):
     h = supervisor
     h.values["OUROBOROS_SUBAGENTS"] = catalog()
-    h.replies.extend([{"status": "SUSPICIOUS", "reason": "first reason"}, {"status": "SAFE", "reason": "delegated"}])
+    h.replies.extend([{"status": "DANGEROUS", "reason": "first reason"}, {"status": "SAFE", "reason": "delegated"}])
     ok, msg = h.module.check_safety("place_reply", {"text": "hi"}, ctx=h.ctx)
     assert not ok and "first reason" in msg and "delegated" in msg
     assert h.module.check_safety("place_reply", {"text": "hi"}, ctx=h.ctx)[0]
