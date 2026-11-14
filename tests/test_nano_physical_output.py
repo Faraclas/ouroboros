@@ -182,7 +182,8 @@ def test_the_six_incident_requests_keep_the_whole_ceiling_on_their_known_million
         assert candidate["max_tokens"] == C
         with ua.bind_physical_attempt_context(_physical(capacity=None, density=INCIDENT_DENSITY)), request_wire_call_scope():
             hidden = llm_attempt._finalized_physical_candidate(target, _payload_with_bounded_estimate(estimate, tools), "chat.completions")
-        assert hidden["max_tokens"] == OWNER_NANO_TARGET_TOKENS - math.ceil(estimate * INCIDENT_DENSITY)  # 14,270 .. 14,065
+        assert hidden["max_tokens"] == max(8_192, OWNER_NANO_TARGET_TOKENS - math.ceil(estimate * INCIDENT_DENSITY))
+        assert hidden["max_tokens"] == 8_192  # 35K target is below these historical 70K inputs.
 
 
 def test_the_128k_class_passes_a_provider_that_counts_above_the_host_estimate(transport, monkeypatch):

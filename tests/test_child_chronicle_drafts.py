@@ -152,7 +152,7 @@ def test_a_child_whose_contract_withholds_chronicle_write_drafts_nothing(data, m
 def test_a_childs_account_and_selection_are_refused_and_the_mind_writes_them(data, monkeypatch, mode):
     """An account across rooms and its selection are the integrating mind's: a child's or nanny's is refused
     ``not_integrator`` through the real registry and nothing lands; the root publishes both and the child reads
-    the selected account in its story."""
+    the selected account when its story view is explicitly selected."""
     rows = chat(data)
     root = registry_for(data, "root0001")
     first = call(root, kind="page", text="The first arc.", covers={"from": addr(rows[0]), "to": addr(rows[1])})
@@ -171,7 +171,8 @@ def test_a_childs_account_and_selection_are_refused_and_the_mind_writes_them(dat
     assert account["ok"] and account["kind"] == "account" and account["sources"] == 2
     chosen = call(root, kind="selection", target_id=account["node_id"], replaces=[first["node_id"]], reason="through it")
     assert chosen["ok"] and chosen["replaces"] == 1
-    kid = {"id": "kid00001", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root0001"}
+    kid = {"id": "kid00001", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root0001",
+           "memory_view": {"story": True}}
     story = mv.render_story(mv.capture_memory_view(data, kid, mv.view_spec_for_task(kid, data)))
     assert "Both arcs, as I see them." in story and "The first arc." not in story and "The second arc." in story
     assert "1 story records told through this account (including nested selections); 2026-10-01 00:00 → 2026-10-01 00:00" in story

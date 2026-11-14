@@ -26,6 +26,7 @@ def _run_refusal(registry, messages, task, monkeypatch):
     from ouroboros.model_send_seal import persist_physical_candidate
 
     inputs = []
+    manifests = []
     monkeypatch.setattr(loop, "_maybe_inject_finalization_nudges", lambda *_a: False)
     monkeypatch.setattr("ouroboros.loop_llm_call._sleep_within_deadline", lambda *_a, **_kw: True)
 
@@ -41,7 +42,11 @@ def _run_refusal(registry, messages, task, monkeypatch):
             request = _attempt_request({"provider": "openai", "usage_model": kwargs["model"]}, candidate)
             attempt_id = f"continue-send-{len(inputs)}"
             persisted = persist_physical_candidate(registry._ctx.drive_root, task_id=task["id"],
-                attempt_id=attempt_id, candidate=candidate, candidate_facts={})
+                attempt_id=attempt_id, candidate=candidate, candidate_facts={
+                    "candidate_measurement_kind": "canonical_json_v1",
+                    "candidate_raw_sha256": request.candidate_raw_sha256,
+                    "candidate_raw_size_bytes": request.candidate_raw_size_bytes})
+            manifests.append((persisted["manifest_ref"], request))
             ua.adopt_physical_attempt_capture(ua.PhysicalAttemptCapture(
                 attempt_id, kwargs["model"], "openai", "settled", "canonical_json_v1",
                 candidate_manifest_ref=persisted["manifest_ref"], physical_context=request.physical_context,
@@ -50,11 +55,19 @@ def _run_refusal(registry, messages, task, monkeypatch):
                 candidate_context_sha256=request.candidate_context_sha256,
                 candidate_context_size_bytes=request.candidate_context_size_bytes))
             if len(inputs) == 2:
+                # A measured Low refusal forces the late-source rung rather than
+                # accepting whichever tiny metadata/floor shrink happens first.
+                detail = ("This model's maximum context length is 128000 tokens. However, you requested "
+                          "150000 tokens (84464 in the messages, 65536 in the completion)."
+                          if registry._ctx.active_context_mode == "low" else "Input exceeds context window")
                 raise httpx.HTTPStatusError("context_length_exceeded",
                     request=httpx.Request("POST", "https://fixture.invalid"),
                     response=httpx.Response(400, json={"error": {"code": "context_length_exceeded",
-                                                               "message": "Input exceeds context window"}}))
-            response = (call("read_file", {"path": "evidence.txt", "max_lines": 2000}, "read-evidence")
+                                                               "message": detail}}))
+            # Explicit whole-view choice: automatic Low95K delivery would address
+            # the read before the scripted refusal, leaving nothing for late rescue.
+            response = (call("read_file", {"path": "evidence.txt", "max_lines": 2000,
+                                          "max_chars": 100_000}, "read-evidence")
                         if len(inputs) == 1 else {"content": "Continue recovered."})
             return response, {"prompt_tokens": 100, "completion_tokens": 10, "cost": 0.0, "provider": "openai"}
 
@@ -64,6 +77,23 @@ def _run_refusal(registry, messages, task, monkeypatch):
         emit_progress=lambda *_a, **_kw: None, incoming_messages=queue.Queue(),
         task_id=task["id"], event_queue=queue.Queue())
     assert answer == "Continue recovered." and len(inputs) == 3
+    # The physical capture, not a later coarsened source checkpoint, retains
+    # each exact refused request. Check the actual durable CAS consumer.
+    from ouroboros.model_send_seal import verify_sealed_candidate
+    manifest_ref, request = manifests[1]
+    refused_candidate = _physical_candidate({key: inputs[1][key] for key in ("messages", "tools", "model")})
+    assert verify_sealed_candidate(registry._ctx.drive_root, task_id=task["id"], attempt_id="continue-send-2",
+        candidate=refused_candidate, manifest_ref=manifest_ref, raw_sha256=request.candidate_raw_sha256,
+        raw_size_bytes=request.candidate_raw_size_bytes) is None
+    # A passing fail-soft audit alone is insufficient: a changed refused body
+    # must be detected through the same durable CAS read, not silently accepted.
+    import copy
+    changed = copy.deepcopy(refused_candidate)
+    next(m for m in changed["messages"] if m.get("tool_call_id") == "read-evidence")["content"] += " lost-source mutation"
+    violation = verify_sealed_candidate(registry._ctx.drive_root, task_id=task["id"], attempt_id="continue-send-2",
+        candidate=changed, manifest_ref=manifest_ref, raw_sha256=request.candidate_raw_sha256,
+        raw_size_bytes=request.candidate_raw_size_bytes, record=lambda _fact: None)
+    assert violation and violation["divergence_class"] == "redaction"
     return inputs
 
 
@@ -99,6 +129,11 @@ def test_continue_brief_survives_overflow_relocation(tmp_path, monkeypatch, flag
     assert validate_task_authority_sources(env, task) == {}
     registry = ToolRegistry(repo_dir=env.repo_dir, drive_root=env.drive_root)
     registry._ctx.task_metadata = task["metadata"]
+    # Keep the real consumer schema/handler without an unrelated 64K catalog
+    # dominating a Low95K source-recovery fixture.
+    schemas = registry.schemas
+    monkeypatch.setattr(registry, "schemas", lambda core_only=False: [
+        row for row in schemas(core_only) if row["function"]["name"] == "read_file"])
     messages, _cap = build_llm_messages(env=env, memory=memory, task=task, ctx=registry._ctx)
     (env.repo_dir / "evidence.txt").write_text("Exact source with meaningful trailing evidence.\n" * 1000)
 
@@ -127,9 +162,9 @@ def test_continue_brief_survives_overflow_relocation(tmp_path, monkeypatch, flag
     assert len({request["model"] for request in inputs}) == 1
     assert inputs[1]["reasoning_effort"] == inputs[2]["reasoning_effort"]
     refused_read = next(m for m in inputs[1]["messages"] if m.get("tool_call_id") == "read-evidence")
-    # Nothing shown is addressable, so the second pass runs whole. Max turns its books into navigation, a change
-    # the one retry answers with the chosen read whole (owner 2A); Low has nothing else to give this unmeasured
-    # refusal, so the never-answered read alone takes the disclosed late rescue.
+    # Max's unmeasured refusal retries after book projection with the read whole.
+    # Low's measured deficit reaches late rescue; the raw read and authority stay
+    # retained even when its floor has reprojected before the source checkpoint.
     assert any(m.get("tool_call_id") == "read-evidence" for m in inputs[2]["messages"]) is (mode == "max")
     assert (refused_read in inputs[2]["messages"]) is (mode == "max")
     records = [m for m in registry._ctx.messages if _capsule_metadata(m)[1]]
@@ -139,5 +174,11 @@ def test_continue_brief_survives_overflow_relocation(tmp_path, monkeypatch, flag
         assert capsule["retention"] == "source_view"
         checkpoint = json.loads(read_actor_source_bytes(env.drive_root, task["id"], capsule["checkpoint_ref"]))
         assert refused_read in checkpoint["messages"], "the refused request's body stays exactly retrievable"
-        assert checkpoint["messages"] == inputs[1]["messages"]  # Low has no floor below it: the refused request itself
+        assert [m for m in checkpoint["messages"] if m["role"] != "system"] == [
+            m for m in inputs[1]["messages"] if m["role"] != "system"]
+        # Governance and identity remain exact; the dynamic physical-floor fact
+        # can change as Low95K reprojects before the rescue. The exact refused
+        # system is checked above through its own physical manifest/CAS.
+        assert checkpoint["messages"][0]["content"][:2] == inputs[1]["messages"][0]["content"][:2]
+        assert "predecessor_authority" in json.dumps(checkpoint["messages"][0])
     assert load_task_result(env.drive_root, "pred-1") == before, "recovery never rewrites predecessor authority"

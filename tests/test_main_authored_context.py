@@ -112,6 +112,12 @@ def test_retelling_instructions_and_authored_account_reach_next_send(main_loop, 
 
     f = main_loop
     monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", mode)
+    # This fixture tests authored-view delivery, not an ever-growing unrelated catalog.
+    # Keep the real schemas/handlers of both exercised tools; under Low95K the full
+    # catalog otherwise addresses inspect's JSON and the scripted model cannot parse it.
+    schemas = f.registry.schemas
+    monkeypatch.setattr(f.registry, "schemas", lambda core_only=False: [
+        row for row in schemas(core_only) if row["function"]["name"] in {"read_file", "compact_context"}])
     env, memory = _make_env_and_memory(tmp_path / "context")
     system = (Path(__file__).resolve().parents[1] / "prompts/SYSTEM.md").read_text(encoding="utf-8")
     env.repo_path("prompts/SYSTEM.md").write_text(system, encoding="utf-8")
@@ -180,6 +186,32 @@ def test_explicit_recent_count_compacts_older_units_with_authored_note(main_loop
     checkpoint = json.loads(read_actor_source_bytes(f.ctx.drive_root, "authored-main",
                                                   f.ctx._context_view_receipt["checkpoint_ref"]))
     assert [m["tool_call_id"] for m in checkpoint["messages"] if m.get("role") == "tool"] == [f"read-{i}" for i in range(4)]
+
+
+def test_low_full_catalog_inspection_is_retrievable_when_delivered_by_source(main_loop, tmp_path, monkeypatch):
+    """Do not hide the full-catalog Low pressure branch behind the focused fixture."""
+    from ouroboros import context
+    from tests.test_doc_context import _make_env_and_memory
+
+    f = main_loop
+    monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", "low")
+    env, memory = _make_env_and_memory(tmp_path / "full-catalog")
+    f.messages, _ = context.build_llm_messages(env, memory, {"id": "authored-main", "type": "task",
+        "text": "Inspect the retained evidence."}, ctx=f.ctx)
+    f.run([call("read_file", {"path": "evidence.txt"}, "read"),
+           call("compact_context", {"inspect": True}, "inspect"), {"content": "done"}])
+    delivered = next(m["content"] for m in f.inputs[-1]["messages"] if m.get("tool_call_id") == "inspect")
+    view = json.loads(next(line.removeprefix("RESULT_VIEW_JSON=") for line in delivered.splitlines()
+                          if line.startswith("RESULT_VIEW_JSON=")))
+    source = json.loads(next(line.removeprefix("FULL_RESULT_SOURCE_JSON=") for line in delivered.splitlines()
+                            if line.startswith("FULL_RESULT_SOURCE_JSON=")))
+    assert view["omitted_ranges"] and view["delivery"]["target_tokens"] == 95_000
+    exact = read_actor_source_bytes(f.ctx.drive_root, "authored-main", source)
+    import hashlib
+    assert hashlib.sha256(exact).hexdigest() == source["sha256"]
+    inspected = json.loads(exact)
+    assert inspected["view_revision"] and any(unit["kind"] == "tool" for unit in inspected["units"])
+    assert inspected["restore_checkpoint"], "a source-only inspection still provides exact restoration"
 
 
 def test_inspected_ids_override_count_and_new_owner_tail_survives(main_loop):

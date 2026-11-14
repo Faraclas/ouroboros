@@ -65,9 +65,13 @@ def test_an_exact_count_needs_no_slack_and_may_raise_an_over_cautious_estimate()
 
 
 def test_an_unknown_window_lets_the_owner_nano_target_stand_in():
-    assert _nano(70_730) == 14_270
+    assert OWNER_NANO_TARGET_TOKENS == 35_000
+    assert _nano(70_730) == NANO_MIN_HEADROOM_TOKENS
     assert _nano(91_677) == NANO_MIN_HEADROOM_TOKENS
-    assert _nano(OWNER_NANO_TARGET_TOKENS - C - 1) == C  # the target has room for the whole ceiling
+    # The smaller target cannot leave the 65K ceiling, even with no input.
+    assert _nano(0) == OWNER_NANO_TARGET_TOKENS
+    assert _nano(OWNER_NANO_TARGET_TOKENS - NANO_MIN_HEADROOM_TOKENS - 1) == NANO_MIN_HEADROOM_TOKENS + 1
+    assert _nano(OWNER_NANO_TARGET_TOKENS - NANO_MIN_HEADROOM_TOKENS) == NANO_MIN_HEADROOM_TOKENS
     assert _nano(70_730, owner=False) == C  # a Nano the window chose answers to the window alone
 
 
@@ -94,5 +98,5 @@ def test_low_and_max_always_get_the_caller_ceiling(window, input_tokens, raw):
 def test_the_slack_is_an_eighth_of_the_route_window_not_of_the_target():
     window = 128_000
     slack = math.ceil(window / RECLAIM_LOW_WATER_DIVISOR)
-    assert slack == 16_000  # the reclaim landing helper would say ceil(min(85,000, W) / 8) = 10,625
+    assert slack == 16_000  # the reclaim landing helper would use min(35,000, W), not the route window
     assert _nano(60_000, window=window) == window - 60_000 - slack

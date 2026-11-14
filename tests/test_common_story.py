@@ -6,8 +6,8 @@ to inform another account or to be folded locally. Selection is a separate act: 
 account in the story in place of the records it names, whose count, period and composition reader stay visible;
 their detail remains at exact source readers. A later correction, rejection or fold of a source is
 visible as not in the account; the account's own basis never changes, and a copied or missing
-source is a disclosed gap, not fabricated text. Root and child read the same account; a nanny
-reads none. Every rule is pinned in both directions on the shared world fixture; no test calls
+source is a disclosed gap, not fabricated text. Root and an explicitly story-selected child
+read the same account; a default child and a nanny carry no story. Every rule is pinned in both directions on the shared world fixture; no test calls
 a model or the network, and no real record, room or words of the owner's chronicle enters here.
 """
 from __future__ import annotations
@@ -28,8 +28,11 @@ from ouroboros.tools.registry import ToolContext
 from tests import _memory_inventory_shared as shared
 
 MAIN = {"id": "turn0001", "chat_id": 1}
-KID = {"id": "kid00001", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "turn0001"}
-NANNY = {**KID, "id": "nan00001", "configured_subagent": {"route": {"kind": "agent_session"}}}
+# These composition tests explicitly select the shared story, not the affordable child default.
+KID = {"id": "kid00001", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "turn0001",
+       "memory_view": {"story": True, "room_page": True}}
+NANNY = {**KID, "id": "nan00001", "memory_view": {},
+         "configured_subagent": {"route": {"kind": "agent_session"}}}
 HELPER = {"kind": "helper", "route": "configured-light"}
 G_TEXT = "Across Alpha and Main I learned the same lesson twice: count before promising."
 G2_TEXT = "Alpha's count and Beta's question were one question about trust."

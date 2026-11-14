@@ -2,8 +2,9 @@
 
 Children are scheduled by the real ``schedule_subagent`` and their first request is built
 by ``context.build_llm_messages``, as their worker builds it. Two children of different
-trees read one story: block B is the same bytes for both, and for Main: its story is the mind's.
-Two siblings of one parent read one room page and one block of the owner's words; a
+trees with an explicitly expanded memory view read one story: block B is the same bytes
+for both and Main. Defaults carry owner words and scoped marks, not that story/page.
+Two expanded siblings read one room page and one block of the owner's words; a
 child of another tree reads its own. Before the chronicle can be read a child still
 starts, with a visible gap and no model call. A forked child's own drive holds only its
 process: its story and its room page come from the canonical data root. A declared child
@@ -55,14 +56,18 @@ def _root(env, memory, task_id, chat_id, asked):
     return ctx
 
 
-def _schedule(ctx, objective, memory_mode="forked", **extra):
+def _schedule(ctx, objective, memory_mode="forked", *, expanded=False, **extra):
     """One real schedule: the supervisor's payload of the child, as its worker receives it."""
     result = _schedule_task(ctx, subagent_id="api-builder", objective=objective, expected_output="a list",
                             memory_mode=memory_mode, **extra)
     assert not result.startswith("⚠️"), result
     event = ctx.event_queue.get_nowait()
-    return build_scheduled_task_payload({**event, "tid": event["task_id"], "parent_id": ctx.task_id,
-                                         "text": event["objective"], "desc": event["objective"]})
+    payload = build_scheduled_task_payload({**event, "tid": event["task_id"], "parent_id": ctx.task_id,
+                                           "text": event["objective"], "desc": event["objective"]})
+    if expanded:
+        # This test explicitly selects the supported richer view after ordinary admission.
+        payload["memory_view"] = {"story": True, "room_page": True}
+    return payload
 
 
 def _start(env, payload):
@@ -83,8 +88,9 @@ def test_children_of_two_trees_share_block_b_and_siblings_share_the_room_page_an
     env, memory, rooms = world(tmp_path)
     alpha_root = _root(env, memory, "bound", 1, ASKED)  # bound to Project alpha by an owner message in Main
     beta_root = _root(env, memory, "tb", rooms["beta"], ASKED_BETA)
-    first, second = _schedule(alpha_root, "Count shelf one"), _schedule(alpha_root, "Count shelf two")
-    cousin = _schedule(beta_root, "Check the beta totals")
+    first, second = (_schedule(alpha_root, "Count shelf one", expanded=True),
+                     _schedule(alpha_root, "Count shelf two", expanded=True))
+    cousin = _schedule(beta_root, "Check the beta totals", expanded=True)
     assert first["metadata"]["governing_owner_words"] == second["metadata"]["governing_owner_words"]
     views = {name: _start(env, payload) for name, payload in (("first", first), ("second", second), ("cousin", cousin))}
     _a_main, b_main, _c_main, _cap = blocks(env, memory, MAIN)
@@ -141,7 +147,7 @@ def no_model_client(monkeypatch):
 def test_a_child_starts_with_a_visible_gap_when_its_chronicle_cannot_be_read(tmp_path, monkeypatch, no_model_client,
                                                                             failure, reason):
     env, memory, rooms = world(tmp_path)
-    child = _schedule(_root(env, memory, "bound", 1, ASKED), "Count shelf one")
+    child = _schedule(_root(env, memory, "bound", 1, ASKED), "Count shelf one", expanded=True)
 
     def unavailable(self, **_kw):
         if isinstance(failure, Exception):
@@ -176,7 +182,7 @@ def test_a_forked_child_reads_its_story_and_room_page_canonically_not_from_its_o
 
     env, memory, rooms = world(tmp_path)
     canonical = memory.drive_root
-    child = _schedule(_root(env, memory, "bound", 1, ASKED), "Count shelf one", memory_mode="forked")
+    child = _schedule(_root(env, memory, "bound", 1, ASKED), "Count shelf one", memory_mode="forked", expanded=True)
     fork = pathlib.Path(child["drive_root"])
     assert child["memory_mode"] == "forked" and fork != canonical
     assert pathlib.Path(child["budget_drive_root"]) == canonical
@@ -259,4 +265,28 @@ def test_a_declared_child_starts_with_the_owner_words_and_nothing_of_shared_memo
     shared_child = _schedule(root, "Count shelf two")
     _a, b, c, shared_cap = _start(env, shared_child)
     assert section(c, WORDS) == section(changing, WORDS) and shared_cap["memory_view"]["role"] == "child"
-    assert "## My story" in b and "  Alpha began." in b and "## Working sources" in c
+    assert "## My story" not in b and "  Alpha began." not in b and "## Working sources" in c
+    assert "top level of your story" in c and "other rooms' pages" in c
+
+
+def test_default_child_keeps_owner_words_and_marks_without_story_or_room_page(tmp_path):
+    env, memory, rooms = world(tmp_path)
+    from tests import _memory_inventory_shared as shared
+    store = ChronicleStore(memory.drive_root)
+    store.mark({"kind": "task", "task_id": "ta1"}, "Keep alpha's exact caution", shared.MIND,
+               room_id=str(rooms["alpha"]))
+    store.mark({"kind": "task", "task_id": "tb1"}, "Beta-only caution", shared.MIND,
+               room_id=str(rooms["beta"]))
+    store.mark({"kind": "task", "task_id": "root1"}, "Global exact caution", shared.MIND,
+               room_id="1", scope="global")
+    child = _schedule(_root(env, memory, "bound", 1, ASKED), "Count shelf one")
+    _a, b, c, cap = _start(env, child)
+    spec = mv.view_spec_for_task(child, memory.drive_root)
+    assert not spec.story and not spec.room_page and spec.owner_words
+    assert spec.marks == "room_and_global" and spec.room_id == str(rooms["alpha"])
+    assert "## My story" not in b and "Alpha began." not in b + c
+    assert "### Retold before the update" not in c and "### Open conversation since" not in c
+    assert "## Working sources" in c and "## This room" in c  # cheap room facts/origin, not its page
+    assert "Keep alpha's exact caution" in c and "Global exact caution" in c and "Beta-only caution" not in c
+    assert "\n  Count the alpha inventory\n  and name what is missing" in section(c, WORDS)
+    assert cap["memory_view"]["role"] == "child"
