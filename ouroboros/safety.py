@@ -551,6 +551,36 @@ def _earlier_room_owner_messages(ctx, metadata, sources):
             for r in rows[-_ROOM_OWNER_MESSAGES:]], said
 
 
+def _recipient_facts(ctx, tool_name, arguments):
+    """Host-sourced facts about the task a task-to-task message is addressed to.
+
+    The call carries only a task id; without these the checker cannot tell a room's own
+    engineer from a stranger. Facts only: no verdict, and an unlistable recipient is stated, not guessed.
+    """
+    if tool_name not in {"tell_task", "forward_to_worker"}:
+        return None
+    target = str(arguments.get("task_id") or "").strip()
+    if not target:
+        return None
+    try:
+        from ouroboros.peer_roster import host_listed_independent_root
+        from ouroboros.tool_access import canonical_data_root
+
+        row = host_listed_independent_root(canonical_data_root(ctx), target)
+    except Exception:
+        row = None
+    own_root = str(getattr(ctx, "root_task_id", "") or "")
+    if row is None:
+        # The roster lists independent roots only: a helper in the sender's own tree, an ended task or
+        # a mistyped id all look alike here, so nothing is claimed about the relation.
+        return {"task_id": target, "host_listed": False,
+                "note": "not an independent root in the host's roster (may be a helper in the sender's own "
+                        "tree, ended, or unknown); relation and liveness not established"}
+    keep = {key: row.get(key) for key in ("task_id", "title", "project_id", "project_name", "status", "origin")
+            if row.get(key)}
+    return {**keep, "host_listed": True, "same_task_tree": bool(own_root and own_root == target)}
+
+
 def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, ctx=None, resolved_binding=None,
                         image_parts=None):
     """Fixed host evidence, with authorship separate from semantic authorization."""
@@ -606,6 +636,7 @@ def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, 
                    if isinstance(row, dict) and "content" in row else row for row in sources]
     target = asdict(resolved_binding) if is_dataclass(resolved_binding) else resolved_binding
     earlier_owner, agent_said = _earlier_room_owner_messages(ctx, metadata, sources) if kind == "owner" else ([], None)
+    recipient = _recipient_facts(ctx, tool_name, arguments)
     with _PRIOR_LOCK:
         root = _root_id(ctx)
         history = _PRIOR_VERDICTS.get(root, {})
@@ -640,7 +671,8 @@ def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, 
                      "source_recovery": getattr(ctx, "_owner_evidence_recovery", None),
                      **({"earlier_room_owner_messages": earlier_owner} if earlier_owner else {}),
                      **({"agent_last_reply_in_room": agent_said} if agent_said else {})},
-        "subject": {"tool": tool_name, "physical_target": target, "place": place},
+        "subject": {"tool": tool_name, "physical_target": target, "place": place,
+                    **({"recipient": recipient} if recipient else {})},
         "standing_delegation": {"owner_rules": runtime_setting("OUROBOROS_SAFETY_OWNER_RULES", ""),
                                 "place_notes": notes, "consciousness_autonomy": autonomy},
         "earlier_verdicts": earlier,
@@ -1361,7 +1393,8 @@ def check_safety(
     allowed, message = assessment
     verdicts = getattr(assessment, "verdicts", ())
     if verdicts:
-        flagged_speech = speech and any(v["status"] != "SAFE" for v in verdicts)
+        # SUSPICIOUS speech is sent with its warning (owner decision, Nov14): only DANGEROUS holds a message.
+        flagged_speech = speech and any(v["status"] == "DANGEROUS" for v in verdicts)
         if not _remember(ctx, digest, tool_name, assessment, speech_refused=flagged_speech):
             assessment = _hold(ctx, tool_name, "This work's mandatory prior-verdict history is too large", status="TOO_LARGE")
             allowed, message = assessment
