@@ -141,6 +141,7 @@ def _episode(tmp_path, monkeypatch, model, selection):
     parent._ctx.workspace_root = workspace
     parent._ctx.workspace_mode = "external"
     parent._ctx.pending_events = []
+    parent._ctx._owner_directives = [{"source": "initial_user", "content": "OWNER_ASKED"}]
     parent._ctx.task_contract = build_task_contract({"task_contract": {
         "context": "INHERITED_PARENT_CONTEXT", "notes": "INHERITED_PARENT_NOTES",
         "review_notes": "INHERITED_PARENT_REVIEW", "constraints": "AUTHORITY_CONSTRAINT",
@@ -285,7 +286,7 @@ def test_native_loop_retains_first_position_then_cooperates_over_http(tmp_path, 
         for n, body in enumerate(bodies, 1):
             text = json.dumps(body, ensure_ascii=False)
             for marker in ("GOVERNANCE_SYSTEM", "GOVERNANCE_CONSTITUTION", "DECLARED_QUESTION",
-                           "DECLARED_FACTS", "AUTHORITY_CONSTRAINT", "OWN_PROCESS_OBSERVATION"):
+                           "DECLARED_FACTS", "AUTHORITY_CONSTRAINT", "OWN_PROCESS_OBSERVATION", "OWNER_ASKED"):
                 assert marker in text, (n, marker)
             if selection == "declared":
                 assert all(marker not in text for marker in FORBIDDEN), n
@@ -293,12 +294,15 @@ def test_native_loop_retains_first_position_then_cooperates_over_http(tmp_path, 
                 # The SAME exclusion predicate is RED for the ordinary baseline.
                 with pytest.raises(AssertionError):
                     assert all(marker not in text for marker in FORBIDDEN)
-                # A helper's view keeps knowledge out of the request: it reads it on demand.
+                # Shared children still omit knowledge and the legacy story by role default.
                 knowledge = ("INHERITED_GLOBAL_KNOWLEDGE", "INHERITED_PROJECT_KNOWLEDGE", "INHERITED_WORKPAD")
+                story = ("INHERITED_DIALOGUE",)
                 addressed = ("INHERITED_PREDECESSOR_BODY",)
-                assert all(marker in text for marker in FORBIDDEN
-                           if marker not in ("OTHER_TASK_PROCESS", *knowledge, *addressed)), n
-                assert not any(marker in text for marker in (*knowledge, *addressed)), n
+                missing = [marker for marker in FORBIDDEN
+                           if marker not in ("OTHER_TASK_PROCESS", *knowledge, *story, *addressed)
+                           and marker not in text]
+                assert not missing, (n, missing)
+                assert not any(marker in text for marker in (*knowledge, *story, *addressed)), n
                 brief = ep.task["task_contract"]["predecessor_authority"]
                 assert brief["omitted_fields"]["result"] == len("INHERITED_PREDECESSOR_BODY")
                 assert brief["source"]["arguments"] == {"task_id": "previous", "include_authority": True}
@@ -351,6 +355,7 @@ def test_pre_position_reads_and_mail_are_visible_broader_inputs(tmp_path, monkey
         for n, body in enumerate(bodies, 1):
             text = json.dumps(body, ensure_ascii=False)
             assert "GOVERNANCE_SYSTEM" in text and "DECLARED_FACTS" in text
+            assert "OWNER_ASKED" in text
             assert "INHERITED_BIOGRAPHY" not in text
             assert (marker in text) == (channel == "mailbox" or n >= 2)
         if channel == "mailbox":
