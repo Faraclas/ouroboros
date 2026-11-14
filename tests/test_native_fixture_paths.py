@@ -48,8 +48,12 @@ def test_unrewritten_long_host_metadata_is_still_measured_and_refused(main_call,
         plan(150_000)
     # This new test uses the ordinary root view (two work levels), unlike the
     # original victim cases' explicitly supplied Main view (one level).
-    values = re.search(r'(\d+) input \+ 65536 reply \+ 37500 work > 150000', str(failure.value))
-    assert values and int(values[1]) > 150_000 - 65_536 - 37_500, str(failure.value)
+    from ouroboros.context_budget import OWNER_LOW_TARGET_TOKENS, RECLAIM_LOW_WATER_DIVISOR
+    work = 2 * ((min(150_000, OWNER_LOW_TARGET_TOKENS) + RECLAIM_LOW_WATER_DIVISOR - 1)
+                // RECLAIM_LOW_WATER_DIVISOR)
+    assert OWNER_LOW_TARGET_TOKENS == 95_000 and work == 23_750
+    values = re.search(rf'(\d+) input \+ 65536 reply \+ {work} work > 150000', str(failure.value))
+    assert values and int(values[1]) > 150_000 - 65_536 - work, str(failure.value)
 
 
 def test_normalized_host_metadata_never_shrinks_protected_oversize_assignment(main_call, monkeypatch, tmp_path):

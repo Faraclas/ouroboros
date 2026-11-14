@@ -73,10 +73,10 @@ def test_main_max_and_nano_use_the_same_captured_book_bytes(tmp_path):
     assert _text(plan, "nano") == nano
 
 
-def test_child_keeps_biography_and_book_orientation_in_max(tmp_path):
+def test_child_keeps_identity_and_book_orientation_but_not_biography_by_default(tmp_path):
     env, core, task = _capture(tmp_path, {"delegation_role": "subagent"})
     text = _text(_plan(env, core, task, "max"), "max")
-    assert "My whole earlier biography." in text and "My complete identity." in text
+    assert "My whole earlier biography." not in text and "My complete identity." in text
     assert "How I keep work alive." in text and "How changes remain coherent." in text
     assert "Full mechanism and WHY." not in text
     assert "Parent's unselected current working note." not in text
@@ -86,6 +86,13 @@ def test_child_keeps_biography_and_book_orientation_in_max(tmp_path):
     assert "Work from this assignment first" in text and "name what you read in your report" in text
     assert "The shared biography is loaded above" not in text
     assert "parent's selected discussion" not in text
+
+
+def test_child_can_explicitly_select_biography_without_parent_scratchpad(tmp_path):
+    env, core, task = _capture(tmp_path, {"delegation_role": "subagent", "memory_view": {"story": True}})
+    text = _text(_plan(env, core, task, "max"), "max")
+    assert "My whole earlier biography." in text and "My complete identity." in text
+    assert "Parent's unselected current working note." not in text
 
 
 @pytest.mark.parametrize("mode", ["max", "low", "nano"])
