@@ -41,6 +41,16 @@ def test_mixed_source_launcher_is_told_to_restart_before_any_effect(setup_http, 
     from types import SimpleNamespace
 
     _app, drive = setup_http
+    # Retained jobs (even terminal ones) recompute age_seconds on every snapshot.
+    # Pin only that projection's clock: a second boundary is not an action effect.
+    snapshot_time = queue.datetime.now(queue.timezone.utc)
+
+    class SnapshotClock(queue.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return snapshot_time
+
+    monkeypatch.setattr(queue, 'datetime', SnapshotClock)
     before = queue.queue_snapshot()
 
     def forbidden(*args, **kwargs):
