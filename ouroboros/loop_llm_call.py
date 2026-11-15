@@ -1099,6 +1099,7 @@ def _context_fit_event_fields(usage: Dict[str, Any]) -> Dict[str, Any]:
         "context_raw_input_tokens": int(usage.get("_context_raw_input_tokens") or 0),
         "context_reply_allowance_tokens": int(usage.get("_context_reply_allowance_tokens") or 0),  # planned, not sent
         "context_target_total_tokens": usage.get("_context_target_total_tokens"),
+        "context_target_input_tokens": usage.get("_context_target_input_tokens"),
         "context_capacity_total_tokens": usage.get("_context_capacity_total_tokens"),
         "context_target_deficit_tokens": usage.get("_context_target_deficit_tokens"),
         "context_capacity_deficit_tokens": usage.get("_context_capacity_deficit_tokens"),

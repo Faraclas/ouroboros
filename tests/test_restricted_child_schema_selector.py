@@ -78,9 +78,11 @@ def _round(registry, resident):
 def test_an_omitted_permitted_schema_loads_stays_through_the_next_fit_and_dispatches(
         tmp_path, monkeypatch, extensions, profile, mode):
     registry = _child(tmp_path, monkeypatch, profile, mode, grants=extensions)
-    resident = initial_tool_schemas(registry, context_mode=mode)
+    # This is deliberately loaded pressure, not Low's compact starting view.
+    resident = initial_tool_schemas(registry, context_mode=mode, schema_names=_names(registry.schemas()))
     assert tool_schema_limit(OPENAI) == 128 < len(resident)
-    assert "enable_tools" in _names(resident) and "compact_context" not in _names(resident)
+    assert "enable_tools" in _names(resident)
+    assert ("compact_context" in _names(resident)) is (mode == "low")
     loop._setup_dynamic_tools(registry, resident, [], context_mode=mode)
     first = _round(registry, resident)
     assert loop_model_call._fit_route_tool_ceiling(first)
@@ -111,7 +113,7 @@ def test_a_fitting_catalog_keeps_its_envelope_and_the_selector_grants_nothing(tm
     registry = _child(tmp_path, monkeypatch, profile, mode)
     resident = initial_tool_schemas(registry, context_mode=mode)
     assert len(resident) <= 128 and "enable_tools" in _names(resident)
-    assert ("compact_context" in _names(resident)) is (mode == "nano")
+    assert ("compact_context" in _names(resident)) is (mode in {"low", "nano"})
     before = list(resident)
     loop._setup_dynamic_tools(registry, resident, [], context_mode=mode)
     assert loop_model_call._fit_route_tool_ceiling(_round(registry, resident)) is False
@@ -213,7 +215,7 @@ def test_a_cold_continuation_keeps_the_loaded_late_schema_and_a_callable_selecto
     from tests import test_continuation_tools as harness
 
     registry = _child(tmp_path, monkeypatch, profile, "low", grants=extensions)
-    first = initial_tool_schemas(registry, context_mode="low")
+    first = initial_tool_schemas(registry, context_mode="low", schema_names=_names(registry.schemas()))
     loop._setup_dynamic_tools(registry, first, [], context_mode="low")
     loop_model_call._fit_route_tool_ceiling(_round(registry, first))
     chosen = extensions[-1]
@@ -235,7 +237,10 @@ def test_a_cold_continuation_keeps_the_loaded_late_schema_and_a_callable_selecto
                            owner_wait_callback=lambda *_: "owner_input", model_wait_context=None).items():
         setattr(ctx, key, value)
     monkeypatch.setattr(harness, "Registry", lambda *_args: cold)
-    prepared = harness.prepare(tmp_path, monkeypatch, mode="low", frozen=frozen, loaded=[chosen],
+    # Explicitly loaded overflow preserves the ceiling-notice branch on cold
+    # adoption; a compact view is not required to refill a vanished schema.
+    prepared = harness.prepare(tmp_path, monkeypatch, mode="low", frozen=frozen,
+                               loaded=[chosen, *_names(registry.schemas())],
                                history=[{"role": "assistant", "tool_calls": [{"function": {"name": chosen}}]}])
     _tools, state, messages, _trace, enabled, _projections = prepared
     state["route"]["active_model"] = OPENAI

@@ -726,6 +726,7 @@ def context_facts_line(ctx: Any, *, money: Optional[Dict[str, Any]] = None,
     reserve = usage.get("_context_reply_allowance_tokens")
     capacity = usage.get("_context_capacity_total_tokens") if measured else None
     target = usage.get("_context_target_total_tokens") if measured else None
+    input_target = usage.get("_context_target_input_tokens") if measured else None
     # The task's own anchor outranks comparable same-model witnesses; its largest accepted input floors W.
     anchor, anchor_round = usage.get("_context_anchor_input_tokens"), usage.get("_context_anchor_round")
     accepted = usage.get("_context_accepted_input_tokens") if measured else None
@@ -740,7 +741,8 @@ def context_facts_line(ctx: Any, *, money: Optional[Dict[str, Any]] = None,
     parts.append((source or ("window unknown" if capacity is None else f"window {int(capacity):,}")) + largest)
     parts.extend(filter(None, [memory_facts(getattr(ctx, "context_fit_plan", None), ctx.active_context_mode)]))
     if target is not None:
-        parts.append(f"target {int(target):,}")
+        parts.append(f"input target {int(input_target):,}; total equivalent {int(target):,}" if input_target is not None
+                     else f"total target {int(target):,}")
     if estimate is None:
         parts.append("input unmeasured")
     else:
@@ -758,7 +760,8 @@ def context_facts_line(ctx: Any, *, money: Optional[Dict[str, Any]] = None,
                      "free unknown (acceptance established no reply room)")
         if target is not None:
             excess = int(estimate) + floor - int(target)
-            parts.append((f"over target {excess:,}" if excess > 0 else f"target room {-excess:,}")
+            label = "input target" if input_target is not None else "target"
+            parts.append((f"over {label} {excess:,}" if excess > 0 else f"{label} room {-excess:,}")
                          + (f" (reply floor {floor:,})" if floor != int(reserve or 0) else ""))
     components = _context_components(ctx, measured=measured)
     if components:

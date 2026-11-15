@@ -75,7 +75,7 @@ def window_projection(record):
         text += f"; old confirmation {record.retired_ack['window_tokens']:,}, {stamp} — not used"
     return dict(tokens=limit.tokens if limit else None, kind=limit.kind if limit else "unknown",
                 reserve=record.reserve, source=source, observed_at=observed, contradiction=contradiction,
-                retired_ack=record.retired_ack, usable=record.usable, text=text)
+                retired_ack=record.retired_ack, usable=record.usable, boundary_tokens=record.boundary, text=text)
 
 
 def window_fact(plan, reserve):

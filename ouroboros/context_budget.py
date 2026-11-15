@@ -58,12 +58,9 @@ def host_row_intact(row: Any) -> bool:
     return (isinstance(content, str) and not row.get("tool_calls")
             and row.get(HOST_TEXT_SHA_KEY) == hashlib.sha256(content.encode("utf-8")).hexdigest())
 
-# Owner-selected Low's total-context economy/short-window target. This is an
-# elastic target, not a provider admission ceiling: Phase 2 measures the sealed
-# Main input plus its unchanged response reserve against T and the selected
-# route capacity W, requests at most one useful reclaim pass, then sends best
-# effort. Crossing T never creates a task failure. Low 250K and Nano 85K are the
-# owner's choice of 2026-09-29.
+# Owner decision 2026-11-15: Low targets INPUT; the reply allowance is unchanged
+# and separate. Total-equivalent fields add that request's actual reserve.
+# This elastic economy target never becomes a provider admission ceiling.
 OWNER_LOW_TARGET_TOKENS = 95_000
 
 # Nano's owner-selected target sizes what the host adds to the request unasked (the
@@ -99,16 +96,41 @@ def start_room_levels(role: str, *, focus_wake: bool = False, direct_chat: bool 
     return 2 if role == "integrator" and not direct_chat else 1
 
 
+def context_input_target(mode: str, owner_mode: str) -> Optional[int]:
+    """Only owner-selected Low has an input target; historical total fields stay total."""
+    return OWNER_LOW_TARGET_TOKENS if mode == owner_mode == "low" else None
+
+
 def context_mode_limits(mode: str, owner_mode: str, output_reserve_tokens: int) -> Tuple[Optional[int], int]:
-    """``(owner target, reply reserve)`` of a rendered mode.
+    """``(owner TOTAL-equivalent target, reply reserve)`` of a rendered mode.
 
     A target binds only the mode the owner selected: task-local Low and a mode the
     window lowered keep the window alone. Nano's reserve is the reply floor R of
     ``reply_allowance_tokens`` (its headroom, never above the caller's ceiling), so
     the memory floor and the mode selection use the same R as the send.
     """
-    target = {"low": OWNER_LOW_TARGET_TOKENS, "nano": OWNER_NANO_TARGET_TOKENS}.get(mode) if mode == owner_mode else None
-    return target, min(NANO_MIN_HEADROOM_TOKENS, output_reserve_tokens) if mode == "nano" else output_reserve_tokens
+    reserve = min(NANO_MIN_HEADROOM_TOKENS, output_reserve_tokens) if mode == "nano" else output_reserve_tokens
+    input_target = context_input_target(mode, owner_mode)
+    target = (input_target + reserve if input_target is not None else
+              OWNER_NANO_TARGET_TOKENS if mode == owner_mode == "nano" else None)
+    return target, reserve
+
+
+def context_working_margin(target_tokens: Optional[int], window_tokens: Optional[int], *,
+                           target_input_tokens: Optional[int] = None,
+                           boundary_tokens: Optional[int] = None) -> int:
+    """One eighth of the binding bound, comparing totals before choosing its basis.
+
+    Low's input-bound work room does not grow with its reply ceiling. A tighter
+    physical window retains its own boundary (input-only windows name that basis).
+    """
+    target = int(target_tokens) if target_tokens is not None and target_tokens > 0 else None
+    window = int(window_tokens) if window_tokens is not None and window_tokens > 0 else None
+    if target is not None and (window is None or target <= window):
+        basis = target_input_tokens if target_input_tokens is not None else min(target, boundary_tokens or target)
+    else:
+        basis = (boundary_tokens or window) if window is not None else None
+    return math.ceil(basis / RECLAIM_LOW_WATER_DIVISOR) if basis is not None else 0
 
 
 def _reply_floor(caller_max_tokens: int, nano: bool) -> Tuple[int, int]:
@@ -157,6 +179,7 @@ def exact_reply_shortfall(*, caller_max_tokens: int, nano: bool, input_tokens: i
 def request_context_budget(
     *, window_tokens: Optional[int], output_reserve_tokens: Optional[int], non_memory_tokens: int,
     target_tokens: Optional[int] = None, calibration_ratio: float = 1.0, margin_count: int = 1, boundary_tokens: Optional[int] = None,
+    target_input_tokens: Optional[int] = None,
 ) -> Dict[str, Any]:
     """One measured frame: the memory allowance with and without the working margins.
 
@@ -173,15 +196,16 @@ def request_context_budget(
     ratio = max(float(calibration_ratio or 1), 0.01)
     reserve = max(0, int(output_reserve_tokens or 0))
     measured = math.ceil(max(0, int(non_memory_tokens)) * ratio)
-    margin = (math.ceil((min(boundary, boundary_tokens) if boundary_tokens else boundary) / RECLAIM_LOW_WATER_DIVISOR) * margin_count
-              if boundary is not None else 0)
+    margin = context_working_margin(target_tokens, window_tokens, target_input_tokens=target_input_tokens,
+                                    boundary_tokens=boundary_tokens) * margin_count
     free = boundary - reserve - measured if boundary is not None else None
 
     def allowance(extra: int) -> Optional[int]:
         return (max(0, math.floor((boundary - reserve - extra) / ratio) - non_memory_tokens)
                 if boundary is not None else None)
 
-    return {"boundary_tokens": boundary, "target_tokens": target_tokens, "window_tokens": window_tokens,
+    return {"boundary_tokens": boundary, "target_tokens": target_tokens, "target_input_tokens": target_input_tokens,
+            "window_tokens": window_tokens,
             "output_reserve_tokens": output_reserve_tokens, "reserve_known": output_reserve_tokens is not None,
             "working_margin_tokens": margin, "non_memory_tokens": non_memory_tokens,
             "calibrated_input_tokens": measured, "calibration_ratio": ratio, "free_tokens": free,

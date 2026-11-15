@@ -26,3 +26,4 @@ class PhysicalAttemptContext:
     response_reserve_tokens: int = 0
     window_witness_bound: bool = False
     window_observation_fp: str = ""  # Main account scope, separate from capability/density route_fp
+    target_input_tokens: Optional[int] = None  # additive: absent historical rows keep their total-target meaning

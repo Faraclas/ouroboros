@@ -1125,12 +1125,13 @@ def _run_emergency_address_pass(ctx: Any, disposition: Any, *, rung: str, goal_t
     return receipt
 
 
-def _coarsen_memory_view(ctx: Any, fit: Any, *, saving: Optional[int] = None) -> bool:
+def _coarsen_memory_view(ctx: Any, fit: Any, *, saving: Optional[int] = None, start_work_room: bool = False) -> bool:
     """Narrow memory beside the actual transcript without inventing a smaller route window.
 
     The view saves the measured ``saving`` (else the capacity
     deficit, else at least one element) from the level it shows (no target or working margin
-    reapplied, nothing addressed unfolds)."""
+    reapplied, nothing addressed unfolds). The unsent start instead counts its
+    original work room beside the actual host rows, only against a known window."""
     plan = ctx.context_fit_plan
     measurement = fit.measurement
     if plan is None or getattr(plan, "core", None) is None:
@@ -1138,12 +1139,15 @@ def _coarsen_memory_view(ctx: Any, fit: Any, *, saving: Optional[int] = None) ->
     mode = str(ctx.active_context_mode or "max")
     before = plan.projection(mode).system_content_json
     capacity = measurement.capacity_total_tokens
+    if start_work_room and capacity is None:
+        return False
     rebound = plan.reproject_for_route(
         window_tokens=int(capacity or 0), known_window=capacity is not None,
         ratio=measurement.measurement_density,
         output_reserve=int(plan.output_reserve_tokens), tool_schemas=ctx.tool_schemas, start_mode=mode,
         current_messages=ctx.messages,
-        refused_tokens=max(1, int(saving or measurement.capacity_deficit_tokens or 0)),
+        refused_tokens=0 if start_work_room else max(1, int(saving or measurement.capacity_deficit_tokens or 0)),
+        **({"start_work_room": True} if start_work_room else {}),
     )
     selected_mode = rebound.initial_mode
     if selected_mode == mode and rebound.projection(mode).system_content_json == before:
@@ -1160,6 +1164,7 @@ def _coarsen_memory_view(ctx: Any, fit: Any, *, saving: Optional[int] = None) ->
     _adopt_view_facts(ctx.tools._ctx, rebound, mode)  # the narrowed view's fact, read back as a memory shortage
     _loop()._emit_checkpoint_event(ctx.event_queue, ctx.task_id, ctx.drive_logs, {
         "checkpoint_kind": "context_memory_coarsened", "round": ctx.round_idx,
+        "cause": "start_host_rows" if start_work_room else "physical_deficit",
         "route_fp": measurement.route_fp, "effective_mode": mode,
         "window_tokens": measurement.capacity_total_tokens,
         "input_tokens_estimate": measurement.estimated_input_tokens,

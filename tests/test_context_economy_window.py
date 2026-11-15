@@ -457,7 +457,7 @@ def test_a_fallback_and_its_return_resend_the_shown_history_byte_for_byte_on_the
                                                        view=snapshot_json(syn.actor("main")))
     roomy = plan(900_000)
     full = roomy.projected_tokens_with_tools("low", initial_tool_schemas(tools, context_mode="low"))
-    width = {"roomy": 900_000, "tight": max(180_000, full + roomy.output_reserve_tokens + 8_000)}
+    width = {"roomy": 900_000, "tight": full + roomy.output_reserve_tokens + 8_000}
     assert "### Physical floor" in plan(width["tight"]).low_projection.system_content_json  # its view was narrowed
     windows.update({"account-a": width[primary], "account-b": width[fallback]})
     built = plan(width[primary])
@@ -485,7 +485,8 @@ def test_a_fallback_and_its_return_resend_the_shown_history_byte_for_byte_on_the
     notice = next(row["content"] for row in sent if str(row["content"]).startswith("[SYSTEM NOTICE]"))
     facts = [row["content"] for row in sent if str(row["content"]).startswith("[CONTEXT_FACTS]")]
     assert f"window {width[fallback]:,}" in facts[-1] and "target 95,000" in facts[-1]  # the acting route, fresh
-    assert ("### Physical floor" in notice) == bool(built.low_projection.memory_facts["floor"]["steps"])
+    # Ordinary task/quiet-room collapsing has steps but no physical-floor note.
+    assert ("### Physical floor" in notice) == ("### Physical floor" in built.low_projection.system_content_json)
     rebound = [row for row in _drained(events) if row.get("checkpoint_kind") == "context_fit_route_rebound"]
     assert [(row["window_tokens"], row["view_kept"]) for row in rebound] == [(width[fallback], True), (width[primary], True)]
 
@@ -585,9 +586,9 @@ def test_an_account_reprepare_that_selects_nano_narrows_the_shown_low_view_and_k
     assert floor["mode_switch"] == {"from": "low", "to": "nano"} and floor["budget_allowance_tokens"] is None
     # Provenance: what the Low budget took stays the Low budget's, never a Nano budget's; no budget, no target.
     assert floor["by_budget"] == shown_floor["by_budget"]
-    assert floor["target_tokens"] == OWNER_LOW_TARGET_TOKENS
+    assert floor["target_input_tokens"] == OWNER_LOW_TARGET_TOKENS and floor["target_tokens"] == OWNER_LOW_TARGET_TOKENS + built.output_reserve_tokens
     sent = json.dumps(ctx.messages[0], ensure_ascii=False)
-    assert "the Low mode budget (250000 tokens)." in sent and "Nano mode budget" not in sent
+    assert "the Low mode budget (250000 input tokens; 315536 total equivalent)." in sent and "Nano mode budget" not in sent
     assert "for the window (100000 tokens)" in sent
     assert "cannot hold Low with even the shortest view of my memory; this task runs in Nano." in sent  # began in Low
     rebound = [row for row in _drained(events) if row.get("checkpoint_kind") == "context_fit_route_rebound"]
@@ -626,9 +627,9 @@ def test_a_second_narrowing_in_nano_still_names_what_the_low_budget_took(main_ca
     floor = after.projection("nano").memory_facts["floor"]
     assert ctx.active_context_mode == "nano" and ctx.messages[0] == after.projection("nano").system_message()
     assert addressed < _addressed(after, "nano") and not _unfolded(after, addressed, ctx.messages[0])
-    assert floor["by_budget"] == by_budget and floor["target_tokens"] == OWNER_LOW_TARGET_TOKENS
+    assert floor["by_budget"] == by_budget and floor["target_input_tokens"] == OWNER_LOW_TARGET_TOKENS and floor["target_tokens"] == OWNER_LOW_TARGET_TOKENS + built.output_reserve_tokens
     sent = json.dumps(ctx.messages[0], ensure_ascii=False)
-    assert (f"This Nano view retains memory cuts for the window ({window} tokens) and the Low mode budget (250000 tokens)."
+    assert (f"This Nano view retains memory cuts for the window ({window} tokens) and the Low mode budget (250000 input tokens; 315536 total equivalent)."
             in sent) and "Nano mode budget" not in sent
     assert "cannot hold Low with even the shortest view of my memory; this task runs in Nano." in sent
     assert ctx.tools._ctx.memory_view_facts == mf.trace_facts(after.projection("nano").memory_facts)  # the view sent
@@ -651,8 +652,8 @@ def test_a_selected_lower_view_with_an_unsent_ones_counts_still_carries_the_show
     assert moved.initial_mode == "nano"
     assert _addressed(built, "low") <= _addressed(moved, "nano")
     assert floor["by_budget"] == built.low_projection.memory_facts["floor"]["by_budget"]
-    assert floor["target_tokens"] == OWNER_LOW_TARGET_TOKENS
-    assert "and the Low mode budget (250000 tokens)." in moved.projection("nano").system_content_json
+    assert floor["target_input_tokens"] == OWNER_LOW_TARGET_TOKENS and floor["target_tokens"] == OWNER_LOW_TARGET_TOKENS + built.output_reserve_tokens
+    assert "and the Low mode budget (250000 input tokens; 315536 total equivalent)." in moved.projection("nano").system_content_json
 
 
 @pytest.mark.parametrize("fallback", ["roomy", "tight"])
@@ -975,7 +976,7 @@ def test_a_chosen_read_on_an_unknown_window_stays_whole_after_an_unmeasured_engi
     assert "lines 1–20001 of 20001" in header and "".join(row.split("\t", 1)[1] + "\n" for row in rows) == giant
     # The pre-send measurement saw the target deficit (no window to fit) and concealed nothing for it.
     facts = [row["content"] for row in refused if str(row["content"]).startswith("[CONTEXT_FACTS]")][-1]
-    assert "window unknown" in facts and "free unknown" in facts and "over target" in facts
+    assert "window unknown" in facts and "free unknown" in facts and "over input target" in facts
     # No fact justified cutting the chosen body; the configured fallback holds it whole.
     assert text == "LAST LINE: keep the old API alive" and len(gateway.creates) == 3
     assert [payload["account"]["profileId"] for payload, _key in gateway.uploads] == ["account-a", "account-a", "account-b"]

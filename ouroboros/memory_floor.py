@@ -75,12 +75,14 @@ def degradable_elements(snapshot: mv.MemoryViewSnapshot) -> List[Tuple[str, str,
 
 def floor_allowances(*, window_tokens: Optional[int], output_reserve_tokens: Optional[int], non_memory_tokens: int,
                      target_tokens: Optional[int] = None, calibration_ratio: float = 1.0,
-                     work_room_levels: int = 1, boundary_tokens: Optional[int] = None) -> Dict[str, Optional[int]]:
+                     work_room_levels: int = 1, boundary_tokens: Optional[int] = None,
+                     target_input_tokens: Optional[int] = None) -> Dict[str, Optional[int]]:
     """One start bound for all unsolicited material; a physical bound for uncovered owner rows."""
     frame = dict(output_reserve_tokens=output_reserve_tokens, non_memory_tokens=non_memory_tokens,
                  calibration_ratio=calibration_ratio, margin_count=work_room_levels, boundary_tokens=boundary_tokens)
     physical = context_budget.request_context_budget(window_tokens=window_tokens, **frame)
-    start = context_budget.request_context_budget(window_tokens=window_tokens, target_tokens=target_tokens, **frame)
+    start = context_budget.request_context_budget(window_tokens=window_tokens, target_tokens=target_tokens,
+                                                   target_input_tokens=target_input_tokens, **frame)
     return {"margin": start["with_margin_tokens"], "physical": physical["without_margin_tokens"],
             "budget": start["with_margin_tokens"] if target_tokens else None}
 
@@ -353,7 +355,8 @@ def memory_read_path(tool_names: Optional[Iterable[str]]) -> str:
 
 def floor_note(level: mv.FloorLevel, *, window_tokens: Optional[int], mode: str, target_tokens: Optional[int] = None,
                lowered_from: Optional[str] = None, tool_names: Optional[Iterable[str]] = None,
-               budget_mode: Optional[str] = None, max_room: Optional[Mapping[str, Any]] = None) -> str:
+               budget_mode: Optional[str] = None, max_room: Optional[Mapping[str, Any]] = None,
+               target_input_tokens: Optional[int] = None) -> str:
     """``### Physical floor``: a fact and a possibility for the mind, exactly when a step past F1/F1b ran
     or the window lowered the task's mode; never an instruction or a threshold. In Nano it
     closes with how this request reaches ``memory_read`` (``tool_names``: the schemas it sends). The
@@ -373,7 +376,9 @@ def floor_note(level: mv.FloorLevel, *, window_tokens: Optional[int], mode: str,
     if asked:
         bounds = ([f"the window ({window_tokens} tokens)"]
                   if window_tokens is not None else []) + (
-            [f"the {(budget_mode or mode).capitalize()} mode budget ({target_tokens} tokens)"] if level.by_budget else [])
+            [f"the {(budget_mode or mode).capitalize()} mode budget ("
+             + (f"{target_input_tokens} input tokens; {target_tokens} total equivalent" if target_input_tokens is not None
+                else f"{target_tokens} total tokens") + ")"] if level.by_budget else [])
         subject = " and ".join(bounds)
         shown = ", ".join(text.format(counts[step]) for step, text in _SHOWN if counts.get(step))
         sealing = (" Sealing a closed part of the open conversation as a page (chronicle_write kind=page) or folding "
@@ -390,7 +395,7 @@ def floor_note(level: mv.FloorLevel, *, window_tokens: Optional[int], mode: str,
 
 def view_facts(snapshot: mv.MemoryViewSnapshot, level: mv.FloorLevel, *, window_tokens: Optional[int], mode: str,
                allowances: Mapping[str, Optional[int]], target_tokens: Optional[int] = None,
-               lowered_from: Optional[str] = None) -> Dict[str, Any]:
+               lowered_from: Optional[str] = None, target_input_tokens: Optional[int] = None) -> Dict[str, Any]:
     """The floor fact of one projection, kept in the task trace: steps, boundaries, what is shown by address.
 
     ``newest_addressed_row`` is the newest row of this room that F1, F2 or F7 shows only by
@@ -405,7 +410,8 @@ def view_facts(snapshot: mv.MemoryViewSnapshot, level: mv.FloorLevel, *, window_
     return {"role": snapshot.spec.role, "room_id": snapshot.spec.room_id,
             "floor": {"steps": dict(level.steps), "addressed": level.addressed, "window_tokens": window_tokens, "mode": mode,
                       "allowance_tokens": allowances.get("margin"), "physical_allowance_tokens": allowances.get("physical"),
-                      "target_tokens": target_tokens, "budget_allowance_tokens": allowances.get("budget"),
+                      "target_tokens": target_tokens, "target_input_tokens": target_input_tokens,
+                      "budget_allowance_tokens": allowances.get("budget"),
                       "by_budget": level.by_budget, "mode_switch": {"from": lowered_from, "to": mode} if lowered_from else None,
                       "newest_addressed_row": parse_address(max(rows)[1]) if rows else None,
                       "pointer_records": [ident for step, ids in level.addressed if step in ("F4", "F5") for ident in ids]},
@@ -429,17 +435,20 @@ def render_view_for_mode(snapshot: mv.MemoryViewSnapshot, *, mode: str, owner_mo
     and the fact name that budget in whatever mode the view is narrowed, hop after hop.
     """
     target, reserve = context_budget.context_mode_limits(mode, owner_mode, output_reserve)
+    input_target = context_budget.context_input_target(mode, owner_mode)
     if kept is not None:
         target = context_budget.context_mode_limits(owner_mode, owner_mode, output_reserve)[0] if kept.by_budget else None
+        input_target = context_budget.context_input_target(owner_mode, owner_mode) if kept.by_budget else None
     window = int(window_tokens) if known_window and window_tokens else None
     allowances = floor_allowances(window_tokens=window, output_reserve_tokens=reserve, non_memory_tokens=non_memory_tokens,
                                   target_tokens=None if kept is not None else target, calibration_ratio=ratio,
+                                  target_input_tokens=None if kept is not None else input_target,
                                   work_room_levels=snapshot.spec.work_room_levels, boundary_tokens=boundary_tokens)
     if kept is not None:
         allowances = {**allowances, "margin": allowances["physical"]}
     def receipt(level):
         return floor_note(level, window_tokens=window, mode=mode, target_tokens=target, lowered_from=lowered_from,
-                          tool_names=tool_names, budget_mode=owner_mode, max_room=max_room)
+                          tool_names=tool_names, budget_mode=owner_mode, max_room=max_room, target_input_tokens=input_target)
     measure = lambda level: view_tokens(mv.render_story(snapshot, level)) + view_tokens(
         mv.render_room(snapshot, level, floor_note=receipt(level)))
     level = fit_memory_view(snapshot, allowances, kept=kept or mv.FULL_VIEW, saving=saving, measure=measure)
@@ -453,7 +462,7 @@ def render_view_for_mode(snapshot: mv.MemoryViewSnapshot, *, mode: str, owner_mo
             if owners else "what my memory shows even in its shortest forms exceeds it.")
     return (mv.render_story(snapshot, level), mv.render_room(snapshot, level, floor_note=note),
             view_facts(snapshot, level, window_tokens=window, mode=mode, allowances=allowances, target_tokens=target,
-                       lowered_from=lowered_from))
+                       lowered_from=lowered_from, target_input_tokens=input_target))
 
 
 TRACE_FIELDS = ("role", "room_id", "floor", "story_status", "max_room")  # what a task trace keeps of a view receipt

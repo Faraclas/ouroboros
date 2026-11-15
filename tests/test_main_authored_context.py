@@ -191,10 +191,12 @@ def test_explicit_recent_count_compacts_older_units_with_authored_note(main_loop
 def test_low_full_catalog_inspection_is_retrievable_when_delivered_by_source(main_loop, tmp_path, monkeypatch):
     """Explicitly loading the full catalog still exercises Low's source-only pressure branch."""
     from ouroboros import context
+    from ouroboros import context_budget
     from tests.test_doc_context import _make_env_and_memory
 
     f = main_loop
     monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", "low")
+    monkeypatch.setattr(context_budget, "OWNER_LOW_TARGET_TOKENS", 35_000)  # deliberate pressure below the full catalog
     env, memory = _make_env_and_memory(tmp_path / "full-catalog")
     f.messages, _ = context.build_llm_messages(env, memory, {"id": "authored-main", "type": "task",
         "text": "Inspect the retained evidence."}, ctx=f.ctx)
@@ -207,7 +209,8 @@ def test_low_full_catalog_inspection_is_retrievable_when_delivered_by_source(mai
                           if line.startswith("RESULT_VIEW_JSON=")))
     source = json.loads(next(line.removeprefix("FULL_RESULT_SOURCE_JSON=") for line in delivered.splitlines()
                             if line.startswith("FULL_RESULT_SOURCE_JSON=")))
-    assert view["omitted_ranges"] and view["delivery"]["target_tokens"] == 95_000
+    assert view["omitted_ranges"] and view["delivery"]["target_tokens"] == 100_536
+    assert view["delivery"]["target_input_tokens"] == 35_000
     exact = read_actor_source_bytes(f.ctx.drive_root, "authored-main", source)
     import hashlib
     assert hashlib.sha256(exact).hexdigest() == source["sha256"]

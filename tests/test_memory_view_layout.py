@@ -347,13 +347,19 @@ def test_a_nano_floor_names_only_the_path_its_own_request_sends(tmp_path, monkey
         return context._build_context_fit_plan(env, core, task, preferred_mode=owner, tool_schemas=schemas,
                                                route_resolver=lambda *_a, **_kw: ({"model": "m", "provider": "p"}, evidence))
 
-    roomy = plan(10_000_000)  # Nano's fixed part and reserve, read off a roomy plan; then a window only Nano fits
-    window = (10_000_000 - roomy.projection("nano").memory_facts["floor"]["physical_allowance_tokens"]
+    roomy = plan(10_000_000)
+    from ouroboros import context_fit as cf
+    from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS
+    sent_tools = list(select_tool_schemas(schemas, context_mode="nano").schemas)
+    # Unsent projections share the selected memory's facts. Price Nano's actual
+    # fixed bytes and selectors instead of treating Max's receipt as Nano's.
+    fixed = cf._request_tokens(cf._render_context_system_content(env, core, mode="nano"), core.user_content_json,
+                               supplementary_messages_json=core.supplementary_messages_json)
+    window = (fixed + cf.tool_schema_tokens(sent_tools) + NANO_MIN_HEADROOM_TOKENS
               + minimal_view_tokens(snapshot_from_json(core.memory_view_json), window_tokens=10_000_000) + 50)
     from ouroboros.context_fit import MinimumViewUnfit
     with pytest.raises(MinimumViewUnfit, match="Core, assignment, resident control tools and work room"):
         plan(window)
-    sent_tools = list(select_tool_schemas(schemas, context_mode="nano").schemas)
     built = roomy.reproject_for_route(window_tokens=window, known_window=True, ratio=1.0,
         output_reserve=roomy.output_reserve_tokens, tool_schemas=sent_tools, start_mode="nano",
         select_mode="nano", refused_tokens=2**31 - 1)

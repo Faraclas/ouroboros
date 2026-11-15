@@ -5,8 +5,7 @@ split); loop.py re-exports every name."""
 
 from __future__ import annotations
 
-from ouroboros.context_fit import _physical_context_for_fit
-
+from ouroboros.context_fit import _physical_context_for_fit, _main_context_profile
 from ouroboros.config import runtime_setting
 
 import logging
@@ -766,17 +765,6 @@ def _context_fit_round_id(ctx: _RoundModelCallContext) -> str:
     return f"{execution_id}:round:{ctx.round_idx}"
 
 
-def _main_context_profile(plan: Any, rendered_mode: str) -> str:
-    if rendered_mode == "nano":  # the owner's Nano carries its target; a Nano the window chose, the window alone
-        return "owner_nano" if str(getattr(plan, "preferred_mode", "")) == "nano" else "task_local_nano"
-    if rendered_mode != "low":
-        return "owner_max"
-    # Effective Low is the sizing authority even when a bare env override
-    # keeps owner intent Max for P3. A Low entered after a real Max overflow
-    # is task-local and does not inherit the economy target T.
-    return "owner_low" if str(getattr(plan, "preferred_mode", "")) == "low" else "task_local_low"
-
-
 def _remember_main_fit(ctx: _RoundModelCallContext, disposition: Any) -> None:
     measurement = disposition.measurement
     usage = ctx.accumulated_usage
@@ -790,6 +778,7 @@ def _remember_main_fit(ctx: _RoundModelCallContext, disposition: Any) -> None:
     usage["_context_reply_allowance_tokens"] = measurement.reply_allowance_tokens
     usage["_context_response_reserve_tokens"] = measurement.response_reserve_tokens  # the reply floor fit counts
     usage["_context_target_total_tokens"] = measurement.target_total_tokens
+    usage["_context_target_input_tokens"] = measurement.target_input_tokens
     usage["_context_capacity_total_tokens"] = measurement.capacity_total_tokens
     usage["_context_target_deficit_tokens"] = measurement.target_deficit_tokens
     usage["_context_capacity_deficit_tokens"] = measurement.capacity_deficit_tokens
@@ -909,6 +898,11 @@ def _dispatch_round_model(
     if append_context_facts(ctx):
         disposition = _loop()._measure_round_main_fit(
             ctx, automatic_pass_used=bool(getattr(disposition, "automatic_pass_used", False)))
+    plan = ctx.context_fit_plan
+    if (ctx.round_idx == 1 and disposition is not None and plan is not None and getattr(plan, "core", None) is not None
+            and plan.projection(ctx.active_context_mode).continuation_messages_json is None):
+        if _coarsen_memory_view(ctx, disposition, start_work_room=True):
+            disposition = _loop()._measure_round_main_fit(ctx, automatic_pass_used=False)
     mailbox_peek = OwnerMailboxPeek()
     ctx.tools._ctx._transport_repeat_control_reason = ""
 

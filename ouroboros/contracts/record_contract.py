@@ -80,7 +80,7 @@ _TOOL_OPTIONAL = (
 _CONTEXT_FIT = (
     "context_route_fp estimated_prompt_tokens context_fit_mode context_profile context_measurement_basis "
     "context_measurement_density context_raw_input_tokens context_reply_allowance_tokens "
-    "context_target_total_tokens context_capacity_total_tokens context_target_deficit_tokens "
+    "context_target_total_tokens context_target_input_tokens context_capacity_total_tokens context_target_deficit_tokens "
     "context_capacity_deficit_tokens context_reclaim_goal_tokens context_target_miss "
     "context_automatic_pass_used context_predicted_capacity_miss"
 )

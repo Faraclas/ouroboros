@@ -24,7 +24,7 @@ def test_nano_child_can_select_only_its_existing_capabilities(tmp_path, monkeypa
     registry.set_context(ctx)
     names = set(registry.available_tools())
     assert "enable_tools" in names  # #1860: every mode; it grants nothing (below)
-    assert ("compact_context" in names) is (mode == "nano")
+    assert ("compact_context" in names) is (mode in {"low", "nano"})
     assert ("run_command" in names) is (profile == "acting_subagent")
     assert "commit_reviewed" not in names
     if mode == "nano":

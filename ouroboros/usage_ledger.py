@@ -161,7 +161,7 @@ def _validate_candidate_facts(row: Dict[str, Any], sequence: int) -> None:
             "fresh_route_usage", "fresh_model_usage", "cold_estimate",
         }:
             raise UsageLedgerCorrupt(f"invalid physical_context mode/basis in usage row seq={sequence}")
-        for key in ("target_total_tokens", "capacity_total_tokens"):
+        for key in ("target_total_tokens", "target_input_tokens", "capacity_total_tokens"):
             value = context.get(key)
             if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
                 raise UsageLedgerCorrupt(f"invalid physical_context {key} in usage row seq={sequence}")

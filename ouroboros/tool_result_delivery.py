@@ -263,7 +263,11 @@ def frame_bounds(measurement: Mapping[str, Any]) -> Tuple[Optional[int], int, in
     capacity = _positive(measurement.get("capacity_total_tokens"))
     known = [value for value in (target, capacity) if value]
     reserve = max(0, int(measurement.get("response_reserve_tokens") or 0))
-    return (min(known) if known else None), reserve, reclaim_low_water_margin(target, capacity)
+    window = measurement.get("window") or {}
+    input_target = _positive(measurement.get("target_input_tokens"))
+    return (min(known) if known else None), reserve, reclaim_low_water_margin(target, capacity,
+        target_input_tokens=input_target,
+        boundary_tokens=_positive(window.get("boundary_tokens", window.get("tokens"))) if input_target is not None else None)
 
 
 def _standin_source_ref(call_id: Any, text: str, digest: str) -> Dict[str, Any]:
@@ -386,6 +390,7 @@ def _measured_frame(
     def diagnostic(index: int) -> Dict[str, Any]:
         return {"selection": "automatic" if requests[index] is None else "explicit",
                 "limiters": sorted(limiters[index]), "target_tokens": target, "capacity_tokens": capacity,
+                "target_input_tokens": _positive(whole.get("target_input_tokens")),
                 "reserve_tokens": reserve, "batch_share_tokens": eighth,
                 "unasked_results": sum(request is None for request in requests)}
 

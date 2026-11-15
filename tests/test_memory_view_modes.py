@@ -62,7 +62,9 @@ def test_owner_choices_keep_targets_and_unknown_window_does_not_invent_one(tmp_p
     for window, status in ((1_000_000, "asserted"), (1, "failed")):
         plan = build(window, status=status, preferred=mode)
         assert plan.initial_mode == mode
-        assert plan.projection(mode).memory_facts["floor"]["target_tokens"] == target
+        floor = plan.projection(mode).memory_facts["floor"]
+        assert floor["target_tokens"] == target + (plan.output_reserve_tokens if mode == "low" else 0)
+        assert floor["target_input_tokens"] == (target if mode == "low" else None)
     unknown = build(1, status="failed")
     assert unknown.initial_mode == "max" and unknown.max_projection.memory_facts["floor"]["steps"] == {}
     with pytest.raises(MinimumViewUnfit, match="Core, assignment, resident control tools and work room"):

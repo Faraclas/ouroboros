@@ -47,6 +47,15 @@ ContextProfile = Literal["owner_max", "owner_low", "owner_nano", "task_local_low
 MeasurementBasis = Literal["fresh_route_usage", "fresh_model_usage", "cold_estimate"]
 
 
+def _main_context_profile(plan: Any, rendered_mode: str) -> str:
+    """The rendered mode inherits only the target selected for this task's preferred mode."""
+    if rendered_mode == "nano":
+        return "owner_nano" if str(getattr(plan, "preferred_mode", "")) == "nano" else "task_local_nano"
+    if rendered_mode != "low":
+        return "owner_max"
+    return "owner_low" if str(getattr(plan, "preferred_mode", "")) == "low" else "task_local_low"
+
+
 @dataclass(frozen=True)
 class ContextFitProjection:
     """One deterministic Low/Max rendering of a shared immutable context core."""
@@ -112,6 +121,7 @@ class MainFitMeasurement:
     window_witness_bound: bool = False
     window_observation_fp: str = ""
     window: Dict[str, Any] = field(default_factory=dict)
+    target_input_tokens: Optional[int] = None  # Low only; total-equivalent fields retain their meaning
 
 
 @dataclass(frozen=True)
@@ -152,11 +162,20 @@ class ContextFitPlan:
     def reproject_for_route(self, *, window_tokens: int, known_window: bool, ratio: float, output_reserve: int,
                             tool_schemas: Optional[List[Dict[str, Any]]], start_mode: Optional[str] = None,
                             current_messages: Optional[List[Dict[str, Any]]] = None,
-                            refused_tokens: int = 0, select_mode: Optional[str] = None) -> "ContextFitPlan":
+                            refused_tokens: int = 0, select_mode: Optional[str] = None,
+                            start_work_room: bool = False) -> "ContextFitPlan":
         """Keep fitting shown bytes; narrow on physical deficit from the same snapshot and selected forms."""
         from dataclasses import replace
 
         contents, start, books = {}, start_mode or self.preferred_mode, ("max", "low")
+        if start_work_room:
+            def initial_tail(rows):
+                return [{key: value for key, value in row.items() if key != "cache_control"}
+                        for row in _request_tail(rows)
+                        if not (context_budget.host_row_intact(row) and row.get(context_budget.HOST_CONTEXT_KIND_KEY)
+                                not in context_budget.OWNER_ROW_KINDS)]
+            if initial_tail(current_messages or []) != initial_tail(self.messages_for(start)):
+                return self  # arriving owner words/history are work, not unsolicited start material
         reserve = context_budget.context_mode_limits(start, self.preferred_mode, output_reserve)[1]
         record = resolve_window(self, reserve, bound=self.window_witness_bound) if self.window_record else None
         if record is not None and (not known_window or record.total_equivalent != window_tokens):
@@ -182,6 +201,14 @@ class ContextFitPlan:
                                                  current_messages=current_messages)
                                  + tool_schema_tokens(list(sent))) * ratio)
             request += context_mode_limits(start, self.preferred_mode, output_reserve)[1]
+            if start_work_room and known_window:
+                # The first send adds roster/facts after initial assembly. Count those
+                # actual rows before claiming the start's physical working room fits.
+                snapshot = snapshot_from_json(self.core.memory_view_json)
+                target = context_mode_limits(start, self.preferred_mode, output_reserve)[0]
+                request += context_budget.context_working_margin(target, window_tokens,
+                    target_input_tokens=context_budget.context_input_target(start, self.preferred_mode),
+                    boundary_tokens=record.boundary if record else None) * snapshot.spec.work_room_levels
             deficit = max(request - window_tokens if known_window and window_tokens else 0, int(refused_tokens or 0))
             if deficit > 0 or select_mode:
                 snapshot = snapshot_from_json(self.core.memory_view_json)
@@ -536,18 +563,11 @@ def _route_calibration_ratio(
 
 def reclaim_low_water_margin(
     target_total_tokens: Optional[int], capacity_total_tokens: Optional[int],
+    *, target_input_tokens: Optional[int] = None, boundary_tokens: Optional[int] = None,
 ) -> int:
-    """Tokens a reclaim pass lands BELOW the binding boundary: ceil(boundary / divisor).
-
-    The boundary is the smaller known positive one of owner target T and route
-    capacity W; 0 when neither is known. The divisor is read at call time so
-    the SSOT constant stays the one place to change it.
-    """
-    from ouroboros.context_budget import RECLAIM_LOW_WATER_DIVISOR
-
-    known = [int(value) for value in (target_total_tokens, capacity_total_tokens)
-             if value is not None and int(value) > 0]
-    return int(math.ceil(min(known) / RECLAIM_LOW_WATER_DIVISOR)) if known else 0
+    """Shared working eighth of the binding input-target or physical boundary (0 when unknown)."""
+    return context_budget.context_working_margin(target_total_tokens, capacity_total_tokens,
+        target_input_tokens=target_input_tokens, boundary_tokens=boundary_tokens)
 
 
 def measure_main_fit(
@@ -571,12 +591,12 @@ def measure_main_fit(
     the reclaim goal (deficit + ``reclaim_low_water_margin``) and the reply allowance are facts for
     the round and recovery. A known window with no tool-result room starts the same refusal
     passes before sending (owner revision, 20 October 2026); an unknown window never does.
-    Both deficits count the reply floor the fit leaves (Nano: ``min(8192, C)``); the reply the
-    candidate will actually get is ``reply_allowance_tokens``.
+    Total-equivalent bounds count the reply floor (Nano: ``min(8192, C)``).
+    Low's explicit input target excludes it; the actual reply is ``reply_allowance_tokens``.
     """
     from ouroboros.capability_evidence import canonical_evidence_root, is_known, resolve_main_token_density
     from ouroboros.context_budget import (
-        OWNER_LOW_TARGET_TOKENS, OWNER_NANO_TARGET_TOKENS, NANO_MIN_HEADROOM_TOKENS, reply_allowance_tokens,
+        NANO_MIN_HEADROOM_TOKENS, reply_allowance_tokens,
     )
 
     raw_input = int(estimate_context_prompt_tokens(messages, tools, provider=plan.provider, reasoning_effort=reasoning_effort))
@@ -588,8 +608,9 @@ def measure_main_fit(
     nano = profile.endswith("_nano")
     reserve = min(NANO_MIN_HEADROOM_TOKENS, ceiling) if nano else ceiling
     total = estimated_input + reserve
-    target = (OWNER_NANO_TARGET_TOKENS if profile == "owner_nano"
-              else OWNER_LOW_TARGET_TOKENS if profile == "owner_low" else None)
+    owner_mode = profile.removeprefix("owner_") if profile.startswith("owner_") else "max"
+    target = context_budget.context_mode_limits(rendered_mode, owner_mode, ceiling)[0]
+    input_target = context_budget.context_input_target(rendered_mode, owner_mode)
     reading = int(plan.window_tokens or 0) if is_known(plan, require_fresh=True) else None
     current = resolve_window(plan, reserve, bound=plan.window_witness_bound,
                              accepted_input_tokens=accepted_input_tokens)
@@ -602,7 +623,8 @@ def measure_main_fit(
         [value for value in (target_deficit, capacity_deficit) if value is not None]
         or [0]
     )
-    margin = reclaim_low_water_margin(target, capacity) if deficit > 0 else 0
+    margin = reclaim_low_water_margin(target, capacity, target_input_tokens=input_target,
+                                     boundary_tokens=current.boundary if input_target is not None else None) if deficit > 0 else 0
     goal = deficit + margin
     from ouroboros.context_view_facts import window_projection
     measurement = MainFitMeasurement(
@@ -615,6 +637,7 @@ def measure_main_fit(
         estimated_input_tokens=estimated_input,
         response_reserve_tokens=reserve,
         target_total_tokens=target,
+        target_input_tokens=input_target,
         capacity_total_tokens=capacity,
         measurement_basis=basis,
         measurement_density=density,
@@ -796,6 +819,7 @@ def _view_projections(core: ContextCore, governance: Mapping[str, Tuple[str, ...
         boundary = record.boundary if record else None
         allowances = floor.floor_allowances(window_tokens=window if known_window else None,
             output_reserve_tokens=reserve, non_memory_tokens=fixed, target_tokens=target if kept is None else None,
+            target_input_tokens=context_budget.context_input_target(selected, preferred) if kept is None else None,
             calibration_ratio=ratio, work_room_levels=snapshot.spec.work_room_levels if snapshot else work_room_levels,
             boundary_tokens=boundary)
         return sent, fixed, reserve, window, boundary, allowances
@@ -809,7 +833,8 @@ def _view_projections(core: ContextCore, governance: Mapping[str, Tuple[str, ...
             sent, fixed, reserve, window, boundary, allowances = frame(mode)
     def work():
         target = context_budget.context_mode_limits(mode, preferred, output_reserve)[0]
-        return math.ceil(min(boundary or window, target or window) / context_budget.RECLAIM_LOW_WATER_DIVISOR) * (
+        return context_budget.context_working_margin(target, window if known_window else None,
+            target_input_tokens=context_budget.context_input_target(mode, preferred), boundary_tokens=boundary) * (
             snapshot.spec.work_room_levels if snapshot else work_room_levels)
 
     # Max names whole books. Story is the last rung: change books before taking its pages.
@@ -1001,6 +1026,7 @@ def _physical_context_for_fit(disposition: Any) -> PhysicalAttemptContext:
         route_fp=measurement.route_fp,
         round_id=measurement.round_id,
         target_total_tokens=measurement.target_total_tokens,
+        target_input_tokens=measurement.target_input_tokens,
         capacity_total_tokens=measurement.capacity_total_tokens,
         context_target_miss=disposition.action == "send_target_miss",
         automatic_pass_used=disposition.automatic_pass_used,
