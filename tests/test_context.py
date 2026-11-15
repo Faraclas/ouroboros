@@ -415,8 +415,16 @@ def test_project_room_keeps_an_older_own_directive_beside_sibling_traffic(tmp_pa
     _a, _b, changing, _cap = blocks(env, memory, {"id": "own-task", "chat_id": own_chat})
     room = section(changing, f"## This room (Project Own [chat_id={own_chat}])")
     assert decisive in room
-    assert "noise-" not in changing  # the sibling room is one line in ## Live rooms
-    assert f"Project Sibling [chat_id={sibling_chat}]" in section(changing, "## Live rooms")
+    assert "noise-" not in changing
+    assert "## Live rooms" not in changing
+    assert f"Project Sibling [chat_id={sibling_chat}]" not in changing
+    assert "## Other rooms (on demand)" in changing
+    # Main retains the cross-room directory; explicit Project opt-in remains supported.
+    _a, _b, main, _cap = blocks(env, memory, {"id": "main-task", "chat_id": 1})
+    assert f"Project Sibling [chat_id={sibling_chat}]" in section(main, "## Live rooms")
+    _a, _b, opted_in, _cap = blocks(env, memory, {
+        "id": "own-opt-in", "chat_id": own_chat, "memory_view": {"live_rooms": "lines"}})
+    assert f"Project Sibling [chat_id={sibling_chat}]" in section(opted_in, "## Live rooms")
     assert str(root) not in room
 
 

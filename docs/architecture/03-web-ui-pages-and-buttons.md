@@ -4,6 +4,11 @@ One build-free SPA serves desktop, browser, Docker, Telegram, phone and Linux fa
 
 ### SPA shape and host bridges
 
+`runtime_env.presentation` identifies the running process; `owner_client` is the
+sender's surface. Advise for the latter, asking or hedging when absent. One UI
+serves desktop, browser and phone. PyWebView lacks browser shortcuts; after
+served-code changes a restart reloads it. Header Restart is the one-click path.
+
 `web/app.js` owns SPA page/Project/mobile navigation; modules own presentation/disposers (DEVELOPMENT "UI resources carry a disposer"). Linux fallback is presentational; owner browsers are outside process custody (§1). Rooms share one WebSocket; REST recovers durable truth (§4). `utils.loadVersion` reads sidebar/About versions from health at startup/socket open: retained pages outlive cores.
 
 `MainApi` (`window.pywebview.api`, `launcher.py`) natively confirms runtime mode, reviewed-skill auto-grant and skill key grants; `launcher_background.DesktopApi` provides `panic_stop`, `request_attention`/`notify_owner`, `shell_info`, `request_native_notifications`, `show_native_notification` via `desktop_notifications.py`, `set_native_appearance` and `set_interface_size`. File/URL helpers: `download_file_to_downloads`, `open_file_with_default_app`, `open_external_url`, `save_bytes_to_downloads`. Loopback files need the server's own host/port and `/api/files/download`, `/api/extensions/...` or `/api/tasks/...`. `ui_helpers.js` detects each method for older shells (§2), falls back to file helpers or copy-link/toast and intercepts framed onboarding links (`OnboardingHostApi`). The Telegram proxy's `X-Ouroboros-Telegram-MiniApp: 1` has `server_web.make_index_page` include the Telegram SDK: presentation, not authentication.

@@ -51,7 +51,7 @@ def test_main_sees_other_rooms_as_lines_and_a_project_task_its_own_room(tmp_path
     for record in ("Alpha began.", "Alpha worked."):
         assert f"\n  {record}" in story and record not in room
     assert "next please" not in bound and "beta again" not in bound
-    assert "### Main — open" in section(bound, "## Live rooms")
+    assert "## Live rooms" not in bound
 
 
 def test_low_mode_keeps_the_open_conversation_verbatim(tmp_path, monkeypatch):

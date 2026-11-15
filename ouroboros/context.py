@@ -800,14 +800,21 @@ def _render_scratchpad_for_context(memory: "Memory", budget: int) -> str:
 
 
 def build_memory_sections(memory: Memory, partition: str = "all", *, include_scratchpad: bool = True,
-                          ctx: Any = None) -> List[str]:
+                          ctx: Any = None, project_memory_loaded: bool = False) -> List[str]:
     """Identity and WORLD (stable), the scratchpad (volatile); my story and rooms are ``memory_view``'s."""
     sections = []
 
     include_stable = partition in {"all", "stable"}
     include_volatile = partition in {"all", "volatile"}
 
-    if include_volatile and include_scratchpad:
+    if include_volatile and include_scratchpad and project_memory_loaded:
+        sections.append(
+            "## Scratchpad (from `memory/scratchpad.md` — global working memory; "
+            "this project's workpad and journal are loaded above)\n\n"
+            "Read the global scratchpad on demand via "
+            "`read_file(root='runtime_data', path='memory/scratchpad.md')`."
+        )
+    elif include_volatile and include_scratchpad:
         scratchpad_raw = memory.load_scratchpad()
         # WARNING is preserved on the RAW (pre-trim) value: it signals the rot
         # class is present, even when the helper trims it down for the consumer.
@@ -1148,8 +1155,26 @@ def _capture_context_core(
         semi_stable_parts.append(always_on)
     # Knowledge leads the changing block (its edits never cost the cached story) and
     # rides only where the view holds it: a child or nanny reads it by knowledge_read.
-    head_parts = (build_knowledge_sections(context_env, project_id=resolve_project_id(task), compact_overview=is_child)
+    project_id = resolve_project_id(task)
+    head_parts = (build_knowledge_sections(context_env, project_id=project_id, compact_overview=is_child)
                   if view_spec.knowledge else [])
+    # The loader emits these independently. Relocate global working memory only
+    # when BOTH local replacements actually loaded; absent/failed loads keep it.
+    project_memory_loaded = bool(
+        project_id
+        and any(part.startswith(f"## Project journal ({project_id}) — recent milestones\n\n")
+                for part in head_parts)
+        and any(part.startswith(f"## Project workpad ({project_id})\n\n")
+                for part in head_parts)
+    )
+    from ouroboros.memory_view import MAIN_ROOM
+
+    if view_spec.role == "integrator" and view_spec.room_id != MAIN_ROOM and view_spec.live_rooms == "none":
+        head_parts.append(
+            "## Other rooms (on demand)\n\n"
+            "Discover rooms with `memory_read(room_id='*', start=0)`; read one via "
+            "`memory_read(room_id=..., rows=true)`. Inter-room coordination remains available."
+        )
     if design_nav:
         head_parts.append(design_nav)
 
@@ -1179,7 +1204,10 @@ def _capture_context_core(
         )))
     except Exception:
         log.warning("Failed to build the Review records block", exc_info=True)
-    dynamic_parts.extend(build_memory_sections(context_memory, partition="volatile", include_scratchpad=not is_child))
+    dynamic_parts.extend(build_memory_sections(
+        context_memory, partition="volatile", include_scratchpad=not is_child,
+        project_memory_loaded=project_memory_loaded,
+    ))
 
     registry_digest = _build_registry_digest(context_env)
     if registry_digest:

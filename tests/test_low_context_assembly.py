@@ -143,3 +143,20 @@ def test_fresh_task_memory_and_schemas_share_the_role_mode(tmp_path, monkeypatch
     assert set(_names(schemas)) == set(_names(initial_tool_schemas(registry, expected)))
     if expected == "low":
         assert len(schemas) <= len(LOW_INITIAL_SCHEMA_NAMES)
+
+
+def test_low_project_and_main_keep_distinct_room_horizons(tmp_path, monkeypatch):
+    from tests._memory_view_context import world, blocks
+    monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", "low")
+    env, memory, rooms = world(tmp_path)
+    project_task = {"id": "bound", "chat_id": 1}
+    a, story, project, facts = blocks(env, memory, project_task)
+    assert facts["context_fit"]["preferred_mode"] == "low"
+    assert "## My story" in story
+    assert f"## This room (Project Alpha [chat_id={rooms['alpha']}])" in project
+    assert "## Live rooms" not in project
+    assert "memory_read(room_id='*', start=0)" in project
+    assert "memory_read(room_id=..., rows=true)" in project
+    _a, _story, main, _facts = blocks(env, memory, {"id": "main", "chat_id": 1})
+    assert "## This room (Main)" in main and "## Live rooms" in main
+    assert f"memory_read(room_id='{rooms['alpha']}', rows=true)" in main

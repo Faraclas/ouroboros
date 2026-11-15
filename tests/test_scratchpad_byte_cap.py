@@ -361,3 +361,15 @@ def test_constant_ordering_holds():
     )
     assert SCRATCHPAD_CONSOLIDATION_THRESHOLD_CHARS < SCRATCHPAD_MAX_CONTENT_CHARS
     assert SCRATCHPAD_MAX_CONTENT_CHARS <= SCRATCHPAD_SECTION_BUDGET_CHARS - 1_000
+
+
+def test_project_scratchpad_pointer_does_not_read_global_body(tmp_path, monkeypatch):
+    mem = _mem(tmp_path)
+    monkeypatch.setattr(mem, "load_scratchpad", lambda: pytest.fail("Project pointer read global scratchpad"))
+    text = "\n".join(build_memory_sections(mem, partition="volatile", project_memory_loaded=True))
+    assert "this project's workpad and journal are loaded above" in text
+    assert "read_file(root='runtime_data', path='memory/scratchpad.md')" in text
+    assert not build_memory_sections(mem, partition="volatile", include_scratchpad=False,
+                                     project_memory_loaded=True)
+    assert "## Scratchpad" not in "\n".join(build_memory_sections(
+        mem, partition="stable", project_memory_loaded=True))

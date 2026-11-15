@@ -153,8 +153,8 @@ def test_the_prompt_and_the_constitution_name_learning_not_a_register():
     repo = Path(__file__).resolve().parents[1]
     prompt = " ".join((repo / "prompts" / "SYSTEM.md").read_text(encoding="utf-8").split())
     bible = " ".join((repo / "BIBLE.md").read_text(encoding="utf-8").split())
-    assert "Before closing a failure I check what I already know about its class" in prompt
-    assert "a mark that keeps it in view or meets me at the action it concerns" in prompt
+    assert "Before closing a failure read what I know of its class" in prompt
+    assert "Use `memory_mark` for lasting action guidance" in prompt
     assert "Pattern Register" not in prompt and "improvement backlog or a scratchpad line" not in prompt
     assert "Learning changes what happens next." in bible and "**Durable learning**" in bible
     for gone in ("Pattern Register", "two-strike", "patterns.md", "improvement-backlog.md", "If three behavioral rules"):

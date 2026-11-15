@@ -135,6 +135,28 @@ Enforcement: `tests/test_phase3c_observability_gc.py` (knob and cutoff math), `t
 
 ### Live subagents
 
+#### Catalogue choice, effort and shared integration
+
+The owner-enabled `## Available subagents` catalogue is complete, not a ranking.
+Choose by `recommended_use` and route facts; `subagent_id` names that exact route
+and facets, defaults omitted; invent no id when absent. Unavailable rows refuse
+typed. Agent-session leaves use human subscriptions/shared quota; supervisors bill
+on the parent's route or named row; API-key rows bill per token. Weigh quality,
+subscription capacity/quota, context, startup, supervision, integration and own
+cost, never billing type alone or as a way to avoid answering.
+`schedule_subagent(effort=...)` defaults from the primary, clamped to the helper's
+range; outside Cyber Pro its range and pin bind, and an effort in a model name
+always holds. Primary effort is independent. When editing `OUROBOROS_SUBAGENTS`,
+match rows by route, preserve hidden keys and rewrite `recommended_use` together.
+The row selects WHO; `write_surface` limits WHAT the child may do.
+
+Before integrated fan-out publish ownership, seam contracts and integration order
+with `tree_note`; read the shared ledger before duplicating siblings' work.
+Independent branches need no shared frame. Yield when handoff is done.
+A scheduled helper is not a review seat. A disclosed scheduled replacement after
+no panel verdict is possible in Advisory/Cyber Pro but never counted PASS;
+Blocking still requires counted reviewer authority (DEVELOPMENT §5).
+
 Mechanism: ARCHITECTURE §6 "Delegated subagents (Claudexor transport + the nanny)". Review: CHECKLISTS 16 (`subagent_isolation`), 19 (`delegated_transport`).
 
 - API children receive work order, Constitution/book maps, identity, top-level story, room page and room/global marks, whole assignment/attachments and verbatim governing human words, not full parent dialogue; knowledge stays readable. Nannies omit the life account; vendor leaves get only goal, limits, material paths, orientation and human words. Child chronicle drafts require integration.
@@ -273,6 +295,8 @@ The loop, delivery and result-review state machines live in `loop.py`, `loop_del
 Enforcement: the failure-path tests the first bullet mandates, plus `tests/test_child_result_disposition.py`, `tests/test_result_review.py`, `tests/test_review_price.py`, `tests/test_acceptance_fence.py` (the root admission seal) and `tests/test_review_cycles.py` (cap migration).
 
 #### Cognitive Artifact Integrity
+
+**Revising learning (from BIBLE P2).** Before closing a failure consult existing knowledge of its class; recurrence is a reason to reconsider cause and remedy, not increment a counter. Preserve sourced understanding in the mind's own words and retain its history. Revise or archive guidance that stopped holding, explaining why. Archiving takes guidance out of view; it does not undo a body change, release a separate mark or prove the cause gone. Earlier text remains readable and restorable.
 
 - Preserve sources, words, outcomes, decisions and pending corrections until version-bound incorporation; authors, helpers and source addresses remain distinct; omission proves no understanding (DEVELOPMENT §4 "Compaction must earn its rewrite").
 - Follow DEVELOPMENT §4's per-mode/actor governance registry, never opportunistic touched-file inclusions.

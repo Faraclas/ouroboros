@@ -374,10 +374,12 @@ def test_dynamic_session_supervision_fact_line_and_switch_model_cache_invariance
 
     system_text = (Path(__file__).resolve().parent.parent / "prompts" / "SYSTEM.md").read_text(encoding="utf-8")
     normalized_system = " ".join(system_text.split())
-    assert "Agent-session leaves use human subscriptions/shared quota; supervisors bill on my route or the row I name." in normalized_system
-    assert "API-key rows bill per token." in normalized_system
+    assert "not billing type alone" in normalized_system
     assert '"Live subagents"' in system_text
     development = (Path(__file__).resolve().parent.parent / "docs/development/06-rules-by-change-class.md").read_text(encoding="utf-8")
+    normalized_development = " ".join(development.split())
+    assert "Agent-session leaves use human subscriptions/shared quota" in normalized_development
+    assert "API-key rows bill per token" in normalized_development
     assert "Inherited authority remains; cognitive route defaults to parent's unless another row was named (`switch_model` can change it). Vendor children are opaque." in development
     assert "shared quota, no API dollars" not in system_text
     assert "keeps\nits inherited authority and cognitive route" not in system_text

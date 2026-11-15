@@ -241,11 +241,13 @@ def view_spec_for_task(task: Mapping[str, Any], drive_root: Any, *, ctx: Any = N
 
     An explicit spec with an unknown field or value is not used: the role default is, and the
     refusal is one event in ``logs/events.jsonl``. Every role gets its current room (``view_room_id``);
-    a wake, which has no chat of its own, gets Main, and reads it as the Main turn does.
+    a wake, which has no chat of its own, gets Main. Project integrators default to their own
+    room/global marks without other live rooms; validated explicit fields still win.
     """
     role = view_role(task)
     spec = dataclasses.replace(ROLE_DEFAULTS[role], work_room_levels=start_room(task, role))
     explicit = task.get("memory_view")
+    overrides = {}
     if explicit is not None:
         problem = _explicit_problem(explicit)
         if problem:
@@ -253,14 +255,26 @@ def view_spec_for_task(task: Mapping[str, Any], drive_root: Any, *, ctx: Any = N
             append_jsonl(pathlib.Path(drive_root) / "logs" / "events.jsonl", {"ts": utc_now_iso(), "role": role, "reason": problem,
                          "type": "context_memory_view_spec_refused", "task_id": str(task.get("id") or "")})
         else:
-            spec = dataclasses.replace(spec, **dict(explicit))
+            overrides = dict(explicit)
+            spec = dataclasses.replace(spec, **overrides)
     if spec.room_id is not None:
-        return dataclasses.replace(spec, room_id=str(spec.room_id))
-    from ouroboros.memory_inventory import membership_facts
+        spec = dataclasses.replace(spec, room_id=str(spec.room_id))
+    else:
+        from ouroboros.memory_inventory import membership_facts
 
-    projects = membership_facts(drive_root).project_chat_ids
-    return dataclasses.replace(spec, room_id=view_room_id(task, ctx, drive_root, project_chat_ids=projects,
-                                                          presence=spec.role == "presence"))
+        projects = membership_facts(drive_root).project_chat_ids
+        spec = dataclasses.replace(spec, room_id=view_room_id(
+            task, ctx, drive_root, project_chat_ids=projects, presence=spec.role == "presence"))
+    # Main integrates across rooms; Project integrators focus on their own room.
+    # Only validated explicit keys override these defaults.
+    if spec.role == "integrator" and spec.room_id != MAIN_ROOM:
+        defaults = {}
+        if "live_rooms" not in overrides:
+            defaults["live_rooms"] = "none"
+        if "marks" not in overrides:
+            defaults["marks"] = "room_and_global"
+        spec = dataclasses.replace(spec, **defaults)
+    return spec
 
 
 # --- the captured facts ----------------------------------------------------------------------------

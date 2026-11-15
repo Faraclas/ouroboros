@@ -60,6 +60,7 @@ def test_b_is_byte_identical_for_main_another_room_and_a_wake(tmp_path):
     main_c, wake_c = views["main"][2], views["wake"][2]
     assert section(wake_c, "## This room (Main)") == section(main_c, "## This room (Main)")
     assert "## This room (Main)" not in views["alpha"][2]
+    assert all("## Live rooms" not in views[name][2] for name in ("alpha", "beta"))
     for words in ("alpha again", "beta again"):
         assert words not in section(wake_c, "## Live rooms") and words not in main_c, words
     assert "memory_read(room_id=" in section(wake_c, "## Live rooms")
@@ -572,3 +573,34 @@ def test_the_task_input_pointer_is_a_physical_rescue_and_the_floor_counts_reside
     # The first request keeps the owner-mode selection: a full list is not what Nano sends there.
     assert (built.nano_projection.memory_facts["floor"]["physical_allowance_tokens"]
             == plan(meta + big, 1.0).nano_projection.memory_facts["floor"]["physical_allowance_tokens"])
+
+
+@pytest.mark.parametrize("journal,workpad,knowledge,inline", [
+    (True, True, True, False), (False, True, True, True),
+    (True, False, True, True), (False, False, True, True), (True, True, False, True),
+])
+def test_project_scratchpad_relocation_requires_both_loaded_sections(
+        tmp_path, monkeypatch, journal, workpad, knowledge, inline):
+    from ouroboros.project_facts import project_journal_path, project_workpad_path
+    from ouroboros.utils import append_jsonl
+
+    env, memory, _rooms = world(tmp_path)
+    monkeypatch.setattr("ouroboros.config.DATA_DIR", memory.drive_root)
+    # This fixture deliberately starts with a legacy scratchpad, not a block store.
+    (memory.drive_root / "memory/scratchpad.md").write_text("GLOBAL_SCRATCHPAD_UNIQUE", encoding="utf-8")
+    path = project_workpad_path("alpha")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if workpad:
+        path.write_text("LOCAL_WORKPAD_UNIQUE", encoding="utf-8")
+    if journal:
+        append_jsonl(project_journal_path("alpha"), {
+            "ts": "2026-09-05T10:00:00Z", "kind": "checkpoint", "text": "LOCAL_JOURNAL_UNIQUE"})
+    task = {"id": "bound", "chat_id": 1, "memory_view": {"knowledge": knowledge}}
+    _a, _b, c, _cap = blocks(env, memory, task)
+    assert ("GLOBAL_SCRATCHPAD_UNIQUE" in c) == inline
+    assert ("this project's workpad and journal are loaded above" in c) == (not inline)
+    assert ("LOCAL_WORKPAD_UNIQUE" in c) == (workpad and knowledge)
+    assert ("LOCAL_JOURNAL_UNIQUE" in c) == (journal and knowledge)
+    assert "## Live rooms" not in c
+    _a, _b, main, _cap = blocks(env, memory, MAIN)
+    assert "GLOBAL_SCRATCHPAD_UNIQUE" in main and "## Live rooms" in main

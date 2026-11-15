@@ -4,6 +4,10 @@ BIBLE/Architecture/Development ground identity/structure/procedure; DESIGN names
 
 ### Invariant: Full availability in reasoning flows
 
+**Canonical sources (from BIBLE P7).** Values: `BIBLE.md`; structure, operation and rationale: `docs/ARCHITECTURE.md`; engineering discipline: `docs/DEVELOPMENT.md`; reviewer questions and plan triggers: `docs/CHECKLISTS.md`; UI semantics: `docs/DESIGN.md`; runtime-defaults interface: `ouroboros/config.py`; authored knowledge and retained history: runtime `memory/knowledge/`. Other surfaces point to these or carry rebuildable projections. Move a rule and its references together, rather than maintain conflicting copies.
+
+Retrieving body review gets a compact repository index and governance maps over the exact whole candidate. The change-relative required-source manifest names touched prompts, frozen contracts, protected runtime and their declared families/twins, all owed in full. These are minimum sources, never a ceiling; all prompts and functional code remain reachable. Packet reviewers explicitly lack repository retrieval duty. Intention reviewers instead receive the constitutional body-plan pack, attachments and named absences. Split a change whose diff and required sources cannot fit; never shrink reviewer authority to fit delivery.
+
 Architecture, constitution and procedure flows receive applicable governance as first-class context: inline or complete navigable sources named by their registry row, never silently omitted or dependent on touched files.
 
 **Review surfaces.** `tools/governance_context.py` supplies CODE/coupling briefs for change-review seats, preflight and deep self-review, by layer (`review_body_fact.layer_for`); the three body tiers and the universal core/foreign section: ARCHITECTURE §6 “Governance delivery”.

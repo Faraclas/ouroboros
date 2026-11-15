@@ -1,5 +1,7 @@
 # Managed Update Rule
 
+**Review subject for a managed-update resolution (BIBLE P3).** When landing an already-released official target, reviewers score the declared delta from the mechanical two-parent merge to the staged candidate. Name that base in the packet. Binding, freshness and final Git identity still cover the whole candidate; this declared subject is not partial coverage. Keep the official target's release metadata, without assigning a new local version.
+
 Managed updates rewrite the live tree under owner authority. Persist target, writer/local-work custody and resolver/recovery authority before mutation for replay.
 
 - Separate the local work branch from the official feed (`ouroboros/update_channels.py`; ARCHITECTURE §8).

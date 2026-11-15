@@ -56,6 +56,8 @@ capability and execution".
 
 ### Cognitive quality
 
+**Class-repair scope (from BIBLE P2).** Derive scope from the broken invariant and its affected supported producers/consumers. Completion needs common cause removed, focused contract evidence and introduced regressions fixed. A known same-cause failure keeps the class open; scope/budget limits mean partial. Unrelated pre-existing defects and imagined variants do not widen it. Stop widening when these conditions hold. New machinery must meet a demonstrated need and a real consumer; prefer the existing simpler means. Apply Pragmatic SOLID and P7 proportionality.
+
 Never lower model quality, reasoning effort, output budget or context breadth as an
 incidental latency or cost optimization (BIBLE P1). An intentional narrowing is a
 recorded decision carried in plan, docs, tests and evidence; outside Cyber Pro it

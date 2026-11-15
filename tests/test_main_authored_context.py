@@ -156,9 +156,9 @@ def test_retelling_instructions_and_authored_account_reach_next_send(main_loop, 
            call("compact_context", {"inspect": True}, "inspect"), compact, restore, {"content": "done"}])
     first, after = f.inputs[0], f.inputs[-1]
     assert system in "\n".join(block["text"] for block in first["messages"][0]["content"])
-    assert "Retell for a later reader: situation, purpose" in system
-    assert "who decided what within which scope" in system
-    assert "supersede only what they actually change" in system
+    assert "folds under my sourced" in system
+    assert "authorship, scope and superseded decisions; proposals are not approvals" in system
+    assert "human words, outward dialogue, arrivals and exact recoverable sources" in system
     delivered = next(tool["function"] for tool in first["tools"] if tool["function"]["name"] == "compact_context")
     assert delivered == schema
     guidance = delivered["parameters"]["properties"]["working_note"]["description"]

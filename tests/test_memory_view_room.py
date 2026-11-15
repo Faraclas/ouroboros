@@ -724,3 +724,39 @@ def test_a_storyless_room_page_keeps_story_order_when_an_older_period_is_sealed_
     assert [item["id"] for item in nanny.room["under_parts"]] == [older, newer]
     page = _section(text, "### Pages of this room")
     assert page.index("The older period, sealed later.") < page.index("The newer period.")
+
+
+@pytest.mark.parametrize("explicit,live,marks", [
+    ({}, "none", "room_and_global"),
+    ({"room_id": 55}, "none", "room_and_global"),
+    ({"room_id": "55"}, "none", "room_and_global"),
+    ({"live_rooms": "lines"}, "lines", "room_and_global"),
+    ({"marks": "all"}, "none", "all"),
+    ({"live_rooms": "lines", "marks": "none"}, "lines", "none"),
+    ({"live_rooms": "lines", "invalid": True}, "none", "room_and_global"),
+])
+def test_project_integrator_defaults_preserve_valid_explicit_keys(tmp_path, explicit, live, marks):
+    rooms = shared.projects(tmp_path)
+    spec = mv.view_spec_for_task({"id": "bound", "chat_id": 1, "memory_view": explicit}, tmp_path)
+    assert spec.room_id == str(explicit.get("room_id", rooms["alpha"]))
+    assert (spec.live_rooms, spec.marks) == (live, marks)
+    main = mv.view_spec_for_task({"id": "main", "chat_id": 1}, tmp_path)
+    assert (main.room_id, main.live_rooms, main.marks) == ("1", "lines", "all")
+
+
+def test_project_view_keeps_own_and_global_marks_without_foreign_rooms(tmp_path):
+    rooms, _rows_data = _install(tmp_path)
+    store = ChronicleStore(tmp_path)
+    for scope, room, text in (("global", None, "GLOBAL_RULE"),
+                              ("room", str(rooms["alpha"]), "ALPHA_RULE"),
+                              ("room", str(rooms["beta"]), "BETA_RULE")):
+        result = store.mark({"kind": "task", "task_id": "rule-" + text}, text, shared.MIND,
+                            room_id=room or "1", scope=scope)
+        assert result.ok
+    project, text = _view(tmp_path, {"id": "bound", "chat_id": 1})
+    assert project.spec.live_rooms == "none" and "## Live rooms" not in text
+    assert "GLOBAL_RULE" in text and "ALPHA_RULE" in text and "BETA_RULE" not in text
+    assert "alpha words" in text and "beta words" not in text
+    _main, main = _view(tmp_path, MAIN_TASK)
+    assert all(rule in main for rule in ("GLOBAL_RULE", "ALPHA_RULE", "BETA_RULE"))
+    assert "## Live rooms" in main
