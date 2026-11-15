@@ -353,8 +353,10 @@ def test_lane_groups_are_inert_without_the_option():
 def test_the_documented_command_is_the_script():
     makefile = (REPO / "Makefile").read_text(encoding="utf-8")
     assert "test:\n\tuv run --locked python scripts/run_tests.py\n" in makefile
-    for doc in ("CONTRIBUTING.md", "README.md", "docs/development/14-build-and-ci.md", "prompts/SYSTEM.md"):
+    for doc in ("CONTRIBUTING.md", "README.md", "docs/development/14-build-and-ci.md"):
         assert "scripts/run_tests.py" in (REPO / doc).read_text(encoding="utf-8"), doc
+    system = " ".join((REPO / "prompts/SYSTEM.md").read_text(encoding="utf-8").split())
+    assert "Read DEVELOPMENT §14 before selecting commit, adoption or publication test evidence; selected is not full." in system
 
 
 @pytest.mark.serial

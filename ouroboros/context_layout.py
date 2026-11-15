@@ -162,13 +162,10 @@ def task_design_navigation(ctx: Any, task: Mapping[str, Any]) -> str:
 def book_navigation(book: ReferenceBook, *, instructions: bool = True) -> str:
     """The compact, CHAPTER-ADDRESSED view of one reference book.
 
-    The authored introductions are the overview (there is no second editable
-    summary corpus), and beside each one sits that chapter's own heading index
-    with line ranges into the PHYSICAL chapter file. A composed-book line
-    number is never a `read_file` locator: the composition exists only in the
-    prompt, so an offset taken from it would address the wrong bytes of the
-    entrypoint. The read instruction is stated once, by `overview_book`, rather
-    than repeated under every chapter.
+    Each chapter appears once, with its authored title, physical Source path
+    and introductory scope. No second summary corpus, repeated membership list
+    or subsection tree is needed: readers open the named chapter for details.
+    A composed-book offset is never a physical `read_file` locator.
 
     The one place a source's SHAPE still decides anything: an exact historical
     revision is one physical file, and the single-source mapper is the right
@@ -182,16 +179,7 @@ def book_navigation(book: ReferenceBook, *, instructions: bool = True) -> str:
             rel_path=book.entrypoint.source_path,
             instructions=instructions,
         )
-    return overview_book(
-        book,
-        lambda chapter: generate_doc_nav_map(
-            chapter.text,
-            title=chapter.headings[0].title if chapter.headings else chapter.source_path,
-            rel_path=chapter.source_path,
-            instructions=False,
-        ),
-        instructions=instructions,
-    ).text
+    return overview_book(book, instructions=instructions).text
 
 
 def architecture_context_section(

@@ -1,10 +1,8 @@
 # Role and authority
 
-This chapter says what the handbook is for and names the domain manifest, the one owner
-a contributor must know before moving code. The handbook is how the body is changed;
-the form of its rules and what belongs in which book are the "Documentation contract"; which
-document owns what is BIBLE P7 "DRY / SSOT". This book keeps no
-inventory and no history.
+Read before moving code or deciding handbook authority; `ouroboros/domains.toml` owns module/domain assignments.
+
+The handbook owns engineering practice, not inventories or history. Its “Documentation contract” defines rule form; BIBLE P7 owns document authority.
 
 `ouroboros/domains.toml` is the SSOT of the module-to-domain assignment (1:1, complete
 over the tracked runtime population) and pins the cross-domain dependency baseline;

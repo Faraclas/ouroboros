@@ -1,6 +1,8 @@
 # 12. Host Service, Companion Processes, and Chat IDs
 
-Place facts and identity:
+Host authentication, place identity and delivery. Read for intake or routing.
+
+### Place facts and identity
 - Connectors report typed facts; the mind judges. Core matches membership, never text.
 - With `presence_identity: 1`, send `identity` on every event and status payload, never in `places.json`.
 - Focus voice, owner match, Safety and delivery stamps use the event's identity or none.

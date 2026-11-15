@@ -51,6 +51,32 @@ def test_overview_is_authored_introduction_and_details_have_physical_addresses()
         read_book_range(book, "docs/outside.md")
 
 
+def test_overview_uses_only_entrypoint_title_and_exact_chapter_intro_refs():
+    corpus = sources()
+    corpus["docs/architecture/runtime.md"] = (
+        b"# Runtime\n\nProcesses carry the work;\nthis explains their lifetime.\n\n"
+        b"## Startup\n\nThe full startup mechanism.\n")
+    book = load_reference_book(Path("unused"), "architecture", corpus.__getitem__)
+    view = overview_book(book)
+    assert view.text.startswith("# Ouroboros v7.0.0\n\n")
+    assert "The body and its reasons" not in view.text
+    assert "## Chapters" not in view.text and "[Runtime]" not in view.text
+    assert "See also" not in view.text and "outside.md" not in view.text
+    assert view.text.splitlines().count("# Runtime") == 1
+    assert "Processes carry the work; this explains their lifetime." in view.text
+    assert view.sources[0].span == book.entrypoint.headings[0].span
+    assert len(view.sources) == 1 + 2 * len(book.chapters)
+    for index, chapter in enumerate(book.chapters):
+        title_ref, intro_ref = view.sources[1 + 2 * index:3 + 2 * index]
+        assert title_ref.path == intro_ref.path == chapter.source_path
+        assert title_ref.span == chapter.headings[0].span
+        assert " ".join(chapter.text_at(intro_ref.span).split()) in view.text
+    no_cue = overview_book(book, instructions=False)
+    assert 'read_file(' not in no_cue.text
+    assert "not complete chapters" in no_cue.text
+    assert no_cue.sources == view.sources
+
+
 @pytest.mark.parametrize("membership", [
     "- [One](architecture/runtime.md)\n- [Duplicate](architecture/runtime.md)",
     "- [Missing](architecture/missing.md)",

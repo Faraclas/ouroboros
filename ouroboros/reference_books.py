@@ -85,10 +85,6 @@ def _ref(book: ReferenceBook, source: MarkdownSource, span: SourceRange) -> Book
     return BookSourceRef(book.book_id, source.source_path, source.sha256, span)
 
 
-def _whole(source: MarkdownSource) -> SourceRange:
-    return SourceRange(0, len(source.raw), 1, source.body_span.end_line)
-
-
 def _preamble(source: MarkdownSource) -> SourceRange:
     """The authored introduction: the FIRST paragraph after a source's H1.
 
@@ -231,17 +227,13 @@ def compose_book(book: ReferenceBook) -> str:
     return "\n\n".join(source.text for source in (book.entrypoint, *book.chapters))
 
 
-def overview_book(
-    book: ReferenceBook,
-    chapter_navigation: Callable[[MarkdownSource], str] | None = None,
-    *, instructions: bool = True,
-) -> BookView:
-    """The compact view: authored introductions plus physical source addresses.
+def overview_book(book: ReferenceBook, *, instructions: bool = True) -> BookView:
+    """One compact entry per chapter: authored title, physical path and introduction.
 
-    ``chapter_navigation`` is INJECTED rather than imported, because the one
-    heading mapper lives in the doc-layout owner above this module. A compact
-    view that lost the subsection index the monolith's map carried would be a
-    capability regression for every reader that navigates before reading.
+    Membership determines order, not a second rendered chapter list. The
+    entrypoint contributes only its title; the chapter introductions supply
+    scope without repeating the book introduction or indexing every subsection.
+    Full text and subsection headings remain readable at each physical path.
     """
     read_instruction = (
         'Full chapter text is available through `read_file(root="system_repo", path=...)`; '
@@ -255,15 +247,13 @@ def overview_book(
         for heading in source.headings:
             rows.append(f"- {heading.title}: `{source.source_path}` lines {heading.section.start_line}-{heading.section.end_line}")
         return BookView("\n".join(rows), tuple(_ref(book, source, h.span) for h in source.headings), False)
-    rows = [book.entrypoint.text, read_instruction]
-    refs = [_ref(book, book.entrypoint, _whole(book.entrypoint))]
+    title = book.entrypoint.headings[0]
+    rows = [f"# {title.title}", read_instruction]
+    refs = [_ref(book, book.entrypoint, title.span)]
     for chapter in book.chapters:
         preamble = _preamble(chapter)
         rows.extend((f"# {chapter.headings[0].title}",
-                     f"Source: `{chapter.source_path}`", chapter.text_at(preamble)))
-        navigation = chapter_navigation(chapter) if chapter_navigation is not None else ""
-        if navigation.strip():
-            rows.append(navigation)
+                     f"Source: `{chapter.source_path}`", " ".join(chapter.text_at(preamble).split())))
         refs.extend((_ref(book, chapter, chapter.headings[0].span), _ref(book, chapter, preamble)))
     return BookView("\n\n".join(rows), tuple(refs), False)
 

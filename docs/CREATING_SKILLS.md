@@ -775,6 +775,8 @@ alone is not permission. An automatic edit-and-review request retains
 
 ### Top-level short-form authoring (including light mode)
 
+Author new skills in `external`, manifest-first. Before recovery or switching actors after a failed run, inspect its retained work. Readiness means admitted, enabled and verified through the real consumer, not merely reviewed. After edits, use `skill_review(author_disposition="accepted", …)` when earlier findings still describe the bytes; ask reviewers again when changes reach what they did not see. Preserve the verdict and exact reviewed hash.
+
 An ordinary top-level task in every runtime mode can target user-managed skill
 payloads with `root=skill_payload`, `bucket` (`external` / `clawhub` /
 `ouroboroshub` / `user_repo`), and `skill_name`. A markerless payload physically

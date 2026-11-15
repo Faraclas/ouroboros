@@ -91,60 +91,46 @@ def test_nav_map_is_fence_aware_at_every_supported_depth():
     assert "fake-h4" not in m
 
 
-def test_the_real_architecture_book_navigation_exposes_all_h4_groups():
-    """The compact view must not lose the subsection index the monolith's map
-    carried: every `###`/`####` group still appears, addressed to the PHYSICAL
-    chapter it lives in, with the parent range containing its children."""
-    from ouroboros.reference_books import load_reference_book
+def test_real_book_navigation_has_one_addressed_scope_per_chapter_not_subsection_trees():
+    """The chapter is the compact navigation unit; the physical file still
+    supplies every subsection and its complete body on demand."""
+    from ouroboros.reference_books import BOOK_ENTRYPOINTS, load_reference_book, read_book_range
 
     repo = Path(__file__).resolve().parents[1]
-    book = load_reference_book(repo, "architecture")
-    m = cl.book_navigation(book)
+    for book_id in BOOK_ENTRYPOINTS:
+        book = load_reference_book(repo, book_id)
+        nav = cl.book_navigation(book)
+        assert nav.count('read_file(root="system_repo", path=...)') == 1
+        assert "## Chapters" not in nav
+        assert "(navigation map)" not in nav
+        assert " — lines " not in nav
+        assert not any(line.startswith(("- ", "  - ")) for line in nav.splitlines())
+        assert nav.count("\n\nSource: ") == len(book.chapters)
+        for chapter in book.chapters:
+            assert nav.splitlines().count(f"# {chapter.headings[0].title}") == 1
+            assert nav.count(f"Source: `{chapter.source_path}`") == 1
+            assert read_book_range(book, chapter.source_path).text == chapter.text
+            for heading in chapter.headings[1:]:
+                assert f"{heading.title} — lines " not in nav
 
-    assert "## 6. Agent Core (navigation map)" in m
-    assert "Source: `docs/architecture/06-agent-core.md`" in m
-    # A composed-book offset is never a locator; the read instruction is stated
-    # once, over the physical Source paths.
-    assert 'read_file(root="system_repo", path=...)' in m
-    assert m.count("Full text is NOT inlined") == 0
 
-    tool_children = (
-        "Web access mechanisms (three distinct paths — do not conflate)",
-        "Context fitting, retry, and compaction",
-        "Vision and local image evidence",
-        "Background consciousness and Evolution",
-    )
-    planning_children = (
-        "Plan construction and review",
-        "Deep self-review",
-        "Post-task work",
-        "Durable memory and project focus",
-    )
-    for title in (*tool_children, *planning_children):
-        assert f"    - {title} — lines " in m, title
+def test_real_book_context_modes_keep_full_composition_and_compact_maps_separate():
+    from ouroboros.reference_books import BOOK_ENTRYPOINTS, compose_book, load_reference_book
 
-    def _range(indent: str, title: str) -> tuple[int, int]:
-        prefix = f"{indent}- {title} — lines "
-        row = next(line for line in m.splitlines() if line.startswith(prefix))
-        start, end = row.removeprefix(prefix).split("-", 1)
-        return int(start), int(end)
-
-    for parent_title, children in (
-        ("Tool capability and execution", tool_children),
-        ("Planning, deep review, post-task work, memory", planning_children),
-    ):
-        parent_start, parent_end = _range("  ", parent_title)
-        child_ranges = [_range("    ", title) for title in children]
-        assert all(parent_start < start <= end <= parent_end for start, end in child_ranges)
-        assert parent_end == child_ranges[-1][1]
-
-    # Those ranges address the chapter file, so they resolve there and nowhere
-    # else: the entrypoint has one section and cannot answer for them.
-    chapter = next(c for c in book.chapters if c.source_path.endswith("06-agent-core.md"))
-    start, end = _range("  ", "Tool capability and execution")
-    lines = chapter.text.split("\n")
-    assert lines[start - 1].startswith("### Tool capability and execution")
-    assert end <= len(lines)
+    books = tuple(load_reference_book(Path(__file__).resolve().parents[1], name)
+                  for name in BOOK_ENTRYPOINTS)
+    arch, dev = books
+    for mode in ("low", "nano", "max"):
+        for include_dev in (False, True):
+            parts, handbook = cl.reference_doc_sections(
+                None, context_mode=mode, include_development=include_dev, books=books)
+            if mode in {"low", "nano"}:
+                assert parts[:2] == [cl.book_navigation(arch), cl.book_navigation(dev)]
+                assert handbook == ""
+            else:
+                assert parts[0] == "## ARCHITECTURE.md\n\n" + compose_book(arch)
+                assert handbook == ("## DEVELOPMENT.md\n\n" + compose_book(dev)
+                                    if include_dev else cl.book_navigation(dev))
 
 
 def test_a_legacy_revision_navigates_as_the_single_source_it_is():

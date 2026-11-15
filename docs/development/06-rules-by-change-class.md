@@ -1,6 +1,6 @@
 # Rules by change class
 
-Imperative rules per change class: tool registration, skill payloads, live E2E, light mode/deliverables, retention, delegated subagents, cancellation, onboarding/settings, transport and late-result custody, LLM calls, timeout/wait control, and loop/result-review state machines. Each section names its enforcing test or marks the rule review-only, citing ARCHITECTURE for mechanism instead of restating it. `docs/CHECKLISTS.md` remains the only reviewer scorer; its `development_compliance` item points at this handbook as a whole.
+Read the section for the change class in hand; it names the enforcing test or review-only duty. Mechanisms live in ARCHITECTURE; CHECKLISTS owns reviewer scoring.
 
 ### Tool registration and guard surfaces
 
@@ -135,7 +135,13 @@ Enforcement: `tests/test_phase3c_observability_gc.py` (knob and cutoff math), `t
 
 ### Live subagents
 
-Mechanism is ARCHITECTURE §6 "Delegated subagents (Claudexor transport + the nanny)" and the module docstrings it names. Review gate: CHECKLISTS items 16 (`subagent_isolation`), 19 (`delegated_transport`). Imperatives:
+Mechanism: ARCHITECTURE §6 "Delegated subagents (Claudexor transport + the nanny)". Review: CHECKLISTS 16 (`subagent_isolation`), 19 (`delegated_transport`).
+
+- API children receive work order, Constitution/book maps, identity, top-level story, room page and room/global marks, whole assignment/attachments and verbatim governing human words, not full parent dialogue; knowledge stays readable. Nannies omit the life account; vendor leaves get only goal, limits, material paths, orientation and human words. Child chronicle drafts require integration.
+- Agent-session rows make nannies: the host starts exact fresh leaves before round one; restored work follows its receipt. Judge/verify/integrate/answer/recover, never rebuild/co-build. Choose `delegate_wait`; the host never waits for the nanny. Only `delegate_start`/`schedule_subagent` resets burn baseline; supervision costs continue. Inherited authority remains; cognitive route defaults to parent's unless another row was named (`switch_model` can change it). Vendor children are opaque.
+- Before a typed zero-run receipt, retry the exact route. `started_uncustodied` may be live: wait/cancel, prove absent/terminal and dispose captured results before replaying THAT start with `retry_of`; other starts remain available. No silent fallback.
+- `write_surface` governs effects, not identity. `external_workspace` shares writes: verify files/verdict, never reapply. Cooperative builders use it without `write_root`; parent is sole integrating committer. `genesis` is a standalone child repo. Private harness checks without candidate-write authority are evidence, not apply duty. Depth limits depth, not strength; inherited `may_delegate=false` holds at admission.
+- Never use runtime `data/` as child write surface. Payload edits require the parent's top-level `delegate_start` with `root="skill_payload"` or direct payload-root edits. Build other data artifacts externally/genesis, parent materializes. First read CREATING_SKILLS “Top-level short-form authoring (including light mode)”.
 
 - Only `schedule_subagent` schedules; schema/handler share `control.schedule_subagent_properties()`. Child needs use the capability enum, not contract fields/prose. `subagent_id` selects a full `OUROBOROS_SUBAGENTS` row admitted by both enabled axes; dispatch uses its scheduling snapshot. No second selector, host ranking or substitution. Redelivery of an exact task id with live/durable custody is an idempotent no-op.
 - The parent's substrate binds. Auto-start fresh work only; saved supervision restores before leaf admission, without probing or replaying a pending POST. Keep local handoff authority checks; unobserved liveness is not readiness or loss. Stage shown wake exposure before saving; ACK externally only after incorporation. Add to `_DEFINITE_UNRUN_REASONS` only proof of no run. Zero-run receipts remain `incomplete | unknown`; no silent substrate fallback.
@@ -148,7 +154,7 @@ Mechanism is ARCHITECTURE §6 "Delegated subagents (Claudexor transport + the na
 - Ordinary-directory sessions use the engine-owned file work product: keep the parent-selected direct/copy strategy, never initialize Git or change run mode as a workaround, carry full file artifacts beside source patches (deletion included: an empty text diff cannot certify no work), apply via the engine CAS, retain unselected results, and never relabel direct effects or a discard as an undo.
 
 - Vendor maintenance shares engine-owned capability/request identity across UI and tools, never a harness-specific installer or task replay (ARCHITECTURE §6 Vendor program maintenance). Preserve selected/baseline, rejoin and partial/cancel facts; verify both authority directions and desktop/mobile rejoin (`test_harness_maintenance_host`, `test_harness_maintenance_transport`, `test_harness_maintenance_browser`).
-- Writable access without product-write authority means private, evidence-only investigation. Integration/debt use `delegate_registration_policy.candidate_apply_possible`; Continue uses `independent_review_without_apply`, not path/label guesses (`tests/test_investigation_custody.py`).
+- Evidence-only investigation: integration/debt use `delegate_registration_policy.candidate_apply_possible`; Continue uses `independent_review_without_apply`, not path/label guesses (`tests/test_investigation_custody.py`).
 
 Enforcement: `tests/test_acting_subagents.py` (profiles and creation), `tests/test_delegate_continuation.py` (`continue_from`), `tests/test_custody_owner_kinds.py`, `tests/test_delegated_directory.py`; `tests/test_tool_api_v2_public_surface.py` pins the schema/handler derivation.
 

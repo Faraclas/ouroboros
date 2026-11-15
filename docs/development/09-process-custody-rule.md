@@ -1,5 +1,7 @@
 # Process Custody Rule
 
+Read before spawning, stopping or handing over work-started processes. One lifetime owner retains custody until measured settlement.
+
 Each work-started process has one lifetime owner: task, server generation, delegated run, test session or installation. End or hand it to a longer-lived owner, never init. Verify identity by ledger, `OURO_{INSTALL,TASK}_SCOPE_<hex>=1` or recorded group, never command line. Terminal paths settle, never provision/spawn/admit. Failed reads/signals mean unverified; retire only on recorded settled/no-census outcomes (`test_task_scope_lifetime.py`, `test_exit_does_not_admit.py`).
 
 **Delegated invocation order** is the durable append ordinal, never a clock or run id (ARCHITECTURE §6 Nanny, transport and custody); a legacy fact that cannot prove the answer stays `legacy_gap`, bookkeeping never replays the event chain, and a rebuild needs a quiescent root. `invocation_record(rows=...)` is the independent oracle (`test_custody_invocation_record.py`, `test_custody_fold_equivalence.py`).

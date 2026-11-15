@@ -37,7 +37,7 @@ This chapter preserves `docs/DESIGN.md` semantics in code: value and control own
 
 ### Responsive and accessible behavior
 
-Navigation, headers, controls and dialogs stay operable by pointer and keyboard, keep focus order, and fit the relevant narrow viewport without stealing usable text space; use the shared responsive component before adding a page-specific layout. Engines and viewports follow risk; verify on the engine that shows the class: Playwright WebKit for native-control clipping, Chromium for track geometry, both measuring overflow on the scroll body's `scrollWidth`, not `documentElement`; the system WKWebView for style cost. Review-only: vision evidence and scoring per CHECKLISTS items 11(i) and 26 (`web_design_system`).
+Navigation, headers, controls and dialogs stay operable by pointer and keyboard, keep focus order, and fit the relevant narrow viewport without stealing usable text space; use the shared responsive component before adding a page-specific layout. Engines and viewports follow risk; verify on the engine that shows the class: Playwright WebKit for native-control clipping, Chromium for track geometry, both measuring overflow on the scroll body's `scrollWidth`, not `documentElement`; the system WKWebView for style cost. For a visible UI change open a relevant real browser flow and inspect the rendered result with vision; producing a screenshot is not inspection. Extra engines/viewports follow actual risk: mobile and WebKit are not universal, and a missing optional engine is not degradation. Necessary visual evidence that could not be obtained makes the result best-effort with its gap named. Review-only: vision evidence and scoring per CHECKLISTS items 11(i) and 26 (`web_design_system`).
 
 ### Browser dialogs
 

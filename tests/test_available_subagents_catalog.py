@@ -373,8 +373,12 @@ def test_dynamic_session_supervision_fact_line_and_switch_model_cache_invariance
     from ouroboros.subagent_runtime import cognitive_route_billing_basis
 
     system_text = (Path(__file__).resolve().parent.parent / "prompts" / "SYSTEM.md").read_text(encoding="utf-8")
-    assert "Agent-session rows\nrun their leaf on my human's subscriptions (shared quota); scheduling one also\ncreates a supervising child on my own current route — or on the row I name as\nits supervisor — billed as that route bills; API rows on a provider key bill per\ntoken; weighing that is mine." in system_text
-    assert "A configured nanny keeps\nits inherited authority; its cognitive route is my parent's unless the parent\nnamed another row, and I may change it with `switch_model`. Children inside a\nvendor session stay opaque to me." in system_text
+    normalized_system = " ".join(system_text.split())
+    assert "Agent-session leaves use human subscriptions/shared quota; supervisors bill on my route or the row I name." in normalized_system
+    assert "API-key rows bill per token." in normalized_system
+    assert '"Live subagents"' in system_text
+    development = (Path(__file__).resolve().parent.parent / "docs/development/06-rules-by-change-class.md").read_text(encoding="utf-8")
+    assert "Inherited authority remains; cognitive route defaults to parent's unless another row was named (`switch_model` can change it). Vendor children are opaque." in development
     assert "shared quota, no API dollars" not in system_text
     assert "keeps\nits inherited authority and cognitive route" not in system_text
 

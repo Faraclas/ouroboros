@@ -1,8 +1,10 @@
 # 2. Startup / Onboarding Flow
 
-Startup orders launcher checks, gateway onboarding and an atomic save of settings, next-boot mode and install-time presets. Boot normalization never creates `settings.json`: fresh-install latches need its absence. Sufficient provider configuration starts the optional supervisor. Automatic intent (`--launch-intent automatic`; direct server: `OUROBOROS_LAUNCH_INTENT=automatic`) passes `launcher_bootstrap.automatic_launch_allowed`: after Panic it exits 0 before startup, marker intact. Launcher intent overrides the child's inherited intent; owner/default intent starts normally. Containers: [DEPLOYMENT](../DEPLOYMENT.md#containers).
+Launcher checks, onboarding, provider readiness and startup recovery. Read before changing boot ordering, first-install settings, automatic launch after Panic or packaged/container startup.
 
 ### Boot order
+
+Onboarding atomically saves settings, next-boot mode and install presets; boot normalization never creates `settings.json` (fresh-install latches require absence). Automatic launch (`--launch-intent automatic`, direct server `OUROBOROS_LAUNCH_INTENT=automatic`) calls `launcher_bootstrap.automatic_launch_allowed`: after Panic, exit 0 before startup, marker intact. Launcher intent overrides inherited intent; owner/default starts normally. Containers: [DEPLOYMENT](../DEPLOYMENT.md#containers).
 
 `server_boot.mcp_startup` makes the server the only MCP lister, pruning then listing in background (§6).
 

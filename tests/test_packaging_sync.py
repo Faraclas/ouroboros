@@ -82,7 +82,9 @@ def test_release_guidance_accepts_author_facing_and_pep440_forms():
     system = (REPO / "prompts" / "SYSTEM.md").read_text(encoding="utf-8")
 
     assert "PEP 440 canonical form" in bible
-    assert "PEP 440 canonical form" in system
+    development = (REPO / "docs/development/05-review-and-commit-protocol.md").read_text(encoding="utf-8")
+    assert "PEP 440 canonical form" in development
+    assert "docs/development/05-review-and-commit-protocol.md" in system
     assert "`VERSION` == `pyproject.toml` version == latest git tag" not in bible
     assert "VERSION == pyproject.toml version == latest git tag" not in system
 
@@ -214,32 +216,27 @@ def test_install_page_matches_macos_quick_start_and_model_prerequisite():
         assert release_asset_download_url(proof_id, version) in install_page
 
 
-def test_system_prompt_lists_bible_in_safety_critical_set():
-    """prompts/SYSTEM.md ``Safety-critical files`` section must name EXACTLY
-    ``ouroboros.runtime_mode_policy.SAFETY_CRITICAL_PATHS`` — including
-    ``BIBLE.md``, which is protected by the hardcoded sandbox. The prompt keeps
-    this one exact list (the LLM must recognise the names) and points at
-    ``runtime_mode_policy.py`` for the wider protected surface instead of
-    mirroring the frozen/release sets, which rotted twice before."""
-    from ouroboros.runtime_mode_policy import SAFETY_CRITICAL_PATHS
+def test_system_prompt_points_to_canonical_protected_sets_with_resident_safeguard():
+    """The policy is the inventory SSOT; SYSTEM keeps the read trigger and bounds.
+
+    SAFETY's separate supervisor inventory still needs exact parity below.
+    """
+    from ouroboros import runtime_mode_policy
 
     system_md = (REPO / "prompts" / "SYSTEM.md").read_text(encoding="utf-8")
-
-    safety_section_start = system_md.find("## Safety-critical files")
-    assert safety_section_start != -1
-    safety_section_end = system_md.find("\n## ", safety_section_start + 1)
-    safety_section = system_md[safety_section_start:safety_section_end]
-    assert "`BIBLE.md`" in safety_section
-    assert "`ouroboros/safety.py`" in safety_section
-    assert "`prompts/SAFETY.md`" in safety_section
-    assert "`ouroboros/tools/registry.py`" in safety_section
+    safety_section = system_md.split("## Safety-critical files\n", 1)[1].split("\n## ", 1)[0]
     named_paths = {
         token for token in re.findall(r"`([^`]+)`", safety_section)
         if "/" in token or token.endswith(".md")
     }
-    assert named_paths == set(SAFETY_CRITICAL_PATHS), (
-        named_paths ^ set(SAFETY_CRITICAL_PATHS)
-    )
+    assert named_paths == {"ouroboros/runtime_mode_policy.py"}
+    for name in ("SAFETY_CRITICAL_PATHS", "PROTECTED_RUNTIME_PATHS", "PROTECTED_RUNTIME_PATH_PREFIXES"):
+        assert hasattr(runtime_mode_policy, name)
+        assert f"`{name}`" in safety_section
+    normalized = " ".join(safety_section.split())
+    assert "before protected work" in normalized
+    assert "Advanced cannot edit the protected surface; Pro/Cyber Pro may edit on disk." in normalized
+    assert "P0/P3 govern review/configuration" in normalized
 
 
 def test_safety_prompt_protected_path_list_mirrors_runtime_policy():
