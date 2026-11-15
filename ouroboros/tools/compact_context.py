@@ -301,7 +301,7 @@ def get_tools() -> List[ToolEntry]:
                             "checkpoint_ref": {"type": "object"}, "unit_id": {"type": "string"}, "raw_sha256": {"type": "string"}},
                             "required": ["checkpoint_ref", "unit_id", "raw_sha256"]},
                             "description": "Read exact checkpoint-local units back as labelled sources, never live tool protocol replay (checkpoint_ref is inspect's restore_checkpoint). In Main a nonempty list may be used alone; native review also requires working_note (empty is valid). Supply a note to combine restoration with other view selectors."},
-                        "schema_names": {"type": "array", "items": {"type": "string"}, "description": "Nano only: desired canonical schemas. This selects residency, never execution permissions. Low/Max retain their full permitted envelope."},
+                        "schema_names": {"type": "array", "items": {"type": "string"}, "description": "Low/Nano: desired canonical schemas. This selects residency, never execution permissions; discovery remains loaded. Max retains its full permitted envelope."},
                         "review_notes": {"type": "array", "items": {"type": "object", "properties": {
                             "bound_decision": {"anyOf": [{"type": "object"}, {"type": "string"}]},
                             "bound_decisions": {"type": "array", "items": {"anyOf": [{"type": "object"}, {"type": "string"}]}},

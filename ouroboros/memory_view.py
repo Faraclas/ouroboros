@@ -586,8 +586,12 @@ def _lanes(root: pathlib.Path, entries: List[Entry], lineage: Mapping[str, Any])
     return lane1, lane2
 
 
-def _notes_by_room(store: ChronicleStore) -> Dict[str, List[Dict[str, Any]]]:
-    """My notes no page has sealed yet (``note:<id>`` outside the room's sealed set), by room."""
+def _notes_by_room(store: ChronicleStore, story=()) -> Dict[str, List[Dict[str, Any]]]:
+    """Unsealed notes, except those explicitly retold by an account present in this view's story.
+
+    Raw readers and story-less roles keep the notes: a selection must not remove their only text.
+    """
+    told = told_map([entry for entry in story if entry.get("kind") == "account"])
     by_room: Dict[str, List[Dict[str, Any]]] = {}
     for record in store.room_records(None, kinds=("note",)):
         by_room.setdefault(str(record["room_id"]), []).append(record)
@@ -599,7 +603,7 @@ def _notes_by_room(store: ChronicleStore) -> Dict[str, List[Dict[str, Any]]]:
                  "role": str(_mapping(_mapping(record.get("author")).get("focus")).get("role") or "mind"),
                  "origin": dict(_mapping(_mapping(record.get("author")).get("focus"))),
                  "text": str(record.get("current_text") or "")}
-                for record in by_room[room] if f"note:{record['id']}" not in sealed]
+                for record in by_room[room] if f"note:{record['id']}" not in sealed and record['id'] not in told]
         if kept:
             notes[room] = kept
     return notes
@@ -804,7 +808,7 @@ def _capture_live(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
                   story: List[Dict[str, Any]] = ()) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """``(this room, live rooms, marks)`` of one capture, from one read of the open rows."""
     lineage = row_lineage(root)
-    notes = _notes_by_room(store) if spec.room_id is not None or spec.live_rooms != "none" else {}
+    notes = _notes_by_room(store, story) if spec.room_id is not None or spec.live_rooms != "none" else {}
     if spec.live_rooms != "none":
         by_room = memory_inventory.open_rows_by_room(root)
     elif spec.room_id is not None:  # the room's facts are counted from its open rows whatever the view prints of them

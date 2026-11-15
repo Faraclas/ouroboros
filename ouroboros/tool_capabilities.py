@@ -210,11 +210,11 @@ ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
 })
 
 def schema_selection_tools_for_context(ctx: object) -> frozenset[str]:
-    """Existing Nano view controls select schemas without granting capabilities."""
+    """Compact view controls select schemas without granting capabilities."""
     from ouroboros.config import get_context_mode
 
     mode = str(getattr(ctx, "active_context_mode", "") or get_context_mode())
-    return META_TOOL_NAMES | {"compact_context"} if mode == "nano" else frozenset()
+    return META_TOOL_NAMES | {"compact_context"} if mode in {"low", "nano"} else frozenset()
 
 
 def acting_tool_names_for_context(ctx: object, registered_names: Iterable[str]) -> frozenset[str]:

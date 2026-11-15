@@ -189,7 +189,7 @@ def test_explicit_recent_count_compacts_older_units_with_authored_note(main_loop
 
 
 def test_low_full_catalog_inspection_is_retrievable_when_delivered_by_source(main_loop, tmp_path, monkeypatch):
-    """Do not hide the full-catalog Low pressure branch behind the focused fixture."""
+    """Explicitly loading the full catalog still exercises Low's source-only pressure branch."""
     from ouroboros import context
     from tests.test_doc_context import _make_env_and_memory
 
@@ -198,7 +198,9 @@ def test_low_full_catalog_inspection_is_retrievable_when_delivered_by_source(mai
     env, memory = _make_env_and_memory(tmp_path / "full-catalog")
     f.messages, _ = context.build_llm_messages(env, memory, {"id": "authored-main", "type": "task",
         "text": "Inspect the retained evidence."}, ctx=f.ctx)
-    f.run([call("read_file", {"path": "evidence.txt"}, "read"),
+    names = ",".join(schema["function"]["name"] for schema in f.registry.schemas())
+    f.run([call("enable_tools", {"tools": names}, "load-catalog"),
+           call("read_file", {"path": "evidence.txt"}, "read"),
            call("compact_context", {"inspect": True}, "inspect"), {"content": "done"}])
     delivered = next(m["content"] for m in f.inputs[-1]["messages"] if m.get("tool_call_id") == "inspect")
     view = json.loads(next(line.removeprefix("RESULT_VIEW_JSON=") for line in delivered.splitlines()
@@ -386,6 +388,10 @@ def test_main_schema_only_view_uses_the_active_envelope(main_loop, monkeypatch, 
     after = {s["function"]["name"] for s in f.inputs[1]["tools"]}
     if mode == "nano":
         assert "read_file" not in before and "read_file" in after
+        assert f.ctx._context_view_receipt["status"] == "applied"
+    elif mode == "low":
+        assert "read_file" in before and after < before
+        assert after == {"read_file", "list_available_tools", "enable_tools", "compact_context"}
         assert f.ctx._context_view_receipt["status"] == "applied"
     else:
         assert before == after and f.ctx._context_view_receipt["status"] == "no_op"

@@ -41,15 +41,19 @@ def _names(schemas):
     return tuple(schema["function"]["name"] for schema in schemas)
 
 
-def test_only_nano_selects_schemas_and_never_changes_shared_canonical_bytes():
+def test_compact_modes_select_schemas_and_never_change_shared_canonical_bytes():
     registry = Registry()
     before = json.dumps(registry.schemas())
     full = initial_tool_schemas(registry)
     nano = initial_tool_schemas(registry, "nano", ["write_file"])
     assert _names(nano) == ("list_available_tools", "write_file", "enable_tools", "compact_context")
-    for mode in ("low", "max"):
-        assert initial_tool_schemas(registry, mode, []) == full
-        assert list_non_core_tools(registry, mode) == []
+    assert initial_tool_schemas(registry, "max", []) == full
+    assert list_non_core_tools(registry, "max") == []
+    assert _names(initial_tool_schemas(registry, "low")) == (
+        "read_file", "list_available_tools", "enable_tools", "compact_context")
+    assert _names(initial_tool_schemas(registry, "low", [])) == (
+        "list_available_tools", "enable_tools", "compact_context")
+    assert [row["name"] for row in list_non_core_tools(registry, "low")] == ["write_file"]
     nano[1]["function"]["parameters"]["properties"]["path"]["type"] = "integer"
     assert json.dumps(registry.schemas()) == before
     assert json.dumps(initial_tool_schemas(registry, "max")) == before
@@ -114,7 +118,7 @@ def test_catalog_has_every_permitted_name_and_only_purpose_is_bounded():
     assert format_capability_omissions(omissions)[1] == "- mcp: resource_blocked (network=false)"
 
 
-@pytest.mark.parametrize("mode", ["low", "max"])
+@pytest.mark.parametrize("mode", ["max"])
 def test_full_modes_do_not_queue_a_selection_or_retain_old_nano_pending(mode):
     registry, ctx = Registry(), SimpleNamespace(_pending_tool_schema_names=("read_file",))
     request = request_tool_schema_selection(ctx, registry, [], context_mode=mode,

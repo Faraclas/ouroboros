@@ -290,8 +290,9 @@ def test_main_projection_shows_the_brief_once_and_the_objective_once():
     assert projected["task_contract"]["objective"] == {
         "representation": "assignment", "chars": len(work_order),
         "sha256": hashlib.sha256(work_order.encode("utf-8")).hexdigest(),
-        "rule": "The objective is this task's assignment, the first user turn of this conversation; "
-                "it is not repeated here."}
+        "rule": "These exact objective bytes occur in this task's assignment, the first user turn "
+                "of this conversation; they are not repeated here.",
+        "assignment_range": [0, len(work_order)]}
     assert work_order not in json.dumps(projected), "the work order is not repeated inside the Runtime view"
 
     other = {**brief, "task_id": "older", "source": _source("older")}

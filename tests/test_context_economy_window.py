@@ -337,7 +337,8 @@ def test_a_cold_restore_sends_the_new_capture_at_its_own_level_not_refolded_to_t
     assert rebound.projection(mode).memory_facts == fresh.projection(mode).memory_facts
 
 
-def _native(main_call, monkeypatch, tmp_path, *, task_text="hi", owner_mode="low", view=None, books=0):
+def _native(main_call, monkeypatch, tmp_path, *, task_text="hi", owner_mode="low", view=None, books=0,
+            full_catalog=False):
     """The owner's ``owner_mode`` on the fixture's real Claudexor Main call with a captured core (``view``: another
     memory snapshot in it; ``books``: Max's books grown by that many characters, as ``test_memory_view_modes._built``
     grows them): ``(ctx, gateway, tools, events, plan(window), windows)``. ``windows`` maps an account
@@ -391,6 +392,19 @@ def _native(main_call, monkeypatch, tmp_path, *, task_text="hi", owner_mode="low
     core = native_fixture_core(core, tmp_path / "w")
     core = core if view is None else dataclasses.replace(core, memory_view_json=view)
     core = dataclasses.replace(core, architecture_md=core.architecture_md + "\n\n" + "word " * (books // 5)) if books else core
+    # These rebind cases require a fixed, already-loaded catalog to make the
+    # 100K window reject Low. Compact fresh Low fits it now; that is tested apart.
+    if full_catalog:
+        from ouroboros import tool_policy
+        original_select = tool_policy.select_tool_schemas
+
+        def loaded_catalog(canonical, *, context_mode="max", schema_names=None, **kwargs):
+            names = [s["function"]["name"] for s in canonical] if schema_names is None else schema_names
+            return original_select(canonical, context_mode=context_mode, schema_names=names, **kwargs)
+
+        # Startup mode fitting and later loop sends must price the same loaded
+        # catalog, not compact Low in one and full Low in the other.
+        monkeypatch.setattr(tool_policy, "select_tool_schemas", loaded_catalog)
     schemas = initial_tool_schemas(tools, context_mode=owner_mode)
 
     def plan(window):
@@ -510,14 +524,15 @@ def _shown_low(main_call, monkeypatch, tmp_path, cut):
     if cut == "budget":
         actor = dataclasses.replace(actor, room={**actor.room, "legacy": syn.room("1", legacy=23, legacy_chars=40_000)[
             "legacy"]})
-    ctx, _gateway, tools, events, plan, windows = _native(main_call, monkeypatch, tmp_path, view=snapshot_json(actor))
+    ctx, _gateway, tools, events, plan, windows = _native(main_call, monkeypatch, tmp_path,
+                                                       view=snapshot_json(actor), full_catalog=True)
     # A Low-cut starting window must fit the fixed core/tool catalog. Its exact
     # size is incidental; keep the actual 100K Nano/deficit/tail oracles below.
     windows.update({"account-a": 160_000 if cut == "window" else 1_000_000, "account-b": 100_000})
     built = plan(windows["account-a"])
     assert built.initial_mode == "low" and built.low_projection.memory_facts["floor"]["by_budget"] > 0
     ctx.tools, ctx.context_fit_plan, ctx.active_context_mode = tools, built, "low"
-    ctx.tool_schemas = initial_tool_schemas(tools, context_mode="low")
+    ctx.tool_schemas = initial_tool_schemas(tools, context_mode="max")
     ctx.messages[:] = [*built.messages_for("low"), result()["message"],  # the shown Low view, then the round's tail
                        {"role": "tool", "tool_call_id": "a", "content": "verified read A"},
                        {"role": "tool", "tool_call_id": "b", "content": "completed review B"}]
@@ -654,7 +669,7 @@ def test_an_owner_max_task_in_task_local_low_rebinds_a_fallback_and_its_return_f
     from tests import _memory_view_synthetic as syn
 
     ctx, gateway, tools, events, plan, windows = _native(main_call, monkeypatch, tmp_path, owner_mode="max",
-                                                         view=snapshot_json(syn.actor("main")))
+                                                         view=snapshot_json(syn.actor("main")), full_catalog=True)
     windows.update({"account-a": 160_000, "account-b": {"roomy": 900_000, "tight": 100_000}[fallback]})
     built = dataclasses.replace(plan(160_000), initial_mode="low")  # the owner's Max plan, task-local Low shown
     low = built.messages_for("low")[0]

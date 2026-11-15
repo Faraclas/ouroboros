@@ -102,7 +102,7 @@ def project_main_task_authority(task: Mapping[str, Any]) -> Dict[str, Any]:
 
     The materialized predecessor (the brief) appears once, at the top level; an
     equal copy nested in the task's own contract is dropped from this view. A
-    contract objective byte-identical to the assignment — the first user turn of
+    contract objective occurring exactly in the assignment — the first user turn of
     the conversation — and a contract context byte-identical to the task block's
     own ``context`` are shown as typed references, so the work order and its
     context appear once per request.
@@ -121,10 +121,13 @@ def project_main_task_authority(task: Mapping[str, Any]) -> Dict[str, Any]:
         elif isinstance(nested, Mapping):
             projected_contract["predecessor_authority"] = project_helper_predecessor_authority(nested)
         objective = projected_contract.get("objective")
-        if isinstance(objective, str) and objective and objective == str(task.get("text") or ""):
+        assignment = str(task.get("text") or "")
+        if isinstance(objective, str) and objective and objective in assignment:
             projected_contract["objective"] = _shown_elsewhere(objective, "assignment", (
-                "The objective is this task's assignment, the first user turn of this conversation; "
-                "it is not repeated here."))
+                "These exact objective bytes occur in this task's assignment, the first user turn "
+                "of this conversation; they are not repeated here."))
+            start = assignment.index(objective)
+            projected_contract["objective"]["assignment_range"] = [start, start + len(objective)]
         context = projected_contract.get("context")
         if isinstance(context, str) and context and context == task.get("context"):
             projected_contract["context"] = _shown_elsewhere(context, "task_context", (

@@ -105,3 +105,27 @@ def test_a_shown_account_tells_a_parts_members_and_replaced_legacy_and_hiding_it
             assert [item["id"] for item in snapshot.room["under_parts"]] == ids and "Old Main talk." in story
         # A nanny carries no story, so no account stands in for its room's pages there.
         assert "FIRST PAGE TEXT" in _view(tmp_path, NANNY)[1]
+
+
+def test_a_selected_account_retells_only_named_notes_and_raw_readers_keep_them(tmp_path):
+    _install(tmp_path)
+    store = ChronicleStore(tmp_path)
+    first = store.write_note(room_id="1", task_id="closed", text="FIRST NOTE", author=shared.MIND)
+    second = store.write_note(room_id="2", task_id="other", text="OTHER ROOM NOTE", author=shared.MIND)
+    untouched = store.write_note(room_id="1", task_id="open", text="KEEP THIS NOTE", author=shared.MIND)
+    assert first.ok and second.ok and untouched.ok
+    ids = [first.record["id"], second.record["id"]]
+    account = store.publish_account(room_id="1", text="MY NOTES RETOLD", sources=ids, author=shared.MIND)
+    assert account.ok
+    for shown in (True, False, True):
+        assert store.select_account(account.record["id"], replaces=ids, author=shared.MIND,
+                                    reason="I retold these notes", shown=shown).ok
+        snapshot, story, room = _memory(tmp_path)
+        assert ("MY NOTES RETOLD" in story) == shown
+        assert ("FIRST NOTE" in room) != shown
+        assert "KEEP THIS NOTE" in room
+        live_notes = [note["text"] for live in snapshot.live_rooms for note in live.get("notes", [])]
+        assert ("OTHER ROOM NOTE" in live_notes) != shown
+        assert store.get(ids[0])["text"] == "FIRST NOTE"
+        assert ids[0] in {note["id"] for note in mv._notes_by_room(store)["1"]}
+        assert "FIRST NOTE" in _view(tmp_path, NANNY)[1]

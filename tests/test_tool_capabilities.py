@@ -652,7 +652,7 @@ def test_discovery_lists_the_callable_catalog_in_every_mode(mode):
     assert names
     for name in names:
         assert f"- {name} [" in output, f"schemas() offers {name!r} but discovery does not list it"
-    assert ("[not loaded]" in output) is (mode == "nano")
+    assert ("[not loaded]" in output) is (mode in {"low", "nano"})
 
 
 def test_burst_absorb_clause_states_the_prefix_write_cost():

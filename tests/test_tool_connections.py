@@ -81,6 +81,11 @@ def test_an_unpinned_server_starts_on_demand_in_every_mode_and_the_map_names_its
         names = set(_names(initial_tool_schemas(registry, context_mode=mode)))
         assert not any(name.startswith("mcp_gitlab__") for name in names), mode
         assert ("mcp_slack__history" in names) is (mode != "nano"), mode  # a pin is Low/Max residency
+        if mode == "low":
+            from ouroboros.tool_policy import select_tool_schemas
+            # The context-fit frame reselects an initial snapshot, not the live registry.
+            assert set(_names(select_tool_schemas(initial_tool_schemas(registry, mode),
+                                                   context_mode=mode).schemas)) == names
     full, nano = connection_views(registry, helper=False)
     assert "### mcp_gitlab (GitLab): 2 tools, call schemas ≈" in full and ", on demand;" in full
     assert "Server instructions: Use numeric project ids, never names." in full

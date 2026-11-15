@@ -1,6 +1,6 @@
 """Tool discovery meta-tools: the ONE implementation of catalog listing and enabling.
 
-Tasks start with the selected capability envelope (Nano with a compact resident
+Tasks start with the selected capability envelope (Low/Nano with a compact resident
 view; in every mode an unpinned MCP server's schemas load on demand, its tools named
 by the connections map). ``list_available_tools`` reports the task's current callable
 catalog in every context mode — whether a schema is already loaded is an attribute of

@@ -117,8 +117,8 @@ def _full_section(server: str, rows: List[Dict[str, Any]], facts: Dict[str, Any]
 def connection_views(registry: Any, *, helper: bool) -> Tuple[str, str]:
     """``(Low/Max text, Nano text)`` of this actor's map; an empty text when there is nothing to show.
 
-    Low/Max lists MCP servers only (built-in and extension schemas are resident there); Nano lists every
-    callable tool by namespace except the always-loaded selectors, since Nano loads schemas by choice.
+    Low/Max's map describes MCP servers; Low discovers other nonresident schemas through
+    list_available_tools. Nano also lists every callable tool except its always-loaded selectors.
     """
     rows, facts, schemas = _catalog(registry)
     selectors = usable_selectors(registry)  # advice names only a selector this actor can call

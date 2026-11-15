@@ -1324,6 +1324,18 @@ def _context_fit_route(
     return resolve_context_fit_route(task, allow_fetch=allow_fetch)
 
 
+def initial_context_mode(task: Dict[str, Any], preferred_mode: Optional[str] = None) -> str:
+    """One starting mode for the task's memory projection and schema measurement."""
+    task_meta = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    is_child = (
+        str(task.get("delegation_role") or task_meta.get("delegation_role") or "") == "subagent"
+        or bool(task.get("parent_task_id") or task_meta.get("parent_task_id"))
+    )
+    subagent_id = str(task.get("subagent_id") or task_meta.get("subagent_id") or "")
+    default_mode = ("nano" if subagent_id == "fast-scout" else "low") if is_child else (get_context_mode() or "low")
+    return str(preferred_mode or default_mode)
+
+
 def build_context_fit_plan(
     env: Any,
     memory: Memory,
@@ -1337,14 +1349,7 @@ def build_context_fit_plan(
 ) -> ContextFitPlan:
     """Compatibility wrapper over the cohesive context-fit implementation."""
     core = _capture_context_core(env, memory, task, review_context_builder, ctx, tool_registry)
-    task_meta = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-    is_child = (
-        str(task.get("delegation_role") or task_meta.get("delegation_role") or "") == "subagent"
-        or bool(task.get("parent_task_id") or task_meta.get("parent_task_id"))
-    )
-    subagent_id = str(task.get("subagent_id") or task_meta.get("subagent_id") or "")
-    default_mode = ("nano" if subagent_id == "fast-scout" else "low") if is_child else (get_context_mode() or "low")
-    resolved_mode = str(preferred_mode or default_mode)
+    resolved_mode = initial_context_mode(task, preferred_mode)
     return _build_context_fit_plan(
         env,
         core,
@@ -1395,7 +1400,7 @@ def build_llm_messages(
         memory,
         task,
         review_context_builder,
-        preferred_mode=get_context_mode(),
+        preferred_mode=initial_context_mode(task),
         ctx=ctx,
         tool_schemas=tool_schemas,
         tool_registry=tool_registry,

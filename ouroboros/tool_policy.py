@@ -1,8 +1,8 @@
 """Task-local schema residency over the registry's permitted capability envelope.
 
-Low/Max start complete except MCP servers the owner did not pin: their call schemas load
-on demand (``enable_tools``) while the connections map (``tool_connections``) keeps
-their tools known. Nano selects canonical schemas while retaining the existing
+Max starts complete except MCP servers the owner did not pin. Low starts with
+discovery, reading and dialogue schemas; the rest load on demand (``enable_tools``).
+Nano selects canonical schemas while retaining the existing
 discovery/reclaim transport. A route whose provider caps the schemas in one request
 leaves the overflow unloaded (``fit_tool_schemas_to_limit``).
 Residency never grants execution authority.
@@ -20,6 +20,12 @@ from ouroboros.contracts.task_contract import canonical_tool_name
 
 
 NANO_SCHEMA_META_NAMES = META_TOOL_NAMES | frozenset({"compact_context"})
+# A starting view, not a capability class or an allowlist. An actor can replace
+# it (keeping discovery) or load any other permitted schema without changing mode.
+LOW_INITIAL_SCHEMA_NAMES = NANO_SCHEMA_META_NAMES | frozenset({
+    "read_file", "search_code", "query_code", "list_files", "knowledge_read",
+    "memory_read", "send_user_message", "escalate", "finish_task",
+})
 
 
 @dataclass(frozen=True)
@@ -71,15 +77,20 @@ def select_tool_schemas(
         for name in _schema_names(schema_names)
     )
     selected = set(requested) | NANO_SCHEMA_META_NAMES
+    if context_mode == "low" and schema_names is None:
+        selected |= LOW_INITIAL_SCHEMA_NAMES
+        # initial_tool_schemas removes unpinned MCP schemas; fitting an already
+        # filtered snapshot must retain the owner's pinned schemas too.
+        selected |= {name for name in available if name.startswith("mcp_")}
     schemas = tuple(deepcopy(schema) for schema in canonical_schemas
-                    if context_mode != "nano" or schema["function"]["name"] in selected)
+                    if context_mode not in {"low", "nano"} or schema["function"]["name"] in selected)
     reasons = unavailable_reasons or {}
     absent = tuple(name for name in requested if name not in available)
     return ToolSchemaSelection(
         schemas, tuple(schema["function"]["name"] for schema in schemas),
         {name: reasons[name] for name in absent if reasons.get(name)},
         tuple(name for name in absent if not reasons.get(name)),
-        tuple(sorted(NANO_SCHEMA_META_NAMES - available)) if context_mode == "nano" else (),
+        tuple(sorted(NANO_SCHEMA_META_NAMES - available)) if context_mode in {"low", "nano"} else (),
     )
 
 
@@ -87,12 +98,12 @@ def initial_tool_schemas(
     registry: ToolSchemaProvider, context_mode: str = "max",
     schema_names: Iterable[str] | None = None,
 ) -> List[Dict[str, Any]]:
-    """Return full Low/Max or selected Nano schemas from the current registry.
+    """Return full Max, initial Low or selected Low/Nano schemas from the registry.
 
     Visibility is selected by the registry context: ordinary top-level tasks
     expose all available first-party built-ins plus live extension/MCP schemas;
     delegated-child, repair, credential, resource, and contract
-    filters narrow independently. A parent suggestion is an initial Nano view,
+    filters narrow independently. A parent suggestion is an initial compact view,
     not an allowlist; the actor can request any other permitted schema later.
     In every mode the tools of an unpinned MCP server start without schemas
     (``on_demand_schema_names``) unless named in ``schema_names``.
@@ -203,7 +214,7 @@ def request_tool_schema_selection(
                if (reason := hidden_reason(name))}
     selection = select_tool_schemas(canonical, context_mode=context_mode,
                                     schema_names=requested, unavailable_reasons=reasons)
-    if context_mode != "nano":
+    if context_mode not in {"low", "nano"}:
         if pending is not None:
             ctx._pending_tool_schema_names = None
         return ToolSchemaRequest("full_envelope_unchanged", selection)
@@ -220,7 +231,7 @@ def list_non_core_tools(
     registry: ToolSchemaProvider, context_mode: str = "max",
     schema_names: Iterable[str] | None = None,
 ) -> List[Dict[str, Any]]:
-    """The permitted tools a task starts without schemas for: Nano's unselected ones, unpinned MCP servers'."""
+    """Permitted but nonresident tools in compact modes and unpinned MCP servers."""
     canonical = registry.schemas()
     resident = [schema["function"]["name"]
                 for schema in initial_tool_schemas(registry, context_mode=context_mode, schema_names=schema_names)]
