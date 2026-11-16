@@ -447,6 +447,13 @@ operator's separate authorization; installation alone changes no old money.
   row reported stays null in the ledger, task totals, `/status` and Logs; the
   `/api/cost-breakdown` compatibility token fields, typed as integers, show 0.
 
+- Extension callbacks (`kind='external_unmetered'`, provider `external-extension`, source
+  `extension_<surface>:<skill>:<name>`) keep a derived `extension` summary scope keyed by
+  a lossless skill/surface/model/category tuple. Costs captures it beside totals in one
+  snapshot. Older stores fold once at boot (`extension_summaries`); absent completion
+  makes the split unavailable, not partial. Attempt rows stay unchanged; unproven
+  dispatches remain unattributed rather than becoming known model calls.
+
 - Durability on a name-tier mount is best effort, as it was for the journal:
   the store relies on the mount's own write and rename semantics.
 - Two hosts sharing one data directory are not a supported configuration (the

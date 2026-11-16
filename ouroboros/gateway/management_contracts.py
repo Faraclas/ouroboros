@@ -984,10 +984,14 @@ class CostBreakdownResponse(TypedDict, total=False):
     """``GET /api/cost-breakdown``: spend from the physical-attempt ledger. Table rows (``by_model``,
     ``by_api_key``, ``by_model_category``, ``by_task_category``) are ``{cost, calls, unknown_unmetered,
     non_final_rows, cost_final, ...tokens}``; ``cost_final`` false means rows are still open. A 503
-    carries ``accounting.available: false`` (ledger_unavailable): unknown spend, never zero."""
+    carries ``accounting.available: false`` (ledger_unavailable): unknown spend, never zero.
+    ``total_calls`` and the tables count AI model requests only; ``extension_activity`` holds the recorded extension
+    callbacks (by extension and surface, unmetered: no price, not zero), and ``total_physical_calls`` the whole ledger."""
 
     total_cost: float
     total_calls: int
+    total_physical_calls: int
+    extension_activity: Dict[str, Any]
     total_prompt_tokens: int
     total_completion_tokens: int
     total_cached_tokens: int

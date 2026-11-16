@@ -584,7 +584,7 @@ class _Reads:
 
 
 def breakdown_read(txn: Any, *, root_task_id: str = "", task_id: str = "",
-                   include_owners: bool = False) -> Callable[[bool], Dict[str, Any]]:
+                   include_owners: bool = False, include_extensions: bool = False) -> Callable[[bool], Dict[str, Any]]:
     """``breakdown_view``'s rows captured inside the caller's read in one step (``store_capture``); the returned
     ``render(degraded)`` decodes and renders after that read closed. The summary rows captured are the ones a
     dry run of the view asks for, so the capture and the view cannot disagree."""
@@ -596,8 +596,20 @@ def breakdown_read(txn: Any, *, root_task_id: str = "", task_id: str = "",
     shape = {"root_task_id": root_task_id, "task_id": task_id, "include_owners": include_owners}
     wanted = _Reads()
     breakdown_view(wanted, **shape)
+    if include_extensions:
+        if txn.meta("extension_summaries") is None:
+            raise usage_store.UsageAccountingError("extension summary fold pending at boot")
+        wanted.buckets("extension")
     captured = txn.summary_rows(wanted.reads)
-    return lambda degraded: breakdown_view(usage_store.SummaryRows(captured), degraded=degraded, **shape)
+
+    def render(degraded):
+        rows = usage_store.SummaryRows(captured)
+        result = breakdown_view(rows, degraded=degraded, **shape)
+        if include_extensions:
+            result["extension_callback_groups"] = rows.extension_callback_groups()
+        return result
+
+    return render
 
 
 def breakdown_of_rows(rows: Sequence[Dict[str, Any]], degraded: bool) -> Dict[str, Any]:

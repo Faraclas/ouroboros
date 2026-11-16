@@ -496,7 +496,7 @@ def usage_breakdown(
     *,
     root_task_id: str = "",
     task_id: str = "", allow_stale: bool = False, include_owners: bool = False,
-    include_custody: bool = False, custody_root=None,
+    include_custody: bool = False, custody_root=None, include_extensions: bool = False,
 ) -> Dict[str, Any]:
     """Physical-call/token/cost buckets of the global scope, one root or one
     task, read from the store's summaries in one transaction (an addressed
@@ -515,7 +515,8 @@ def usage_breakdown(
                              custody_root=custody_root, allow_stale=allow_stale)
                if include_custody and (task_id or root_task_id) else None)
     with usage_store.read(root, allow_stale=allow_stale) as txn:  # rows captured here, rendered after it closed
-        render = breakdown_read(txn, root_task_id=root_task_id, task_id=task_id, include_owners=include_owners)
+        render = breakdown_read(txn, root_task_id=root_task_id, task_id=task_id, include_owners=include_owners,
+                                include_extensions=include_extensions)
         marker, joined = txn.marker(), (cost_coverage(custody, txn, root) if custody is not None else None)
     result = render(usage_store.integrity_degraded(root))
     result["_ledger_high_water_seq"] = marker

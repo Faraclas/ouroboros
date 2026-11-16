@@ -55,6 +55,25 @@ export function budgetSavePresentation(data = {}) {
     return { text, tone: standing ? 'warn' : 'ok', transient: !standing };
 }
 
+/** Extension callbacks the ledger recorded, apart from AI model requests; never a priced zero. */
+export function extensionActivityPresentation(data) {
+    const activity = data?.extension_activity;
+    if (!activity || typeof activity !== 'object') return { state: 'unavailable', rows: [], total: '—', note: 'Unavailable' };
+    const rows = Object.entries(activity.by_extension || {}).map(([name, info]) => ({
+        name,
+        calls: String(Math.trunc(optionalFiniteNumber(info?.calls) || 0)),
+        surfaces: Object.entries(info?.surfaces || {})
+            .map(([surface, count]) => `${surface}: ${Math.trunc(optionalFiniteNumber(count) || 0)}`).join(', ') || '-',
+        cost: 'Not metered',
+    }));
+    return {
+        state: rows.length ? 'available' : 'none',
+        rows,
+        total: String(Math.trunc(optionalFiniteNumber(activity.calls) || 0)),
+        note: String(activity.cost_note || ''),
+    };
+}
+
 /** Pure cost-dashboard projection: null/unavailable never renders as $0.
  * The limit is set against KNOWN spend (settled: confirmed + estimated), the number
  * that refuses new paid calls (#1487); reservations and unresolved upper bounds are
@@ -93,6 +112,7 @@ export function costDashboardPresentation(data) {
         unknown: String(Math.trunc(unknown)),
         final: accounting.cost_final === true ? 'Yes' : `Pending${openCause}`,
         calls: String(Math.trunc(calls)),
+        extensionCalls: extensionActivityPresentation(data).total,
         topModel: models.length > 0 ? models[0][0] : '-',
     };
 }
@@ -135,7 +155,8 @@ export function initCosts({ state, mount }) {
                 <div class="stat-card"><div class="label">Unresolved upper bound</div><div class="value" id="cost-unresolved">—</div></div>
                 <div class="stat-card"><div class="label">Unknown / unmetered</div><div class="value" id="cost-unknown">—</div></div>
                 <div class="stat-card"><div class="label">Cost final</div><div class="value" id="cost-final">Loading…</div></div>
-                <div class="stat-card"><div class="label">Physical attempts</div><div class="value" id="cost-calls">—</div></div>
+                <div class="stat-card"><div class="label">Model requests / unattributed</div><div class="value" id="cost-calls">—</div></div>
+                <div class="stat-card"><div class="label">Extension callbacks (not metered)</div><div class="value" id="cost-extension-calls">—</div></div>
                 <div class="stat-card"><div class="label">Top Model</div><div class="value cost-top-model" id="cost-top-model">-</div></div>
             </div>
             <div class="costs-tables-grid">
@@ -155,6 +176,12 @@ export function initCosts({ state, mount }) {
                     <h3 class="costs-table-label">By Task Category</h3>
                     <table class="cost-table" id="cost-by-task-cat"><thead><tr><th>Category</th><th>Calls</th><th>Cost</th><th></th></tr></thead><tbody></tbody></table>
                 </div>
+            <div class="costs-extension-activity" id="cost-extension-activity">
+                <p class="copilot-app-budget-note">Request tables exclude proven extension callbacks. Unproven dispatches remain unattributed; unknown cost and finality above cover the whole ledger.</p>
+                <h3 class="costs-table-label">Extension activity</h3>
+                <p class="copilot-app-budget-note" id="cost-extension-note">Add-ons running their own callbacks, counted apart from AI model requests.</p>
+                <table class="cost-table" id="cost-by-extension"><thead><tr><th>Extension</th><th>Callbacks</th><th>Kinds</th></tr></thead><tbody></tbody></table>
+            </div>
             </div>
         </div>
     `;
@@ -196,23 +223,50 @@ export function initCosts({ state, mount }) {
         }
     }
 
+    function renderExtensionActivity(presentation) {
+        const tbody = document.querySelector('#cost-by-extension tbody');
+        tbody.innerHTML = '';
+        document.getElementById('cost-extension-note').textContent = presentation.note
+            || 'Add-ons running their own callbacks, counted apart from AI model requests.';
+        const cell = (className, text) => {
+            const td = document.createElement('td');
+            td.className = className;
+            td.textContent = text;
+            return td;
+        };
+        for (const row of presentation.rows) {
+            const tr = document.createElement('tr');
+            tr.append(cell('cost-cell-name', row.name), cell('cost-cell-right', row.calls),
+                cell('cost-cell-name', row.surfaces));
+            tbody.appendChild(tr);
+        }
+        if (!presentation.rows.length) {
+            const tr = document.createElement('tr');
+            const td = cell('cost-empty-cell', presentation.state === 'unavailable' ? 'Unavailable' : 'No extension activity recorded');
+            td.setAttribute('colspan', '3');
+            tr.appendChild(td);
+            tbody.appendChild(tr);
+        }
+    }
+
     async function loadCosts() {
         const renderLoading = () => {
             document.getElementById('cost-known-limit').textContent = 'Loading…';
             ['cost-confirmed', 'cost-estimated', 'cost-reserved', 'cost-unresolved', 'cost-unknown',
-                'cost-calls', 'cost-top-model'].forEach((id) => {
+                'cost-calls', 'cost-extension-calls', 'cost-top-model'].forEach((id) => {
                 document.getElementById(id).textContent = '—';
             });
             document.getElementById('cost-final').textContent = 'Loading…';
         };
         const renderUnavailable = () => {
             ['cost-known-limit', 'cost-confirmed', 'cost-estimated', 'cost-reserved', 'cost-unresolved',
-                'cost-unknown', 'cost-calls', 'cost-top-model'].forEach((id) => {
+                'cost-unknown', 'cost-calls', 'cost-extension-calls', 'cost-top-model'].forEach((id) => {
                 document.getElementById(id).textContent = id === 'cost-known-limit' ? 'Unavailable' : '—';
             });
             document.getElementById('cost-final').textContent = 'Unavailable';
             ['cost-by-model', 'cost-by-key', 'cost-by-model-cat', 'cost-by-task-cat']
                 .forEach((id) => renderBreakdownTable(id, {}, 0, 'Unavailable'));
+            renderExtensionActivity({ state: 'unavailable', rows: [], note: 'Unavailable' });
         };
         renderLoading();
         try {
@@ -228,11 +282,13 @@ export function initCosts({ state, mount }) {
             document.getElementById('cost-unknown').textContent = presentation.unknown;
             document.getElementById('cost-final').textContent = presentation.final;
             document.getElementById('cost-calls').textContent = presentation.calls;
+            document.getElementById('cost-extension-calls').textContent = presentation.extensionCalls;
             document.getElementById('cost-top-model').textContent = presentation.topModel;
             renderBreakdownTable('cost-by-model', d.by_model || {}, d.total_cost);
             renderBreakdownTable('cost-by-key', d.by_api_key || {}, d.total_cost);
             renderBreakdownTable('cost-by-model-cat', d.by_model_category || {}, d.total_cost);
             renderBreakdownTable('cost-by-task-cat', d.by_task_category || {}, d.total_cost);
+            renderExtensionActivity(extensionActivityPresentation(d));
         } catch { renderUnavailable(); }
     }
 

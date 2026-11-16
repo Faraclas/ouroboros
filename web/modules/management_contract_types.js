@@ -789,6 +789,8 @@
  * @typedef {Object} CostBreakdownResponse
  * @property {number=} total_cost
  * @property {number=} total_calls
+ * @property {number=} total_physical_calls
+ * @property {Object=} extension_activity
  * @property {number=} total_prompt_tokens
  * @property {number=} total_completion_tokens
  * @property {number=} total_cached_tokens

@@ -9,7 +9,7 @@ import {
     taskCostProjection,
 } from '../modules/chat.js';
 import { costPresentationDetail, costPresentationMeta, renderLiveCardMeta } from '../modules/chat_activity.js';
-import { costBucketPresentation, costDashboardPresentation } from '../modules/costs.js';
+import { costBucketPresentation, costDashboardPresentation, extensionActivityPresentation } from '../modules/costs.js';
 import { summarizeLogEvent } from '../modules/log_events.js';
 import {
     accountedUpperBound,
@@ -288,6 +288,24 @@ test('cost dashboard distinguishes loading, unavailable, pending, and final zero
         ...base,
         accounting: { ...base.accounting, settled_usd: null },
     }).state, 'unavailable');
+});
+
+test('extension callbacks are a separate, never-priced presentation', () => {
+    const data = {
+        total_calls: 2,
+        extension_activity: {
+            calls: 3,
+            cost_note: 'Not metered.',
+            by_extension: { 'copilot-credits': { calls: 3, surfaces: { route: 2, registration: 1 } } },
+        },
+    };
+    const view = extensionActivityPresentation(data);
+    assert.equal(view.state, 'available');
+    assert.equal(view.total, '3');
+    assert.deepEqual(view.rows, [{ name: 'copilot-credits', calls: '3', surfaces: 'route: 2, registration: 1', cost: 'Not metered' }]);
+    assert.equal(extensionActivityPresentation({}).state, 'unavailable');
+    assert.equal(extensionActivityPresentation({}).total, '—');
+    assert.equal(extensionActivityPresentation({ extension_activity: { calls: 0, by_extension: {} } }).total, '0');
 });
 
 test('cost dashboard sets the limit against known spend, open holds beside it (#1487)', () => {
