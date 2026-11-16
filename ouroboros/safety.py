@@ -533,22 +533,78 @@ def _earlier_room_owner_messages(ctx, metadata, sources):
         return [], None
     try:
         from ouroboros import dialogue_store as ds
-        from ouroboros.owner_words import _owner_row
+        from ouroboros.owner_relay import _owner_row, owner_text
         from ouroboros.tool_access import canonical_data_root
         from ouroboros.utils import truncate_within_limit
 
         own = {str(r.get("content")) for r in sources if isinstance(r, dict)}
         room = [e.row for e in reversed(ds.probe_rows(canonical_data_root(ctx), "chat", [("chat_id", chat_id)], limit=200))]
         rows = [r for r in room if _owner_row(r) and r.get("client_message_id") != ref.get("client_message_id")
-                and str(r.get("text")) not in own]
+                and owner_text(r) not in own]
         # what a short owner answer ("lets do it", "continue") most plausibly answers: the agent's last reply
         said = next((r for r in reversed(room) if r.get("direction") == "out" and not r.get("system_type")
                      and str(r.get("text") or "").strip()), None)
     except Exception:  # an unreadable room record only withholds context; it never blocks the check
         return [], None
     said = {"ts": said.get("ts", ""), "text": truncate_within_limit(str(said["text"]), _ROOM_OWNER_CHARS)} if said else None
-    return [{"ts": r.get("ts", ""), "text": truncate_within_limit(str(r["text"]), _ROOM_OWNER_CHARS)}
+    return [{"ts": r.get("ts", ""), "text": truncate_within_limit(owner_text(r), _ROOM_OWNER_CHARS)}
             for r in rows[-_ROOM_OWNER_MESSAGES:]], said
+
+
+def _cited_chat_rows(ctx, values):
+    """Authenticated selections, never a complete history or a permission grant."""
+    import sqlite3
+    from ouroboros import dialogue_store as ds
+    from ouroboros.chat_chain import resolve_row, format_address, row_address, _row_chat_id
+    from ouroboros.owner_relay import _owner_row, owner_text
+    from ouroboros.store import StoreError
+    from ouroboros.tool_access import canonical_data_root
+    from ouroboros.utils import truncate_within_limit
+
+    addresses = list(dict.fromkeys(re.findall(r"row:-?\d+@[0-9TtZz:.,+\-]+#[0-9a-f]{12,64}",
+                                             json.dumps(values, ensure_ascii=False, default=str))))
+    if not addresses:
+        return None
+    limit, root, found, rooms, windows = 16, canonical_data_root(ctx), [], {}, []
+    errors = (StoreError, OSError, ValueError, TypeError, sqlite3.Error)
+
+    def project(row, address):
+        owner = _owner_row(row)
+        text = owner_text(row) if owner else str(row.get("text") or "")
+        author = ("owner" if owner else "system" if row.get("system_type") or row.get("direction") == "system"
+                  else "agent" if row.get("direction") == "out" else "other")
+        return {"address": address, "status": "ok", "author": author, "chat_id": _row_chat_id(row),
+                "ts": row.get("ts", ""), "text": truncate_within_limit(text, _ROOM_OWNER_CHARS),
+                "text_complete": len(text) <= _ROOM_OWNER_CHARS, "original_chars": len(text),
+                **({"media_note": "Attachments not projected; resolve the source for media."} if row.get("attachments") else {})}
+
+    for address in addresses[:limit]:
+        try:
+            row, resolution = resolve_row(root, address)
+            item = project(row, address) if row is not None else {"address": address, "status": resolution["status"]}
+            if row is not None and _owner_row(row):
+                room = _row_chat_id(row)
+                rooms[room] = min(rooms.get(room, resolution["seq"]), resolution["seq"])
+        except errors as exc:
+            item = {"address": address, "status": "store_unavailable", "error": type(exc).__name__}
+        found.append(item)
+    # Citing an old approval/hold must not present it as current state. This is
+    # the existing bounded room-context window, with explicit coverage facts.
+    for room, after in rooms.items():
+        window = {"chat_id": room, "cited_after_seq": after, "status": "ok"}
+        try:
+            probes = [("chat_id", room)] + ([("chat_id", None)] if room == 1 else [])
+            recent = ds.probe_rows(root, "chat", probes, limit=200)
+            later = [e.row for e in reversed(recent) if e.seq > after and _owner_row(e.row)]
+            shown = [r for r in later[-_ROOM_OWNER_MESSAGES:] if format_address(row_address(r)) not in addresses[:limit]]
+            found.extend(project(row, format_address(row_address(row))) for row in shown)
+            window.update(window_rows=len(recent), reaches_citation=len(recent) < 200 or min(e.seq for e in recent) <= after,
+                          later_owner_rows_found=len(later), shown=len(shown), selected_limit=_ROOM_OWNER_MESSAGES)
+        except errors as exc:
+            window.update(status="store_unavailable", error=type(exc).__name__)
+        windows.append(window)
+    return {"rows": found, "windows": windows, "addresses_omitted": max(0, len(addresses) - limit),
+            "selection": "Explicit citations and recent later owner context; not complete history or proof of permission."}
 
 
 def _recipient_facts(ctx, tool_name, arguments):
@@ -657,6 +713,7 @@ def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, 
             assignment[key] = value
         else:
             assignment.setdefault("source_references", {})[key] = duplicate
+    cited_rows = _cited_chat_rows(ctx, [assignment, sources, arguments])
     # Present the captured delegation, never infer it from prose or today's setting.
     level = metadata.get("consciousness_autonomy")
     autonomy = ({"level": level, "source": "host_task_metadata"}
@@ -669,6 +726,7 @@ def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, 
                      "origin_wake_task_id": metadata.get("origin_wake_task_id"), "focus": focus,
                      "sources": sources, "retained_host_sources": isinstance(directives, list),
                      "source_recovery": getattr(ctx, "_owner_evidence_recovery", None),
+                     **({"cited_chat_rows": cited_rows} if cited_rows else {}),
                      **({"earlier_room_owner_messages": earlier_owner} if earlier_owner else {}),
                      **({"agent_last_reply_in_room": agent_said} if agent_said else {})},
         "subject": {"tool": tool_name, "physical_target": target, "place": place,
