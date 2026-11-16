@@ -209,9 +209,14 @@ def _inbound_rows(drive_root: Any, client_ids: Mapping[str, str]) -> List[Dict[s
 
 
 def _owner_row(row: Mapping[str, Any] | None) -> bool:
-    """The owner-source cut: inbound, non-empty, not a system/presence/skill-repair injection."""
+    """Owner-door ingress, not correspondents, imported history, A2A or host notices."""
+    from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
+
     return bool(row and row.get("direction") == "in" and str(row.get("text") or "").strip()
-                and not (row.get("system_type") or row.get("presence") or row.get("source") == "skill_repair"))
+                and not (row.get("system_type") or row.get("presence") or row.get("source") == "skill_repair"
+                         or is_a2a_chat_id(row.get("chat_id")) or isinstance(row.get("historical_import"), dict)
+                         or str(row.get("source") or "").startswith("presence:")
+                         or str(row.get("client_message_id") or "").startswith("quiz_late_answer:")))
 
 
 def _message_rows(drive_root: Any, task_id: str, text: Any, ref: Any, carrier: str) -> List[Dict[str, str]]:
