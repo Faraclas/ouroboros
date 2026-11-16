@@ -20,6 +20,7 @@ import copy
 import datetime
 import logging
 import pathlib
+import sys
 import threading
 import time
 import uuid
@@ -51,6 +52,45 @@ DIRECT_TURNS_KEPT = 100  # the receipt ring's length: a memory bound, never a ju
 _DIRECT_TURNS: Deque[Dict[str, Any]] = deque(maxlen=DIRECT_TURNS_KEPT)
 _RING_LOCK = threading.Lock()
 cpu_clock = time.thread_time
+
+_THROTTLE_STAT = "/sys/fs/cgroup/cpu.stat"
+
+
+def _read_first(path: str) -> str:
+    with open(path, "rb") as handle:
+        return handle.read(4096).decode("ascii", "replace")
+
+
+def _sched_facts() -> Dict[str, Any]:
+    """The calling thread's own scheduling counters; each field is absent when unreadable.
+
+    Linux observations at phase boundaries, not atomic snapshots or wait-cause labels.
+    Switches, major faults and block-input operations are thread-scoped; run delay is
+    scheduler-accounted runnable wait. Throttling belongs to the mounted cgroup root,
+    which need not be this process's leaf cgroup. Missing counters remain absent.
+    """
+    facts: Dict[str, Any] = {}
+    if not sys.platform.startswith("linux"):
+        return facts
+    try:
+        import resource
+
+        usage = resource.getrusage(resource.RUSAGE_THREAD)
+        facts.update(nvcsw=usage.ru_nvcsw, nivcsw=usage.ru_nivcsw, majflt=usage.ru_majflt,
+                     inblock=usage.ru_inblock)
+    except (AttributeError, OSError, ImportError):
+        pass
+    try:
+        facts["run_delay_ns"] = int(_read_first("/proc/thread-self/schedstat").split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        for line in _read_first(_THROTTLE_STAT).splitlines():
+            if line.startswith("throttled_usec "):
+                facts["throttled_usec"] = int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return facts
 
 
 def _iso(epoch: float) -> str:
@@ -114,17 +154,11 @@ class TurnExecution:
         if threading.current_thread() is not binding[0] or threading.get_ident() != self.thread[0]:
             return None
         try:
-            return (at, binding, cpu_clock())
+            return (at, binding, cpu_clock(), _sched_facts())
         except (OSError, NotImplementedError):
             return None  # optional diagnostics cannot replace the turn's primary result
 
-    def phase_cpu(self, index: int, until: float, endpoint: Any = None) -> Optional[float]:
-        """CPU of a completed mark interval, or an explicitly supplied same-thread live endpoint.
-
-        Points precede mark/end publication. Exact monotonic endpoints and binding tokens must
-        agree; legacy marks, foreign frames, rebinding and backdated dispatch remain unknown.
-        The watchdog only reads these points, never samples its own thread on the turn's behalf.
-        """
+    def _interval_points(self, index: int, until: float, endpoint: Any = None) -> Optional[Tuple[Any, Any]]:
         marks = list(self.marks)
         phase, at = marks[index]
         start = self._cpu_marks.get(phase)
@@ -136,7 +170,37 @@ class TurnExecution:
         if (start is None or endpoint is None or start[0] != at or endpoint[0] != until
                 or start[1] is not endpoint[1] or until < at or endpoint[2] < start[2]):
             return None
-        return round(endpoint[2] - start[2], 6)
+        return start, endpoint
+
+    def phase_cpu(self, index: int, until: float, endpoint: Any = None) -> Optional[float]:
+        """CPU of a completed mark interval, or an explicitly supplied same-thread live endpoint.
+
+        Points precede mark/end publication. Exact monotonic endpoints and binding tokens must
+        agree; legacy marks, foreign frames, rebinding and backdated dispatch remain unknown.
+        The watchdog only reads these points, never samples its own thread on the turn's behalf.
+        """
+        points = self._interval_points(index, until, endpoint)
+        return None if points is None else round(points[1][2] - points[0][2], 6)
+
+    def phase_sched(self, index: int, until: float, endpoint: Any = None) -> Dict[str, Any]:
+        """Scheduling-counter deltas over the same exact interval as ``phase_cpu`` (empty when
+        that interval is unknown). Fields appear only when both endpoints read them; they point at
+        scheduler wait, switches and fault/input activity; ``cgroup_root_throttled_sec``
+        describes the mounted cgroup root, not this thread or necessarily its leaf.
+        They do not name a waiting cause by themselves."""
+        points = self._interval_points(index, until, endpoint)
+        if points is None or len(points[0]) < 4 or len(points[1]) < 4:
+            return {}
+        first, last = points[0][3], points[1][3]
+        out: Dict[str, Any] = {}
+        for key in ("nvcsw", "nivcsw", "majflt", "inblock"):
+            if key in first and key in last and last[key] >= first[key]:
+                out[key] = last[key] - first[key]
+        for key, name, scale in (("run_delay_ns", "run_delay_sec", 1e-9),
+                                 ("throttled_usec", "cgroup_root_throttled_sec", 1e-6)):
+            if key in first and key in last and last[key] >= first[key]:
+                out[name] = round((last[key] - first[key]) * scale, 6)
+        return out
 
     @property
     def phase(self) -> str:
@@ -208,7 +272,9 @@ class TurnExecution:
         the frozen counts at the first Main request, absent if none was seen. It excludes later call
         bookkeeping, but is not a claim of physical dispatch. ``census``: the registry's count at entry.
         Optional ``phase_cpu_sec`` holds same-binding endpoint deltas only; missing is unknown,
-        not zero. CPU excludes offloaded threads/processes."""
+        not zero. CPU excludes offloaded threads/processes. Optional ``phase_sched`` carries
+        boundary-sampled switch/fault/input/run-delay deltas, not causal wait attribution;
+        its mounted-cgroup-root throttle delta is wider in scope than this thread."""
         marks = list(self.marks)
         endpoint = None
         if until is None:
@@ -218,6 +284,7 @@ class TurnExecution:
         dispatched = marks[-1][0] == "dispatched"
         phases: Dict[str, float] = {}
         phase_cpu: Dict[str, float] = {}
+        phase_sched: Dict[str, Dict[str, Any]] = {}
         for index, (phase, at) in enumerate(marks):
             if phase == "dispatched":
                 break
@@ -226,6 +293,9 @@ class TurnExecution:
             cpu = self.phase_cpu(index, end, endpoint)
             if cpu is not None:
                 phase_cpu[phase] = cpu
+                sched = self.phase_sched(index, end, endpoint)
+                if sched:
+                    phase_sched[phase] = sched
         handler_wait = (marks[-1][1] if dispatched else until) - marks[0][1]
         row: Dict[str, Any] = {
             "type": "direct_turn", "chat_id": self.chat_id, "task_id": self.task_id,
@@ -238,6 +308,8 @@ class TurnExecution:
             row["request_meter"] = dict(self.request_meter)
         if phase_cpu:
             row["phase_cpu_sec"] = phase_cpu
+        if phase_sched:
+            row["phase_sched"] = phase_sched
         if phases:
             row["slowest_phase"], row["slowest_phase_sec"] = max(phases.items(), key=lambda item: item[1])
         accepted = _epoch(self.accepted_at)
