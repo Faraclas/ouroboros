@@ -124,13 +124,11 @@ def test_real_book_context_modes_keep_full_composition_and_compact_maps_separate
         for include_dev in (False, True):
             parts, handbook = cl.reference_doc_sections(
                 None, context_mode=mode, include_development=include_dev, books=books)
-            if mode in {"low", "nano"}:
-                assert parts[:2] == [cl.book_navigation(arch), cl.book_navigation(dev)]
-                assert handbook == ""
-            else:
-                assert parts[0] == "## ARCHITECTURE.md\n\n" + compose_book(arch)
-                assert handbook == ("## DEVELOPMENT.md\n\n" + compose_book(dev)
-                                    if include_dev else cl.book_navigation(dev))
+            assert parts[:2] == [cl.book_navigation(arch), cl.book_navigation(dev)]
+            assert handbook == ""
+            # The full source remains available independently of Turn-1 residency.
+            assert compose_book(arch) != parts[0]
+            assert compose_book(dev) != parts[1]
 
 
 def test_a_legacy_revision_navigates_as_the_single_source_it_is():

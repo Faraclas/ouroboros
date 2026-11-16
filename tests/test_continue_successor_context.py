@@ -145,6 +145,7 @@ def test_successor_first_request_carries_the_predecessor_once_with_its_flag_and_
         task, messages = _first_request(env, memory, candidate)
         system = messages[0]["content"]
         handbooks.append(sum(block["text"].startswith("## DEVELOPMENT.md\n") for block in system))
+        assert "## DEVELOPMENT.md (navigation map)" in "\n".join(block["text"] for block in system)
         system_text = "\n".join(block["text"] for block in system)
         rendered = json.dumps(messages, ensure_ascii=False)
         assert '"predecessor_authority"' in system_text and "PREDECESSOR-CONTRACT-SENTINEL" not in rendered
@@ -158,7 +159,7 @@ def test_successor_first_request_carries_the_predecessor_once_with_its_flag_and_
         assert json.dumps(before["mutation_evidence"]) not in rendered
         users = json.dumps([m for m in messages if m.get("role") == "user"], ensure_ascii=False)
         assert json.dumps(text, ensure_ascii=False)[1:-1] in users, "the work order is the first user turn"
-    assert handbooks == [int(flag is True)] * 2, "only an explicit true restores the handbook in an external folder"
+    assert handbooks == [0, 0], "ordinary Max starts use chapter maps even with an explicit body-doc flag"
 
     # A recovered admission (queue row kept, result row lost) keeps the same contract.
     assert delete_document(tmp_path, successor)
@@ -201,7 +202,9 @@ def test_successor_first_request_carries_the_predecessor_once_with_its_flag_and_
         task, messages = _first_request(env, memory, candidate)
         handbooks = [block for block in messages[0]["content"]
                      if block["text"].startswith("## DEVELOPMENT.md\n")]
-        assert len(handbooks) == int(flag is True), "second Continue must carry the stored handbook choice"
+        assert handbooks == []  # the stored flag survives; ordinary turns start with maps
+        assert task["task_contract"][FIELD] is bool(flag)
+        assert "## DEVELOPMENT.md (navigation map)" in messages[0]["content"][0]["text"]
         assert "task_contract" not in task["predecessor_authority"]
         assert task["predecessor_authority"]["omitted_fields"]["task_contract"] > 0
         assert load_task_result(tmp_path, successor)["metadata"]["task_contract"] == stopped["metadata"]["task_contract"]
@@ -223,7 +226,8 @@ def test_successor_first_request_carries_the_predecessor_once_with_its_flag_and_
                for key, value in expected_binding.items()), "second-hop replay retains the same binding"
     _, messages = _first_request(env, memory, workers.PENDING[0])
     assert sum(block["text"].startswith("## DEVELOPMENT.md\n")
-               for block in messages[0]["content"]) == int(flag is True)
+               for block in messages[0]["content"]) == 0
+    assert "## DEVELOPMENT.md (navigation map)" in messages[0]["content"][0]["text"]
 
 
 @pytest.mark.parametrize("canonical,metadata,expected", [

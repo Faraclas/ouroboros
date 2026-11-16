@@ -406,7 +406,7 @@ def _run_authored_context_view(messages, ctx, pending, selected_names):
     if names is not None:
         requested = request_tool_schema_selection(tool_ctx, ctx.tools, names,
                                                   context_mode=mode, current_schemas=current_tools)
-        selected_names = requested.selection.chosen if mode in {"low", "nano"} else None
+        selected_names = requested.selection.chosen
     schemas = (list(select_tool_schemas(ctx.tools.schemas(), context_mode=mode, schema_names=selected_names).schemas)
                if selected_names is not None else list(current_tools))
     fit_candidate = ctx.fit_candidate

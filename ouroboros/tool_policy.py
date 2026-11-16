@@ -1,9 +1,9 @@
 """Task-local schema residency over the registry's permitted capability envelope.
 
-Max starts complete except MCP servers the owner did not pin. Low starts with
-discovery, reading and dialogue schemas; the rest load on demand (``enable_tools``).
-Nano selects canonical schemas while retaining the existing
-discovery/reclaim transport. A route whose provider caps the schemas in one request
+Every mode starts with discovery, reading and dialogue schemas plus owner-pinned
+MCP schemas; the rest load on demand (``enable_tools``). Modes choose context
+ceilings, not the initial capability envelope. Actors may select canonical schemas
+while retaining the existing discovery/reclaim transport. A route whose provider caps the schemas in one request
 leaves the overflow unloaded (``fit_tool_schemas_to_limit``).
 Residency never grants execution authority.
 The tool namespaces and the bounded catalog/name-miss renderings live here too.
@@ -39,7 +39,7 @@ class ToolSchemaSelection:
 
 @dataclass(frozen=True)
 class ToolSchemaRequest:
-    status: str  # pending | no_op | full_envelope_unchanged
+    status: str  # pending | no_op
     selection: ToolSchemaSelection
 
 
@@ -77,20 +77,20 @@ def select_tool_schemas(
         for name in _schema_names(schema_names)
     )
     selected = set(requested) | NANO_SCHEMA_META_NAMES
-    if context_mode == "low" and schema_names is None:
+    if schema_names is None:
         selected |= LOW_INITIAL_SCHEMA_NAMES
         # initial_tool_schemas removes unpinned MCP schemas; fitting an already
         # filtered snapshot must retain the owner's pinned schemas too.
         selected |= {name for name in available if name.startswith("mcp_")}
     schemas = tuple(deepcopy(schema) for schema in canonical_schemas
-                    if context_mode not in {"low", "nano"} or schema["function"]["name"] in selected)
+                    if schema["function"]["name"] in selected)
     reasons = unavailable_reasons or {}
     absent = tuple(name for name in requested if name not in available)
     return ToolSchemaSelection(
         schemas, tuple(schema["function"]["name"] for schema in schemas),
         {name: reasons[name] for name in absent if reasons.get(name)},
         tuple(name for name in absent if not reasons.get(name)),
-        tuple(sorted(NANO_SCHEMA_META_NAMES - available)) if context_mode in {"low", "nano"} else (),
+        tuple(sorted(NANO_SCHEMA_META_NAMES - available)),
     )
 
 
@@ -98,7 +98,7 @@ def initial_tool_schemas(
     registry: ToolSchemaProvider, context_mode: str = "max",
     schema_names: Iterable[str] | None = None,
 ) -> List[Dict[str, Any]]:
-    """Return full Max, initial Low or selected Low/Nano schemas from the registry.
+    """Return the same lean initial schemas, or an authored selection, in every mode.
 
     Visibility is selected by the registry context: ordinary top-level tasks
     expose all available first-party built-ins plus live extension/MCP schemas;
@@ -214,10 +214,6 @@ def request_tool_schema_selection(
                if (reason := hidden_reason(name))}
     selection = select_tool_schemas(canonical, context_mode=context_mode,
                                     schema_names=requested, unavailable_reasons=reasons)
-    if context_mode not in {"low", "nano"}:
-        if pending is not None:
-            ctx._pending_tool_schema_names = None
-        return ToolSchemaRequest("full_envelope_unchanged", selection)
     if list(selection.schemas) == list(current_schemas):
         if pending is not None:
             ctx._pending_tool_schema_names = None

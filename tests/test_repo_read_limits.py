@@ -242,7 +242,8 @@ def test_wake_context_includes_architecture_md(tmp_path):
         "the wake-up's Main context must include a '## ARCHITECTURE.md' section. "
         "This is a core governance artifact — see docs/DEVELOPMENT.md."
     )
-    assert "This is the architecture doc." in context
+    assert "This is the architecture doc." not in context
+    assert 'path="docs/ARCHITECTURE.md"' in context
 
 
 def test_wake_context_architecture_before_knowledge_base(tmp_path):

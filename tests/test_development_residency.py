@@ -98,7 +98,10 @@ def test_max_without_the_handbook_carries_its_chapter_map_in_the_handbooks_own_b
     without = reference_doc_sections(env, context_mode="max", include_development=False,
                                      architecture_text="# ARCH\n\nbody", development_text=development)
     assert with_book[0] == without[0]  # the common sections stay shared across tasks (one cached prefix)
+    # This synthetic call has no captured books and explicitly requests the full form.
+    # Ordinary task capture supplies books and uses maps in every mode.
     assert with_book[1] == "## DEVELOPMENT.md\n\n" + development
+    assert with_book[1] != without[1]
     assert without[1].startswith("## DEVELOPMENT.md (navigation map)") and "Review" in without[1]
     assert "Read every source." not in without[1]
 

@@ -389,15 +389,9 @@ def test_main_schema_only_view_uses_the_active_envelope(main_loop, monkeypatch, 
            {"content": "done"}])
     before = {s["function"]["name"] for s in f.inputs[0]["tools"]}
     after = {s["function"]["name"] for s in f.inputs[1]["tools"]}
-    if mode == "nano":
-        assert "read_file" not in before and "read_file" in after
-        assert f.ctx._context_view_receipt["status"] == "applied"
-    elif mode == "low":
-        assert "read_file" in before and after < before
-        assert after == {"read_file", "list_available_tools", "enable_tools", "compact_context"}
-        assert f.ctx._context_view_receipt["status"] == "applied"
-    else:
-        assert before == after and f.ctx._context_view_receipt["status"] == "no_op"
+    assert "read_file" in before and after < before
+    assert after == {"read_file", "list_available_tools", "enable_tools", "compact_context"}
+    assert f.ctx._context_view_receipt["status"] == "applied"
     assert f.ctx._context_view_receipt["checkpoint_ref"] is None
 
 

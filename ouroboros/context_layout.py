@@ -1,9 +1,8 @@
 """Reference-book views for Main, children and background cognition.
 
-Main Max keeps the full Architecture capability/WHY map for every task class;
-its Development handbook remains tied to the active self-body binding. Low and
-Nano carry both books' authored chapter introductions and physical pointers.
-Children use that compact orientation; their memory view (``memory_view.ROLE_DEFAULTS``)
+Every mode starts with both books' authored chapter introductions and physical
+pointers; Max raises the available ceiling rather than preloading the chapters.
+Children use that same orientation; their memory view (``memory_view.ROLE_DEFAULTS``)
 decides what of my story and room they carry, and parent-selected details arrive
 through ordinary source reads and working views.
 
@@ -189,20 +188,17 @@ def architecture_context_section(
     text: str | None = None,
     book: ReferenceBook | None = None,
 ) -> str:
-    """ARCHITECTURE.md: full in max, navigation map in low. Empty if unreadable."""
+    """Start with chapter maps in every mode; explicit synthetic text retains its requested form."""
     if book is None and text is None:
         try:
             book = load_reference_book(env.repo_dir, "architecture", lambda path: env.repo_path(path).read_bytes())
         except (OSError, ValueError) as exc:
             return f"Reference book source unavailable: docs/ARCHITECTURE.md. {exc}. Full context is not established."
     if book is not None:
-        # View intent, not a migration flag: a compact mode asks for the
-        # navigable overview and a full mode asks for the composition. Both
-        # answers are defined for a legacy revision too.
-        if context_mode in {"low", "nano"}:
-            return book_navigation(book)
-        if text is None:
-            text = compose_book(book)
+        # Mode raises capacity, not unsolicited starting material. Ordinary
+        # builders supply captured books; explicit text below supports synthetic
+        # ContextCore callers without manufacturing a book source identity.
+        return book_navigation(book)
     if text is None:
         text = _read_doc(env, "docs/ARCHITECTURE.md")
     if not text.strip():
@@ -259,21 +255,16 @@ def reference_doc_sections(
     if dev_text.strip():
         chapters = (book_navigation(development_book) if development_book is not None
                     else generate_doc_nav_map(dev_text, title="DEVELOPMENT.md", rel_path="docs/DEVELOPMENT.md"))
-        if context_mode in {"low", "nano"}:
+        if development_book is not None or context_mode in {"low", "nano"}:
             parts.append(chapters)
         else:  # Max: the handbook or its chapter map, in its own block, so the common sections stay shared
             development = "## DEVELOPMENT.md\n\n" + dev_text if include_development else chapters
 
     # README (user-facing) and CHECKLISTS (reviewers load their own copy) are not
     # inlined in the agent context in any mode.
-    books_note = (
-        "Reference books: `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`. "
-        "If a book is not inlined, read it on demand. "
-        if context_mode not in {"low", "nano"} else ""
-    )
     parts.append(
-        "## Reference docs available on demand\n\n" + books_note
-        + "Not inlined in the working context: `README.md`, `docs/CHECKLISTS.md`. "
+        "## Reference docs available on demand\n\n"
+        "Not inlined in the working context: `README.md`, `docs/CHECKLISTS.md`. "
         "Read them in full (untruncated) with `read_file(root=\"system_repo\", path=...)` when relevant."
     )
     return parts, development

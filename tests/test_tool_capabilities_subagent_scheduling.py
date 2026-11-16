@@ -45,17 +45,18 @@ def test_schedule_subagent_available_in_registry():
     )
 
 
-def test_schedule_subagent_in_initial_schemas():
-    """schedule_subagent appears in parent initial schemas as a core tool."""
+def test_schedule_subagent_permitted_but_initially_unloaded():
+    """Scheduling capability survives the lean initial schema view."""
     from ouroboros.tools.registry import ToolRegistry
     from ouroboros.tool_policy import initial_tool_schemas
     import pathlib, tempfile
     tmp = pathlib.Path(tempfile.mkdtemp())
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
-    names = {s["function"]["name"] for s in initial_tool_schemas(registry)}
+    assert "schedule_subagent" not in {s["function"]["name"] for s in initial_tool_schemas(registry)}
+    names = {s["function"]["name"] for s in registry.schemas()}
     assert "schedule_subagent" in names
     assert {"peek_task", "cancel_task", "discard_child_result"} <= names
-    schedule_schema = next(s for s in initial_tool_schemas(registry) if s["function"]["name"] == "schedule_subagent")
+    schedule_schema = registry.get_schema_by_name("schedule_subagent")
     props = schedule_schema["function"]["parameters"]["properties"]
     assert "required_capabilities" in props
     assert "shell" in props["required_capabilities"]["items"]["enum"]
@@ -133,7 +134,7 @@ def test_schedule_subagent_required_vcs_capability_is_satisfied_for_readonly(tmp
     assert events and events[0]["required_capabilities"] == ["vcs"]
 
 
-def test_local_readonly_subagent_initial_schemas_are_allowlisted(tmp_path):
+def test_local_readonly_subagent_catalog_is_allowlisted_and_residency_is_separate(tmp_path):
     from ouroboros.contracts.task_constraint import TaskConstraint
     from ouroboros.tool_capabilities import LOCAL_READONLY_SUBAGENT_TOOL_NAMES
     from ouroboros.tool_policy import initial_tool_schemas, list_non_core_tools
@@ -148,7 +149,7 @@ def test_local_readonly_subagent_initial_schemas_are_allowlisted(tmp_path):
         )
     )
 
-    names = {s["function"]["name"] for s in initial_tool_schemas(registry)}
+    names = {s["function"]["name"] for s in registry.schemas()}
     # A granted compat alias stays callable but is advertised only through its canonical name.
     aliases = {name for name in LOCAL_READONLY_SUBAGENT_TOOL_NAMES if registry._entries[name].alias_for}
     assert aliases == {"ocr_pdf"}
@@ -161,7 +162,7 @@ def test_local_readonly_subagent_initial_schemas_are_allowlisted(tmp_path):
     assert "run_command" not in names
     assert "browse_page" in names
     assert "browser_action" in names
-    schemas = {s["function"]["name"]: s["function"] for s in initial_tool_schemas(registry)}
+    schemas = {s["function"]["name"]: s["function"] for s in registry.schemas()}
     for tool_name in ("read_file", "list_files", "search_code"):
         root_enum = schemas[tool_name]["parameters"]["properties"]["root"]["enum"]
         assert "user_files" in root_enum
@@ -176,7 +177,9 @@ def test_local_readonly_subagent_initial_schemas_are_allowlisted(tmp_path):
     assert "analyze_screenshot" in schemas["browse_page"]["description"]
     assert schemas["browse_page"]["parameters"]["properties"]["engine"]["enum"] == ["chromium", "webkit"]
     assert "device" in schemas["browse_page"]["parameters"]["properties"]
-    assert list_non_core_tools(registry) == []
+    initial_names = {s["function"]["name"] for s in initial_tool_schemas(registry)}
+    assert initial_names <= names
+    assert {row["name"] for row in list_non_core_tools(registry)} == names - initial_names
 
 
 def test_workspace_parent_keeps_the_ordinary_top_level_control_surface(tmp_path, monkeypatch):
@@ -199,7 +202,7 @@ def test_workspace_parent_keeps_the_ordinary_top_level_control_surface(tmp_path,
 
     monkeypatch.setattr(mcp_client, "ensure_configured_from_settings", lambda *args, **kwargs: None)
     monkeypatch.setattr(mcp_client, "get_manager", lambda: type("_M", (), {"list_tools_for_registry": lambda self: []})())
-    names = {schema["function"]["name"] for schema in initial_tool_schemas(registry)}
+    names = {schema["function"]["name"] for schema in registry.schemas()}
 
     assert "plan_task" in names
     assert "review_change" in names  # a task's result is reviewed as review_change(subject="result")

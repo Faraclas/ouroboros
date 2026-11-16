@@ -153,7 +153,7 @@ def test_selection_replaces_only_the_named_records_and_the_rest_stay_whole(tmp_p
     # Root and child read the same account block; the story is the same bytes; a nanny has none.
     assert _story(tmp_path, KID) == story and mv.render_story(_snapshot(tmp_path, NANNY)) == ""
     # The selected account suppresses A1 in Alpha's resident view too; its exact source stays readable.
-    alpha_task = {"id": "rootA001", "chat_id": rooms["alpha"]}
+    alpha_task = {"id": "rootA001", "chat_id": rooms["alpha"], "memory_view": {"story": True}}
     room = mv.render_room(_snapshot(tmp_path, alpha_task))
     assert "Alpha asked again and I counted." not in room
     assert G_TEXT not in room
@@ -348,7 +348,8 @@ def test_a_correction_after_the_account_keeps_its_basis_and_is_shown_as_not_inco
     assert "correction by me of" not in block  # not a fold's correction line: the relation is provenance
     assert G_TEXT in block  # the account's own words are untouched
     # The told page stays at its exact readers, never again in the room; the reader shows it with its correction.
-    room = mv.render_room(_snapshot(tmp_path, {"id": "rootA001", "chat_id": rooms["alpha"]}))
+    room = mv.render_room(_snapshot(tmp_path, {"id": "rootA001", "chat_id": rooms["alpha"],
+                                               "memory_view": {"story": True}}))
     assert "Alpha asked again and I counted." not in room and "I counted twice, not once." not in room
     read = _memory_read(_ctx(tmp_path), node_id=g)
     assert f"revision {a1} used; later corrections not in this account: {fix.record['id']}; memory_read(node_id={a1}, revision={a1})" in read
@@ -458,7 +459,7 @@ def test_a_new_record_after_the_account_is_open_and_a_later_account_replaces_onl
 
 # --- F. roles and views ----------------------------------------------------------------------------
 
-def test_every_role_reads_the_same_account_and_its_own_detail(tmp_path):
+def test_every_role_with_explicit_story_reads_the_same_account_and_its_own_detail(tmp_path):
     rooms, alpha, beta, a1, b1, h1 = _rooms(tmp_path)
     store = ChronicleStore(tmp_path)
     g = store.publish_account(room_id="1", text=G_TEXT, sources=[a1, b1], author=shared.MIND).record["id"]
@@ -467,6 +468,9 @@ def test_every_role_reads_the_same_account_and_its_own_detail(tmp_path):
              "wake": {"id": "wake0001", "chat_id": 1, "metadata": {"usage_category": "consciousness"}},
              "presence": {"id": "pres0001", "chat_id": 555, "metadata": {"presence": {"binding_id": "b"}}},
              "child_main": KID, "child_alpha": {**KID, "id": "kid00002", "chat_id": rooms["alpha"]}}
+    # Shared-account semantics are independent of the Project's story-less default.
+    tasks = {name: {**task, "memory_view": {**task.get("memory_view", {}), "story": True}}
+             for name, task in tasks.items()}
     stories = {name: _story(tmp_path, task) for name, task in tasks.items()}
     assert len(set(stories.values())) == 1 and G_TEXT in stories["main"]
     rooms_text = {name: mv.render_room(_snapshot(tmp_path, task)) for name, task in tasks.items()}

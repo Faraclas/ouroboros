@@ -269,6 +269,8 @@ def view_spec_for_task(task: Mapping[str, Any], drive_root: Any, *, ctx: Any = N
     # Only validated explicit keys override these defaults.
     if spec.role == "integrator" and spec.room_id != MAIN_ROOM:
         defaults = {}
+        if "story" not in overrides:
+            defaults["story"] = False
         if "live_rooms" not in overrides:
             defaults["live_rooms"] = "none"
         if "marks" not in overrides:

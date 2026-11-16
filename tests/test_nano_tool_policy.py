@@ -8,6 +8,7 @@ import pytest
 
 from ouroboros.tool_policy import (
     NANO_SCHEMA_META_NAMES,
+    LOW_INITIAL_SCHEMA_NAMES,
     compact_tool_catalog,
     format_capability_omissions,
     initial_tool_schemas,
@@ -47,8 +48,9 @@ def test_compact_modes_select_schemas_and_never_change_shared_canonical_bytes():
     full = initial_tool_schemas(registry)
     nano = initial_tool_schemas(registry, "nano", ["write_file"])
     assert _names(nano) == ("list_available_tools", "write_file", "enable_tools", "compact_context")
-    assert initial_tool_schemas(registry, "max", []) == full
-    assert list_non_core_tools(registry, "max") == []
+    assert _names(initial_tool_schemas(registry, "max", [])) == tuple(
+        name for name in _names(full) if name in NANO_SCHEMA_META_NAMES)
+    assert [row["name"] for row in list_non_core_tools(registry, "max")] == ["write_file"]
     assert _names(initial_tool_schemas(registry, "low")) == (
         "read_file", "list_available_tools", "enable_tools", "compact_context")
     assert _names(initial_tool_schemas(registry, "low", [])) == (
@@ -56,7 +58,9 @@ def test_compact_modes_select_schemas_and_never_change_shared_canonical_bytes():
     assert [row["name"] for row in list_non_core_tools(registry, "low")] == ["write_file"]
     nano[1]["function"]["parameters"]["properties"]["path"]["type"] = "integer"
     assert json.dumps(registry.schemas()) == before
-    assert json.dumps(initial_tool_schemas(registry, "max")) == before
+    assert json.dumps(registry.schemas()) == before
+    assert initial_tool_schemas(registry, "max") == initial_tool_schemas(registry, "low")
+    assert initial_tool_schemas(registry, "nano") == initial_tool_schemas(registry, "low")
 
 
 def test_parent_selection_is_not_an_allowlist_and_meta_transport_survives_replacement():
@@ -74,7 +78,7 @@ def test_parent_selection_is_not_an_allowlist_and_meta_transport_survives_replac
 
 def test_two_enable_requests_compose_pending_selection_and_no_op_keeps_bytes():
     registry, ctx, sibling = Registry(), SimpleNamespace(), SimpleNamespace()
-    current = initial_tool_schemas(registry, "nano")
+    current = initial_tool_schemas(registry, "nano", [])
     first = request_tool_schema_selection(ctx, registry, ["read_file"], context_mode="nano",
                                          current_schemas=current, extend=True)
     second = request_tool_schema_selection(ctx, registry, ["write_file"], context_mode="nano",
@@ -118,14 +122,15 @@ def test_catalog_has_every_permitted_name_and_only_purpose_is_bounded():
     assert format_capability_omissions(omissions)[1] == "- mcp: resource_blocked (network=false)"
 
 
-@pytest.mark.parametrize("mode", ["max"])
-def test_full_modes_do_not_queue_a_selection_or_retain_old_nano_pending(mode):
+@pytest.mark.parametrize("mode", ["max", "low", "nano"])
+def test_all_modes_queue_explicit_selection_without_narrowing_permissions(mode):
     registry, ctx = Registry(), SimpleNamespace(_pending_tool_schema_names=("read_file",))
-    request = request_tool_schema_selection(ctx, registry, [], context_mode=mode,
+    request = request_tool_schema_selection(ctx, registry, ["write_file"], context_mode=mode,
                                             current_schemas=initial_tool_schemas(registry))
-    assert request.status == "full_envelope_unchanged"
-    assert _names(request.selection.schemas) == _names(registry.schemas())
-    assert ctx._pending_tool_schema_names is None
+    assert request.status == "pending"
+    assert "write_file" in request.selection.chosen and "read_file" not in request.selection.chosen
+    assert ctx._pending_tool_schema_names == request.selection.chosen
+    assert "read_file" in _names(registry.schemas())
 
 
 def test_actual_registry_dynamic_tools_keep_canonical_order_and_permissions(tmp_path, monkeypatch):
@@ -150,9 +155,11 @@ def test_actual_registry_dynamic_tools_keep_canonical_order_and_permissions(tmp_
     selected = initial_tool_schemas(registry, "nano", ["mcp_example__lookup", name])
     assert _names(selected) == tuple(n for n in _names(full) if n in NANO_SCHEMA_META_NAMES or n in (name, "mcp_example__lookup"))
     # An unpinned MCP server starts on demand in every mode; a pinned one keeps its schemas (#2332).
-    assert initial_tool_schemas(registry, "max") == [s for s in full if s["function"]["name"] != "mcp_example__lookup"]
+    assert initial_tool_schemas(registry, "max") == [
+        s for s in full if s["function"]["name"] in LOW_INITIAL_SCHEMA_NAMES | NANO_SCHEMA_META_NAMES]
     mcp_rows[0]["schemas_at_start"] = True
-    assert initial_tool_schemas(registry, "max") == full
+    assert initial_tool_schemas(registry, "max") == [
+        s for s in full if s["function"]["name"] in LOW_INITIAL_SCHEMA_NAMES | NANO_SCHEMA_META_NAMES | {"mcp_example__lookup"}]
     mcp_rows[0]["schemas_at_start"] = False
     assert [r["name"] for r in compact_tool_catalog(full, schema_names=_names(selected))] == list(_names(full))
     mcp_rows.append({"name": "mcp_example__later", "description": "Added after startup.", "schema": {"type": "object", "properties": {}}})

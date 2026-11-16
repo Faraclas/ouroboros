@@ -47,9 +47,10 @@ def test_main_sees_other_rooms_as_lines_and_a_project_task_its_own_room(tmp_path
     _a, identity, bound, _cap = blocks(env, memory, {"id": "bound", "chat_id": 1})  # bound to alpha, written in Main
     room = section(bound, f"## This room ({alpha})")
     assert "] alpha again" in room  # current room detail stays verbatim
-    story = section(identity, "## My story")
+    assert "## My story" not in identity
     for record in ("Alpha began.", "Alpha worked."):
-        assert f"\n  {record}" in story and record not in room
+        assert f"\n  {record}" in room
+    assert "memory_read" in section(bound, "## Other rooms (on demand)")
     assert "next please" not in bound and "beta again" not in bound
     assert "## Live rooms" not in bound
 

@@ -41,7 +41,8 @@ def test_build_llm_messages_marks_every_stable_block_before_the_changing_tail():
     assert all(block["cache_control"] == {"type": "ephemeral"} and block["text"].strip() for block in stable)
     assert "cache_control" not in dynamic
     assert stable[0]["text"].startswith("You are Ouroboros.")
-    assert stable[1]["text"].startswith("## DEVELOPMENT.md\n")
+    assert "## DEVELOPMENT.md (navigation map)" in stable[0]["text"]
+    assert not any(block["text"].startswith("## DEVELOPMENT.md\n") for block in stable)
     assert "## My story" in stable[-1]["text"]
     from ouroboros.llm_messages import STABLE_PREFIX_BLOCKS_KEY
 

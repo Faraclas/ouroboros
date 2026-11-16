@@ -628,6 +628,7 @@ def build_knowledge_sections(
     project_id: str = "",
     warn_large: bool = False,
     compact_overview: bool = False,
+    compact_project_overview: bool = False,
 ) -> List[str]:
     sections: List[str] = []
     # One mind keeps its authored common orientation across rooms. The generated
@@ -638,15 +639,17 @@ def build_knowledge_sections(
     pid = str(project_id or "").strip()
     global_address = resolve_knowledge_address(env.drive_path("memory").parent, OVERVIEW_TOPIC, "global")
     overview = None
+    compact_pointer = ""
     try:
         overview = read_knowledge_note(global_address)
         overview_text = overview.source.text_at(overview.source.body_span) if overview.source else overview.text
         if overview_text.strip():
+            compact_pointer = (
+                "## Shared understanding (compact pointer — BIBLE P1 disclosed)\n\n"
+                f"Full orientation ({len(overview_text)} chars) available via `knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global')`."
+            )
             if compact_overview:
-                sections.append(
-                    f"## Shared understanding (compact pointer — BIBLE P1 disclosed)\n\n"
-                    f"Full orientation ({len(overview_text)} chars) available via `knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global')`."
-                )
+                sections.append(compact_pointer)
             else:
                 sections.append(f"## Shared understanding\n\nSource: knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global').\n\n" + overview_text)
         else:
@@ -681,6 +684,10 @@ def build_knowledge_sections(
                 sections.append(f"## Project workpad ({pid})\n\n{workpad}")
         except Exception:
             log.debug("project journal/workpad context injection failed", exc_info=True)
+    if (compact_project_overview and compact_pointer
+            and any(s.startswith(f"## Project journal ({pid}) — recent milestones\n\n") for s in sections)
+            and any(s.startswith(f"## Project workpad ({pid})\n\n") for s in sections)):
+        sections[0] = compact_pointer
     return sections
 
 
@@ -1156,24 +1163,28 @@ def _capture_context_core(
     # Knowledge leads the changing block (its edits never cost the cached story) and
     # rides only where the view holds it: a child or nanny reads it by knowledge_read.
     project_id = resolve_project_id(task)
-    head_parts = (build_knowledge_sections(context_env, project_id=project_id, compact_overview=is_child)
-                  if view_spec.knowledge else [])
+    from ouroboros.memory_view import MAIN_ROOM
+
+    project_integrator = view_spec.role == "integrator" and view_spec.room_id != MAIN_ROOM
+    head_parts = (build_knowledge_sections(
+        context_env, project_id=project_id, compact_overview=is_child,
+        compact_project_overview=project_integrator,
+    ) if view_spec.knowledge else [])
     # The loader emits these independently. Relocate global working memory only
     # when BOTH local replacements actually loaded; absent/failed loads keep it.
     project_memory_loaded = bool(
-        project_id
+        project_integrator and project_id
         and any(part.startswith(f"## Project journal ({project_id}) — recent milestones\n\n")
                 for part in head_parts)
         and any(part.startswith(f"## Project workpad ({project_id})\n\n")
                 for part in head_parts)
     )
-    from ouroboros.memory_view import MAIN_ROOM
-
-    if view_spec.role == "integrator" and view_spec.room_id != MAIN_ROOM and view_spec.live_rooms == "none":
+    if project_integrator and (view_spec.live_rooms == "none" or not view_spec.story):
         head_parts.append(
             "## Other rooms (on demand)\n\n"
             "Discover rooms with `memory_read(room_id='*', start=0)`; read one via "
-            "`memory_read(room_id=..., rows=true)`. Inter-room coordination remains available."
+            "`memory_read(room_id=..., rows=true)`. Cross-room story (## My story), pages, parts and accounts "
+            "remain readable via `memory_read(node_id=...)` or room discovery. Inter-room coordination remains available."
         )
     if design_nav:
         head_parts.append(design_nav)

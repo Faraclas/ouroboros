@@ -118,7 +118,7 @@ def test_a_schema_the_actor_enabled_stays_though_no_fit_left_it_out_before(tmp_p
     from ouroboros.tools.registry import ToolRegistry
 
     registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
-    catalog = initial_tool_schemas(registry)
+    catalog = initial_tool_schemas(registry, schema_names=_names(registry.schemas()))
     unpinned = [name for name in _names(catalog) if name not in PINNED]
     chosen, tail = unpinned[-1], unpinned[-2]
     resident = [schema for schema in catalog if schema["function"]["name"] != chosen]

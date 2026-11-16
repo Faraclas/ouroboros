@@ -346,7 +346,8 @@ def _render_context_system_content(
 
 
 def _governance_blocks(env: Any, core: ContextCore, *, mode: str) -> Tuple[str, ...]:
-    # Max carries whole reference books; Low carries chapter maps.
+    # Captured books use chapter maps in every mode; text-only synthetic cores
+    # retain their explicit mode/full-book rendering for pressure tests.
     static_parts = [core.base_prompt, "## BIBLE.md\n\n" + core.bible_md]
     sections, development = reference_doc_sections(
         env,

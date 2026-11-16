@@ -147,13 +147,12 @@ def test_continue_brief_survives_overflow_relocation(tmp_path, monkeypatch, flag
     for index, request in enumerate(inputs):
         system = json.dumps([m for m in request["messages"] if m["role"] == "system"])
         assert "PREDECESSOR-CONTRACT-SENTINEL" not in system and "predecessor_authority" in system
-        # Low projects books as navigation, and a confirmed Max overflow retries in task-local
-        # Low; the stored inclusion choice survives that rendering policy. User content may be blocks.
+        # Every ordinary start uses navigation; the stored inclusion choice
+        # remains authoritative independently of that rendering policy.
         assert sum(block.get("text", "").startswith("## DEVELOPMENT.md\n")
                    for m in request["messages"] if m["role"] == "system"
-                   for block in m["content"]) == int(flag is True and mode == "max" and index < 2)
-        if mode == "low" or index == 2:
-            assert "## DEVELOPMENT.md (navigation map)" in system
+                   for block in m["content"]) == 0
+        assert "## DEVELOPMENT.md (navigation map)" in system
         users = json.dumps([m for m in request["messages"] if m["role"] == "user"], ensure_ascii=False)
         assert json.dumps(task["text"], ensure_ascii=False)[1:-1] in users
     assert registry._ctx.context_fit_plan.core.docs_need_development is bool(flag)

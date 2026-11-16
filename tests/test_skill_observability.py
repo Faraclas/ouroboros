@@ -59,7 +59,7 @@ def test_summarize_skills_includes_when_to_use_and_tools(tmp_path):
     assert skill["tool_surfaces"][0]["name"] == tool_name
 
 
-def test_initial_tool_schemas_includes_enabled_extension_tools(tmp_path, monkeypatch):
+def test_enabled_extension_tools_are_discoverable_but_initially_unloaded(tmp_path, monkeypatch):
     from ouroboros import extension_loader
 
     registry = ToolRegistry(repo_dir=tmp_path / "repo", drive_root=tmp_path / "data")
@@ -76,12 +76,13 @@ def test_initial_tool_schemas_includes_enabled_extension_tools(tmp_path, monkeyp
     try:
         names = {schema["function"]["name"] for schema in initial_tool_schemas(registry)}
         non_core = {entry["name"] for entry in list_non_core_tools(registry)}
+        permitted = {s["function"]["name"] for s in registry.schemas()}
     finally:
         with extension_loader._lock:
             extension_loader._tools.pop(tool_name, None)
 
-    assert tool_name in names
-    assert tool_name not in non_core
+    assert tool_name not in names
+    assert tool_name in non_core and tool_name in permitted
 
 
 def test_initial_schemas_skip_disabled_or_unreviewed_extensions(tmp_path, monkeypatch):
@@ -107,7 +108,7 @@ def test_initial_schemas_skip_disabled_or_unreviewed_extensions(tmp_path, monkey
     assert tool_name not in names
 
 
-def test_extension_schema_size_does_not_silently_omit_initial_schema(tmp_path, monkeypatch, caplog):
+def test_extension_schema_size_does_not_silently_omit_explicitly_selected_schema(tmp_path, monkeypatch, caplog):
     from ouroboros import extension_loader
 
     registry = ToolRegistry(repo_dir=tmp_path / "repo", drive_root=tmp_path / "data")
@@ -122,8 +123,8 @@ def test_extension_schema_size_does_not_silently_omit_initial_schema(tmp_path, m
         }
     monkeypatch.setattr(extension_loader, "is_extension_live", lambda *_args, **_kwargs: True)
     try:
-        names = {schema["function"]["name"] for schema in initial_tool_schemas(registry)}
-        non_core_names = {entry["name"] for entry in list_non_core_tools(registry)}
+        names = {schema["function"]["name"] for schema in initial_tool_schemas(registry, schema_names=[big_name])}
+        non_core_names = {entry["name"] for entry in list_non_core_tools(registry, schema_names=names)}
     finally:
         with extension_loader._lock:
             extension_loader._tools.pop(big_name, None)

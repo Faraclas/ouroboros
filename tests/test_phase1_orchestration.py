@@ -161,9 +161,8 @@ def test_capability_and_queue_digest_in_runtime_context(tmp_path, monkeypatch):
     assert '"allow_mutative_subagents": false' in section_off
 
 
-def test_tree_tools_in_core_and_initial_schemas():
-    """tree_note/tree_read must be in the round-one envelope so a NORMAL parent can publish
-    the shared frame before fan-out (no enable_tools detour)."""
+def test_tree_tools_in_core_and_permitted_schemas():
+    """Coordination remains permitted independently of initial schema residency."""
     import pathlib
     import tempfile
 
@@ -174,7 +173,7 @@ def test_tree_tools_in_core_and_initial_schemas():
     assert "tree_note" in CORE_TOOL_NAMES and "tree_read" in CORE_TOOL_NAMES
     with tempfile.TemporaryDirectory() as d:
         reg = ToolRegistry(repo_dir=pathlib.Path(d), drive_root=pathlib.Path(d))
-        names = {s["function"]["name"] for s in initial_tool_schemas(reg)}
+        names = {s["function"]["name"] for s in reg.schemas()}
         assert "tree_note" in names and "tree_read" in names
 
 

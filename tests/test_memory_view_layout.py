@@ -1,10 +1,9 @@
 """Where the memory view sits in a request, and what each block's bytes depend on.
 
-A built request holds common governance (A', marked), the optional handbook (D, marked),
-identity with my story (B, marked), then knowledge, my rooms and the runtime
-facts (C, unmarked). B depends only on the chronicle, identity, WORLD, the deep review and the
-catalog: the same bytes for Main, a Project's root and a wake. Knowledge edits change only C;
-a new page changes B and never A' or D. Anthropic keeps the message seal and gives schemas
+A built request holds common governance with book maps (A', marked), identity with
+any selected story (B, marked), then knowledge, my rooms and runtime facts (C, unmarked).
+Main and wakes share the common story; Project roots omit cross-room story by default.
+Knowledge edits change only C; a new story page changes B and never A'. Anthropic keeps the message seal and gives schemas
 only a free slot. Codex and direct OpenAI keep all stable items and C as one notice (their cache is
 read only inside the leading system group, by prefix: measured 2026-10-03); the view fact of
 the first send reaches the cap info, the task context, one event and the trace.
@@ -32,29 +31,33 @@ def _messages(env, memory, task, **kwargs):
     return build_llm_messages(env=env, memory=memory, task={"type": "task", "text": "hi", **task}, **kwargs)
 
 
-def test_the_request_keeps_my_story_before_the_changing_tail_and_the_book_separate(tmp_path):
+def test_the_request_keeps_my_story_before_the_changing_tail_and_books_in_common_maps(tmp_path):
     env, memory, _rooms = world(tmp_path)
     messages, _cap = _messages(env, memory, MAIN)
     content = messages[0]["content"]
     assert messages[1]["role"] == "user"
     assert all("cache_control" in block for block in content[:-1]) and "cache_control" not in content[-1]
-    a, d, b, c = (block["text"] for block in content)
-    assert d.startswith("## DEVELOPMENT.md\n") and "## DEVELOPMENT.md\n" not in a
-    assert "## My story" in b and "## My story" not in a + d + c
+    a, b, c = (block["text"] for block in content)
+    assert "## DEVELOPMENT.md (navigation map)" in a and "## DEVELOPMENT.md\n" not in a
+    assert "## My story" in b and "## My story" not in a + c
     for heading in ("## Shared understanding", "## Knowledge base", "## Live rooms", "## This room (Main)"):
         assert heading in c and heading not in a + b, heading
     for gone in ("## Dialogue History", "## Recent chat", "## Project owner origins", "## Legacy Dialogue Summary"):
         assert gone not in a + b + c, gone
 
 
-def test_b_is_byte_identical_for_main_another_room_and_a_wake(tmp_path):
-    """One story for every integrating focus; a wake's room is Main, byte for byte the Main turn's, and its
-    live rooms give one directory line per room without standing verbatim words."""
+def test_b_shares_main_and_wake_story_but_projects_omit_cross_room_story(tmp_path):
+    """Main and wakes share their story; Projects retain their orthogonal horizon.
+
+    Wake live rooms give one directory line per room without standing verbatim words.
+    """
     env, memory, rooms = world(tmp_path)
     views = {name: blocks(env, memory, task) for name, task in (
         ("main", MAIN), ("alpha", {"id": "bound", "chat_id": 1}), ("beta", {"id": "tb", "chat_id": rooms["beta"]}),
         ("wake", WAKE))}
-    assert len({view[1] for view in views.values()}) == 1  # B: one story, whatever the room or role
+    assert views["main"][1] == views["wake"][1]  # integrating Main and wakes keep the common story
+    assert "## My story" in views["main"][1]
+    assert all("## My story" not in views[name][1] for name in ("alpha", "beta"))
     assert len({view[0] for view in views.values()}) == 1  # A': common governance
     assert len({view[2] for view in views.values()}) == 4  # C: each one's own rooms
     main_c, wake_c = views["main"][2], views["wake"][2]
@@ -66,7 +69,7 @@ def test_b_is_byte_identical_for_main_another_room_and_a_wake(tmp_path):
     assert "memory_read(room_id=" in section(wake_c, "## Live rooms")
 
 
-def test_full_roles_share_the_first_block_and_only_eligible_tasks_get_the_handbook(tmp_path):
+def test_full_roles_share_the_first_block_and_all_start_with_book_maps(tmp_path):
     """A real workspace binding must not invalidate the common governance prefix."""
     env, memory, _rooms = world(tmp_path)
     project = foreign_tree(tmp_path / "project")
@@ -83,15 +86,12 @@ def test_full_roles_share_the_first_block_and_only_eligible_tasks_get_the_handbo
     contents = {name: _messages(env, memory, task)[0][0]["content"] for name, (task, _book) in tasks.items()}
     assert all(content[0] == contents["main"][0] for content in contents.values())
     for name, content in contents.items():
-        book = tasks[name][1]
         assert "docs/DEVELOPMENT.md" in content[0]["text"], name
-        handbook = [block for block in content if block["text"].startswith("## DEVELOPMENT.md\n")]
-        assert len(handbook) == int(book), name
-        if book:
-            assert content[1] == handbook[0] and "cache_control" in handbook[0], name
+        assert "## DEVELOPMENT.md (navigation map)" in content[0]["text"], name
+        assert not any(block["text"].startswith("## DEVELOPMENT.md\n") for block in content), name
 
 
-@pytest.mark.parametrize("mode,child", [("low", False), ("nano", False), ("max", True), ("low", True), ("nano", True)])
+@pytest.mark.parametrize("mode,child", [("max", False), ("low", False), ("nano", False), ("max", True), ("low", True), ("nano", True)])
 def test_compact_modes_and_children_keep_both_book_maps_without_a_separate_handbook(tmp_path, monkeypatch, mode, child):
     monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", mode)
     env, memory, _rooms = world(tmp_path)
@@ -109,8 +109,8 @@ def test_compact_modes_and_children_keep_both_book_maps_without_a_separate_handb
 
 
 @pytest.mark.parametrize("book", [False, True])
-def test_route_reprojection_keeps_the_captured_handbook_and_counts_it_in_the_floor(tmp_path, monkeypatch, book):
-    """D is reconstructed from the capture, never from a block index or changed files."""
+def test_route_reprojection_keeps_captured_maps_and_counts_the_same_residency(tmp_path, monkeypatch, book):
+    """Book maps are reconstructed from the capture, not changed source files."""
     from dataclasses import replace
     from types import SimpleNamespace
     from ouroboros import context, context_fit
@@ -135,11 +135,11 @@ def test_route_reprojection_keeps_the_captured_handbook_and_counts_it_in_the_flo
     for mode in ("max", "low", "nano"):
         facts = plan.projection(mode).memory_facts["floor"]
         delta = without.projection(mode).memory_facts["floor"]["physical_allowance_tokens"] - facts["physical_allowance_tokens"]
-        assert (delta > 5000) if book else delta == 0  # every unsent book form shares the start's one memory view
+        assert delta == 0  # all captured-book modes start with the same maps, independent of body eligibility
     chapter.write_text("# Rules\n\nChanged after capture.\n", encoding="utf-8")
     rebuilt = plan.reproject_for_route(window_tokens=2_000_000, known_window=True, ratio=1.0,
                                       output_reserve=plan.output_reserve_tokens, tool_schemas=None)
-    # A window the Max request cannot hold narrows Max's memory: D is still the captured one, counted the same.
+    # A window the Max request cannot hold narrows memory; its book maps stay captured.
     tight = plan.projection("max").estimated_tokens + plan.output_reserve_tokens - 1
     narrowed = plan.reproject_for_route(window_tokens=tight, known_window=True, ratio=1.0,
                                        output_reserve=plan.output_reserve_tokens, tool_schemas=None)
@@ -148,13 +148,13 @@ def test_route_reprojection_keeps_the_captured_handbook_and_counts_it_in_the_flo
         assert after["content"] == before["content"]  # a larger window keeps every shown view
         assert rebuilt.projection(mode).memory_facts == plan.projection(mode).memory_facts
         texts = [block["text"] for block in after["content"]]
-        assert sum(text.startswith("## DEVELOPMENT.md\n") for text in texts) == int(book and mode == "max")
-        if book and mode == "max":
-            assert texts[1] == "## DEVELOPMENT.md\n\n" + core.development_md
+        assert not any(text.startswith("## DEVELOPMENT.md\n") for text in texts)
+        assert "Source: `docs/development/rules.md`" in texts[0]
         assert all("Changed after capture" not in text for text in texts)
     texts = [block["text"] for block in narrowed.messages_for("max")[0]["content"]]
     assert narrowed.projection("max").system_content_json != plan.projection("max").system_content_json
-    assert sum(text.startswith("## DEVELOPMENT.md\n") for text in texts) == int(book)
+    assert not any(text.startswith("## DEVELOPMENT.md\n") for text in texts)
+    assert "Source: `docs/development/rules.md`" in texts[0]
     assert all("Changed after capture" not in text for text in texts)
     assert (narrowed.projection("max").memory_facts["floor"]["physical_allowance_tokens"]
             - plan.projection("max").memory_facts["floor"]["physical_allowance_tokens"]) == tight - 1_000_000
@@ -216,7 +216,7 @@ def test_anthropic_preserves_the_message_seal_and_gives_schemas_only_a_free_slot
         assert client._cache_breakpoint_tls.pending is None
     kept = LLMClient._payload_cache_breakpoints(payload)
     assert len(kept) == len(_deep_markers(payload)) == 4
-    has_book = book and mode == "max"
+    has_book = False  # real book captures send maps in A', leaving the schema cache slot free
     assert ("cache_control" in payload["tools"][-1]) == (not has_book)
     # The newest tool result, or the task message itself: the seal changed neither row.
     assert kept[-1]["text"] == ("result 5" if long else messages[1]["content"])
@@ -281,8 +281,7 @@ def test_a_helpers_role_line_names_exactly_what_its_request_holds(tmp_path, rout
 
 
 def test_the_tool_schemas_count_in_the_floor_of_every_mode(tmp_path):
-    """Schemas reach the plan: the same view leaves less room for memory with them, and Nano
-    counts only its own selection of them."""
+    """Resident schemas count against physical room in every mode, even with lean defaults."""
     from types import SimpleNamespace
 
     from ouroboros import context
@@ -290,8 +289,8 @@ def test_the_tool_schemas_count_in_the_floor_of_every_mode(tmp_path):
     env, memory, _rooms = world(tmp_path)
     task = {"type": "task", "text": "hi", **MAIN}
     core = context._capture_context_core(env, memory, task, None, None)
-    schemas = [{"type": "function", "function": {"name": f"tool_{i}", "description": "d" * 4_000,
-                                                 "parameters": {"type": "object", "properties": {}}}} for i in range(30)]
+    schemas = [{"type": "function", "function": {"name": "memory_read", "description": "d" * 120_000,
+                                                 "parameters": {"type": "object", "properties": {}}}}]
 
     def route(*_a, **_kw):
         return ({"model": "m", "provider": "p"},
@@ -303,8 +302,8 @@ def test_the_tool_schemas_count_in_the_floor_of_every_mode(tmp_path):
 
     bare, loaded = plan(None), plan(schemas)
     for mode in ("max", "low"):
-        assert (bare.projection(mode).memory_facts["floor"]["allowance_tokens"]
-                - loaded.projection(mode).memory_facts["floor"]["allowance_tokens"]) >= 30_000
+        assert (bare.projection(mode).memory_facts["floor"]["physical_allowance_tokens"]
+                - loaded.projection(mode).memory_facts["floor"]["physical_allowance_tokens"]) >= 30_000
     assert (bare.projection("nano").memory_facts["floor"]["physical_allowance_tokens"]
             - loaded.projection("nano").memory_facts["floor"]["physical_allowance_tokens"]) >= 30_000
     # Unsent book forms share the selected start view, including its resident schema allowance.
@@ -340,7 +339,9 @@ def test_a_nano_floor_names_only_the_path_its_own_request_sends(tmp_path, monkey
         registry._ctx.task_constraint = TaskConstraint(mode="local_readonly_subagent")
     if actor == "child_without_selector":
         registry._ctx.task_contract = {"disabled_tools": ["enable_tools"]}
-    schemas = initial_tool_schemas(registry, context_mode=owner)
+    # Authored residency omits the now-initial reader without revoking its permission;
+    # this oracle exercises the indirect recovery path, not ordinary Turn-1 defaults.
+    schemas = initial_tool_schemas(registry, context_mode=owner, schema_names=())
     core = context._capture_context_core(env, memory, task, None, None)
 
     def plan(window):
@@ -371,7 +372,7 @@ def test_a_nano_floor_names_only_the_path_its_own_request_sends(tmp_path, monkey
     # Sealing is offered only to a request that can call chronicle_write (sent, or loaded by enable_tools).
     assert ("chronicle_write kind=page" in floor) == bool({"chronicle_write", "enable_tools"} & set(sent)), floor
     if actor == "child_without_selector":
-        assert sent == ("list_available_tools",)
+        assert "list_available_tools" in sent and "enable_tools" not in sent
         assert floor.rstrip().endswith("list_available_tools shows what this task can call, and my parent task can "
                                        "read any address I name to it)")
     else:
@@ -414,7 +415,7 @@ def _codex_wire(messages):
 
 @pytest.mark.parametrize("book", [False, True])
 def test_codex_keeps_identity_and_my_story_in_the_leading_system_group(tmp_path, book):
-    """A', optional D and B remain system items; only C becomes a notice."""
+    """A' (including both book maps) and B remain system items; only C becomes a notice."""
     from ouroboros.llm_messages import HOST_CONTEXT_NOTICE_BEFORE_TASK
     from tests.test_memory_view_story import _page
 
@@ -428,7 +429,8 @@ def test_codex_keeps_identity_and_my_story_in_the_leading_system_group(tmp_path,
     assert target["wire_layout"] == {"system_prefix_split": True, "moved_blocks": 1}
     assert [item["content"] for item in wire[:boundary]] == [[{"type": "text", "text": block["text"]}] for block in stable]
     assert "## My story" in wire[boundary - 1]["content"][0]["text"]
-    assert any(item["content"][0]["text"].startswith("## DEVELOPMENT.md\n") for item in wire[:boundary]) == book
+    assert not any(item["content"][0]["text"].startswith("## DEVELOPMENT.md\n") for item in wire[:boundary])
+    assert "## DEVELOPMENT.md (navigation map)" in wire[0]["content"][0]["text"]
     notice = wire[boundary]["content"]
     assert HOST_CONTEXT_NOTICE_BEFORE_TASK in notice and notice.endswith(c)
     assert "## My story" not in notice and "## Shared understanding" in notice

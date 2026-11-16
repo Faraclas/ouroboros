@@ -82,8 +82,15 @@ def run(root, model, *, registry=None, notes=None):
     registry._ctx.task_metadata = {"presence": {"binding_id": "room-binding"}}
     registry._ctx.task_contract = {"capability_ceiling": presence_ceiling_payload(_admission().capability_ceiling)}
     registry._ctx.context_fit_plan = replace(_plan(preferred="max", window=900_000), model=PRIMARY)
+    # This frozen pre-migration Presence fixture grants only chat_history and
+    # uses its legacy completion tool. Select those existing contracts explicitly;
+    # neither belongs to the ordinary compact core's unsolicited starting set.
+    from ouroboros.tool_policy import initial_tool_schemas
+    schemas = initial_tool_schemas(registry, "max", schema_names=["chat_history", "presence_finish"])
     notes = [] if notes is None else notes
-    with ua.usage_scope(ua.UsageScope(drive_root=root, task_id=TASK, root_task_id=TASK)):
+    from unittest.mock import patch
+    with patch.object(loop, "initial_tool_schemas", return_value=schemas), ua.usage_scope(
+            ua.UsageScope(drive_root=root, task_id=TASK, root_task_id=TASK)):
         result = loop.run_llm_loop(
             [{"role": "user", "content": "Read this room and answer."}], registry, model, root / "logs",
             lambda text, **_kw: notes.append(text), queue.Queue(), task_id=TASK, task_type="presence", drive_root=root)
@@ -121,7 +128,10 @@ def test_configured_fallback_keeps_completed_tools_pins_and_ceiling(data_root, m
     if prior_tools:
         assert len(previous_tools) == 1 and "Retained room evidence" in previous_tools[0]["content"]
     schemas = [{item["function"]["name"] for item in send["tools"]} for send in model.sends]
-    assert all(names == schemas[0] for names in schemas) and "run_shell" not in schemas[0]
+    # A called history contract may join the compact start before the loss;
+    # fallback preserves that completed round's schema selection, not the pre-call start.
+    assert all(names == schemas[int(prior_tools)] for names in schemas[int(prior_tools):]), schemas
+    assert all("run_shell" not in names for names in schemas)
     assert registry._ctx.task_contract["capability_ceiling"] == presence_ceiling_payload(_admission().capability_ceiling)
     rows = _ledger(data_root)
     assert [row["state"] for row in rows] == (["settled"] if prior_tools else []) + ["unresolved", "settled"] + (

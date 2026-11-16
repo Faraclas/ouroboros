@@ -58,12 +58,13 @@ def test_low_actor_can_replace_then_extend_its_view_without_changing_capabilitie
 from tests.test_main_authored_context import main_loop, call
 
 
-def test_low_load_replace_and_dispatch_reach_the_next_real_loop_send(main_loop, monkeypatch):
+@pytest.mark.parametrize("mode", ["max", "low", "nano"])
+def test_lean_load_replace_and_dispatch_reach_the_next_real_loop_send(main_loop, monkeypatch, mode):
     from tests.test_context_fit_integration import _plan
     f = main_loop
-    monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", "low")
-    f.ctx.context_fit_plan = _plan(preferred="low", window=900_000)
-    f.messages = f.ctx.context_fit_plan.messages_for("low")
+    monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", mode)
+    f.ctx.context_fit_plan = _plan(preferred=mode, window=900_000)
+    f.messages = f.ctx.context_fit_plan.messages_for(mode)
     answer, _, _ = f.run([
         call("enable_tools", {"tools": "write_file"}, "enable"),
         call("write_file", {"path": "made.txt", "content": "preserved"}, "write"),
@@ -141,8 +142,7 @@ def test_fresh_task_memory_and_schemas_share_the_role_mode(tmp_path, monkeypatch
     assert facts["context_fit"]["initial_mode"] == expected
     assert messages[-1]["content"] == task["text"]
     assert set(_names(schemas)) == set(_names(initial_tool_schemas(registry, expected)))
-    if expected == "low":
-        assert len(schemas) <= len(LOW_INITIAL_SCHEMA_NAMES)
+    assert len(schemas) <= len(LOW_INITIAL_SCHEMA_NAMES)
 
 
 def test_low_project_and_main_keep_distinct_room_horizons(tmp_path, monkeypatch):
@@ -152,11 +152,50 @@ def test_low_project_and_main_keep_distinct_room_horizons(tmp_path, monkeypatch)
     project_task = {"id": "bound", "chat_id": 1}
     a, story, project, facts = blocks(env, memory, project_task)
     assert facts["context_fit"]["preferred_mode"] == "low"
-    assert "## My story" in story
+    assert "## My story" not in story
+    assert "Cross-room story" in project
+    _a, explicit_story, _project, _facts = blocks(
+        env, memory, {**project_task, "memory_view": {"story": True}})
+    assert "## My story" in explicit_story
     assert f"## This room (Project Alpha [chat_id={rooms['alpha']}])" in project
     assert "## Live rooms" not in project
     assert "memory_read(room_id='*', start=0)" in project
     assert "memory_read(room_id=..., rows=true)" in project
-    _a, _story, main, _facts = blocks(env, memory, {"id": "main", "chat_id": 1})
+    _a, main_story, main, _facts = blocks(env, memory, {"id": "main", "chat_id": 1})
+    assert "## My story" in main_story
     assert "## This room (Main)" in main and "## Live rooms" in main
     assert f"memory_read(room_id='{rooms['alpha']}', rows=true)" in main
+
+
+@pytest.mark.parametrize("journal,workpad", [(True, True), (False, True), (True, False), (False, False),
+                                             (None, True), (True, None), (None, None)])
+def test_project_overview_and_scratchpad_pointer_require_both_local_blocks(tmp_path, monkeypatch, journal, workpad):
+    from tests._memory_view_context import world, blocks
+    from ouroboros import project_facts
+    from ouroboros.tools import project_journal
+    from ouroboros.tools.knowledge import _knowledge_write
+    from ouroboros.tools.registry import ToolContext
+
+    monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", "max")
+    env, memory, _rooms = world(tmp_path)
+    monkeypatch.setattr("ouroboros.config.DATA_DIR", memory.drive_root)
+    assert "✅" in _knowledge_write(ToolContext(repo_dir=env.repo_dir, drive_root=memory.drive_root,
+        task_id="overview-fixture"), "overview", "AUTHORED_GLOBAL_OVERVIEW")
+    # Exercise the production loader with independently empty/available local sources.
+    local = tmp_path / "local-workpad.md"
+    if workpad is not None:
+        local.write_text("LOCAL_WORKING_MEMORY" if workpad else "   ")
+    monkeypatch.setattr(project_facts, "project_workpad_path", lambda pid: local)
+    monkeypatch.setattr(project_journal, "journal_tail_digest", lambda pid: "LOCAL_JOURNAL" if journal else "")
+    _a, _b, project, _facts = blocks(env, memory, {"id": "bound", "chat_id": 1})
+    if journal and workpad:
+        assert "## Shared understanding (compact pointer" in project
+        assert "knowledge_read(topic='overview', scope='global')" in project
+        assert "AUTHORED_GLOBAL_OVERVIEW" not in project
+        assert "this project's workpad and journal are loaded above" in project
+    else:
+        assert "## Shared understanding\n" in project
+        assert "## Shared understanding (compact pointer" not in project
+        assert "this project's workpad and journal are loaded above" not in project
+        assert "## Scratchpad" in project
+        assert "AUTHORED_GLOBAL_OVERVIEW" in project

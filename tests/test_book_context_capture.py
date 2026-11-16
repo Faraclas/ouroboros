@@ -60,7 +60,9 @@ def test_main_max_and_nano_use_the_same_captured_book_bytes(tmp_path):
         assert "My whole earlier biography." in text
         assert "The complete constitution." in text
         assert text.count("How I keep work alive.") == 1
-    assert "Full mechanism and WHY." in full and "Full engineering discipline." in full
+    for text in (full, _text(plan, "low"), nano):
+        assert "Full mechanism and WHY." not in text and "Full engineering discipline." not in text
+        assert "docs/architecture/runtime.md" in text and "docs/development/change.md" in text
     assert "Parent's unselected current working note." in full
     assert "Unselected raw parent conversation." in full
     assert "Full mechanism and WHY." not in nano and "Full engineering discipline." not in nano

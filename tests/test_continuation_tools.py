@@ -53,7 +53,7 @@ class OnDemand(Registry):
 def prepare(tmp_path, monkeypatch, *, frozen=None, current=None, mode="max", system_changed=True,
             baseline=True, loaded=(), legacy=False, history=None, registry_type=None):
     frozen = deepcopy(frozen if frozen is not None else [_schema("old")])
-    current = deepcopy(current if current is not None else [_schema("new")])
+    current = deepcopy(current if current is not None else [_schema("read_file")])
     registry = (registry_type or Registry)(tmp_path, current, mode)  # a test may patch this module's Registry
     ctx = registry._ctx
     saved_messages = [{"role": "system", "content": "saved system"},
@@ -137,7 +137,7 @@ def test_other_adoption_triggers_use_the_shared_baseline(tmp_path, monkeypatch, 
         # Neighbour cache-honesty work restores these digests: they win over the observation.
         setattr(tools._ctx, prefix.DIGEST_ATTR, [prefix.message_digest({"role": "system", "content": "older"})])
         setattr(tools._ctx, prefix.TOOLS_DIGEST_ATTR, prefix.tools_digest(state["tool_schemas"]))
-    assert restore(prepared) == [_schema("new")]
+    assert restore(prepared) == [_schema("read_file")]
     assert "tool set changed" in messages[-1]["content"]
 
 
@@ -148,11 +148,14 @@ def test_history_requires_only_frozen_contracts_after_fitting(tmp_path, monkeypa
     row = ({"role": "assistant", "tool_calls": [{"function": {"name": "history_tool"}}]}
            if carrier == "canonical" else
            {"role": "assistant", "content": [{"type": "tool_use", "name": "history_tool", "id": "t", "input": {}}]})
-    current = [_schema("new")] + ([_schema("history_tool")] if available else [])
+    current = [_schema("read_file")] + ([_schema("history_tool")] if available else [])
     frozen = [_schema("old")] + ([_schema("history_tool")] if carried else [])
     prepared = prepare(tmp_path, monkeypatch, frozen=frozen, current=current, history=[row])
     tools, state, messages, trace, enabled, projections = prepared
-    assert restore(prepared) == (frozen if carried and not available else current)
+    # History protects a contract already carried, not an available schema the
+    # compact author never selected. A forbidden frozen contract keeps the old prefix.
+    expected = (frozen if carried and not available else current if carried else [_schema("read_file")])
+    assert restore(prepared) == expected
     if carried and not available:
         assert "saved tool set was kept" in messages[-1]["content"]
         assert "history_tool" in messages[-1]["content"]
@@ -167,8 +170,9 @@ def test_history_requires_only_frozen_contracts_after_fitting(tmp_path, monkeypa
 def test_history_check_is_after_the_route_ceiling(tmp_path, monkeypatch, enabled):
     catalog = _catalog(129)
     tail = [name for name in _names(catalog) if name.startswith("extra_")][-1]
-    frozen = [_schema("old"), _schema(tail)]
-    prepared = prepare(tmp_path, monkeypatch, frozen=frozen, current=catalog, loaded=[tail] if enabled else (), history=[
+    # This continuation previously held a full catalog; initial mode residency is irrelevant.
+    frozen = deepcopy(catalog)
+    prepared = prepare(tmp_path, monkeypatch, frozen=frozen, current=catalog, loaded=_names(catalog) if enabled else (), history=[
         {"role": "assistant", "content": [{"type": "tool_use", "name": tail}]}])
     tools, _, messages, _, _, _ = prepared
     tools._ctx.active_model = "openai::unseen-model"
@@ -182,8 +186,8 @@ def test_history_check_is_after_the_route_ceiling(tmp_path, monkeypatch, enabled
 
 
 @pytest.mark.parametrize("legacy", [False, True])
-@pytest.mark.parametrize("model, count", [("openai::unseen-model", 128), ("anthropic::unseen", 129),
-                                          ("openai/unseen-router", 129)])
+@pytest.mark.parametrize("model, count", [("openai::unseen-model", 128), ("anthropic::unseen", 128),
+                                          ("openai/unseen-router", 128)])
 def test_ceiling_keeps_enabled_or_legacy_resident_without_inventing_intent(tmp_path, monkeypatch, legacy, model, count):
     catalog = _catalog(129)
     tail = [name for name in _names(catalog) if name.startswith("extra_")][-1]
@@ -195,6 +199,7 @@ def test_ceiling_keeps_enabled_or_legacy_resident_without_inventing_intent(tmp_p
     state["route"]["active_model"] = model
     resident = restore(prepared)
     assert len(resident) == count and tail in _names(resident)
+    assert "extra_00" not in _names(resident)  # roomy routes do not invent a new selection
     assert tools._ctx._actor_loaded_tool_names is enabled
     assert enabled == (set() if legacy else {tail})
     # The handler's original set must see restoration and continue to receive new intent.
@@ -270,7 +275,7 @@ def test_every_cold_resume_rail_reaches_the_same_decision(tmp_path, monkeypatch,
         monkeypatch.setattr(budget_pause, "set_budget_pause", lambda *a, **kw: None)
         monkeypatch.setattr(budget_pause, "_resume_disclosure", lambda *a, **kw: None)
         budget_pause.resume_paused_loop(tools, state, messages, trace, {}, set(), budget_remaining_usd=None)
-    assert state["tool_schemas"] == [_schema("new" if system_changed else "old")]
+    assert state["tool_schemas"] == [_schema("read_file" if system_changed else "old")]
     assert bool(trace.get("continuation_tools")) == system_changed
 
 

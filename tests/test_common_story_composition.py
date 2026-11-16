@@ -98,13 +98,15 @@ def test_resident_composition_is_bounded_while_exact_reader_retains_twenty_four_
             assert f"source page {source} (room {row['chat_id']}): revision {source} used" in exact
         assert f"replaces {count}: " + ", ".join(pages) + ";" in exact
         assert f"selection {selection} by mind" in exact and ACCOUNT in exact
-        # A selected account replaces local resident detail too; exact source versions stay readable.
+        # A common account replaces the global story. An orthogonal Project
+        # still retains its own room-local history rather than importing that account.
         assert _story(root, KID) == story
         local_task = {"id": "rootA001", "chat_id": rows[-1]["chat_id"]}
         local = _snapshot(root, local_task)
         for n, source in enumerate(pages):
             body = f"Local account {n}: We recorded the proposed repair and the observation separately."
-            assert body not in story and body not in mv.render_room(local)
+            assert body not in story
+            assert (body in mv.render_room(local)) is (rows[n]["chat_id"] == rows[-1]["chat_id"])
             source_text, _ = _read_all(root, source, revision=source)
             assert f"as of revision {source}: the original alone" in source_text
             assert "text:\n" + body in source_text
@@ -113,10 +115,10 @@ def test_resident_composition_is_bounded_while_exact_reader_retains_twenty_four_
                       reason="Return to the separate room accounts.")["ok"]
         restored = _snapshot(root, local_task)
         restored_story = mv.render_story(restored)
-        assert ACCOUNT not in restored_story
+        assert restored_story == ""  # Project defaults omit cross-room story, not local pages
         for n in range(count):
-            assert f"Local account {n}: We recorded the proposed repair" in restored_story
-        assert "Local account" not in mv.render_room(restored)  # restored pages render once, in the story
+            body = f"Local account {n}: We recorded the proposed repair"
+            assert (body in mv.render_room(restored)) is (n == count - 1)
     # Growing both source and replacement lists changes counts, never the resident line population.
     assert len(blocks[0].splitlines()) == len(blocks[1].splitlines())
     assert abs(len(blocks[1]) - len(blocks[0])) < 20

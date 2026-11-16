@@ -391,7 +391,9 @@ def _native(main_call, monkeypatch, tmp_path, *, task_text="hi", owner_mode="low
     core = context._capture_context_core(env, memory, task, None, None)
     core = native_fixture_core(core, tmp_path / "w")
     core = core if view is None else dataclasses.replace(core, memory_view_json=view)
-    core = dataclasses.replace(core, architecture_md=core.architecture_md + "\n\n" + "word " * (books // 5)) if books else core
+    # Explicit synthetic full-book pressure; ordinary captured books stay chapter maps.
+    core = dataclasses.replace(core, architecture_md=core.architecture_md + "\n\n" + "word " * (books // 5),
+                               reference_books=()) if books else core
     # These rebind cases require a fixed, already-loaded catalog to make the
     # 100K window reject Low. Compact fresh Low fits it now; that is tested apart.
     if full_catalog:
@@ -670,7 +672,8 @@ def test_an_owner_max_task_in_task_local_low_rebinds_a_fallback_and_its_return_f
     from tests import _memory_view_synthetic as syn
 
     ctx, gateway, tools, events, plan, windows = _native(main_call, monkeypatch, tmp_path, owner_mode="max",
-                                                         view=snapshot_json(syn.actor("main")), full_catalog=True)
+                                                         view=snapshot_json(syn.actor("main")), full_catalog=True,
+                                                         books=80_000)  # explicit synthetic Max/Low distinction
     windows.update({"account-a": 160_000, "account-b": {"roomy": 900_000, "tight": 100_000}[fallback]})
     built = dataclasses.replace(plan(160_000), initial_mode="low")  # the owner's Max plan, task-local Low shown
     low = built.messages_for("low")[0]
@@ -882,7 +885,7 @@ def test_a_window_bounded_chosen_read_survives_next_host_rows_and_source_shrink(
     from ouroboros.send_clock import CLOCK_NOTE_PREFIX
 
     ctx, gateway, tools, events, plan, windows = _native(main_call, monkeypatch, tmp_path, owner_mode=owner_mode,
-                                                       task_text="Read giant.txt whole, including its last line.")
+        task_text="Read giant.txt whole, including its last line.", full_catalog=owner_mode == "max")
     windows.update({"account-a": window, "account-b": 1_000_000})
     built = plan(window)
     ctx.messages[:] = built.messages_for(owner_mode)

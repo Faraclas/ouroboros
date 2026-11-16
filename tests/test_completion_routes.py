@@ -49,11 +49,12 @@ def test_presence_speaker_and_disabled_tool_keep_authority(tmp_path):
     assert schemas == []
 
 
-def test_nano_materializes_permitted_completion_only_on_hold(tmp_path):
+def test_hold_materializes_permitted_completion_when_actor_unloaded_it(tmp_path):
     from ouroboros.tool_policy import initial_tool_schemas
     registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
     registry._ctx.messages = []
-    schemas = initial_tool_schemas(registry, context_mode='nano')
+    schemas = [s for s in initial_tool_schemas(registry, context_mode='nano')
+               if s['function']['name'] != 'finish_task']
     assert not any(row['function']['name'] == 'finish_task' for row in schemas)
     original = copy.deepcopy(schemas)
     assert completion_schema(registry, schemas) == 'finish_task'

@@ -284,7 +284,7 @@ def test_drafts_rejections_corrections_and_indented_texts(tmp_path):
     assert text.count("(draft by a helper") == 1 and "(draft by a helper (Light)" not in text
 
 
-def test_the_story_is_byte_identical_for_every_integrator_and_changes_only_with_the_chronicle(tmp_path, monkeypatch):
+def test_explicit_story_is_byte_identical_for_every_integrator_and_changes_only_with_the_chronicle(tmp_path, monkeypatch):
     rooms = shared.world(tmp_path)
     _page(tmp_path, str(rooms["alpha"]), 13, 13)
     tasks = [MAIN, {"id": "rootA001", "chat_id": rooms["alpha"]}, {"id": "rootB001", "chat_id": rooms["beta"]},
@@ -293,6 +293,8 @@ def test_the_story_is_byte_identical_for_every_integrator_and_changes_only_with_
              KID]
     clock = iter(f"2026-10-0{n}T00:00:00+00:00" for n in range(1, 9))
     monkeypatch.setattr("ouroboros.utils.utc_now_iso", lambda: next(clock))
+    # This common-story oracle explicitly opts Project integrators into the cross-room view.
+    tasks = [{**task, "memory_view": {**task.get("memory_view", {}), "story": True}} for task in tasks]
     stories = {task["id"]: _story(tmp_path, task) for task in tasks}
     assert len(set(stories.values())) == 1, stories.keys()  # a child reads the same bytes: no block is privileged
     story = stories["turn0001"]
@@ -324,10 +326,10 @@ def test_every_story_reads_every_unfolded_retold_record_whole_and_no_block_is_pr
              "  Alpha began.")
     later = (f"#### legacy-b01-r{alpha} — 2026-09-02 00:00 → 2026-09-02 00:01 — Alpha — 2 rows retold in 13 chars\n"
              "  Alpha worked.")
-    root = {"id": "rootA001", "chat_id": alpha}
+    root = {"id": "rootA001", "chat_id": alpha, "memory_view": {"story": True}}
     for task in (MAIN, root, {"id": "wake0001", "chat_id": 1, "metadata": {"usage_category": "consciousness"}},
                  {"id": "pres0001", "chat_id": 555, "metadata": {"presence": {"binding_id": "b"}}}, KID):
-        text = _story(tmp_path, task)
+        text = _story(tmp_path, {**task, "memory_view": {**task.get("memory_view", {}), "story": True}})
         assert first in text and later in text and "  Beta asked." in text, task["id"]
         assert "memory_read(node_id='legacy-" not in text, task["id"]  # nothing retold is a pointer by its block
         assert text.index(first) < text.index(later), task["id"]

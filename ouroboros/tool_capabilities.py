@@ -55,13 +55,10 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     # the reason cancel_task does — a task that just came back from a pause must
     # not need an enable_tools detour to continue the children it still needs.
     "resume_child_task",
-    # Task-tree coordination must be in the round-one envelope so a parent can publish the
-    # shared frame BEFORE fanning out interdependent children (no enable_tools detour).
+    # Coordination remains core capability; lean starts load its schemas on demand.
     "tree_note", "tree_read",
-    # Main-chat routing capabilities the SYSTEM.md decision turn relies on
-    # (kept in the core envelope so the anti-freeze ephemeral turn never needs an
-    # enable_tools detour to route — though initial_tool_schemas exposes the full
-    # set today, this makes the coupling explicit).
+    # Main-chat routing capabilities remain in the core permission envelope,
+    # independently of ordinary Turn-1 schema residency.
     "list_projects", "project_resources", "start_task", "tell_task",
     "move_to_project",
     *COGNITIVE_MEMORY_TOOL_NAMES,
@@ -211,10 +208,9 @@ ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
 
 def schema_selection_tools_for_context(ctx: object) -> frozenset[str]:
     """Compact view controls select schemas without granting capabilities."""
-    from ouroboros.config import get_context_mode
-
-    mode = str(getattr(ctx, "active_context_mode", "") or get_context_mode())
-    return META_TOOL_NAMES | {"compact_context"} if mode in {"low", "nano"} else frozenset()
+    # All modes now start lean. The same selection/reclaim controls must remain
+    # callable for restricted actors in Max as in Low and Nano.
+    return META_TOOL_NAMES | {"compact_context"}
 
 
 def acting_tool_names_for_context(ctx: object, registered_names: Iterable[str]) -> frozenset[str]:

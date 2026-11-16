@@ -82,7 +82,7 @@ def test_an_omitted_permitted_schema_loads_stays_through_the_next_fit_and_dispat
     resident = initial_tool_schemas(registry, context_mode=mode, schema_names=_names(registry.schemas()))
     assert tool_schema_limit(OPENAI) == 128 < len(resident)
     assert "enable_tools" in _names(resident)
-    assert ("compact_context" in _names(resident)) is (mode == "low")
+    assert "compact_context" in _names(resident)
     loop._setup_dynamic_tools(registry, resident, [], context_mode=mode)
     first = _round(registry, resident)
     assert loop_model_call._fit_route_tool_ceiling(first)
@@ -113,7 +113,7 @@ def test_a_fitting_catalog_keeps_its_envelope_and_the_selector_grants_nothing(tm
     registry = _child(tmp_path, monkeypatch, profile, mode)
     resident = initial_tool_schemas(registry, context_mode=mode)
     assert len(resident) <= 128 and "enable_tools" in _names(resident)
-    assert ("compact_context" in _names(resident)) is (mode in {"low", "nano"})
+    assert "compact_context" in _names(resident)
     before = list(resident)
     loop._setup_dynamic_tools(registry, resident, [], context_mode=mode)
     assert loop_model_call._fit_route_tool_ceiling(_round(registry, resident)) is False
@@ -151,7 +151,8 @@ def test_an_acting_child_cannot_load_or_call_an_ungranted_extension(tmp_path, mo
     granted, ungranted = extensions[:-1], extensions[-1]
     registry = _child(tmp_path, monkeypatch, "acting_subagent", "max", grants=granted)
     resident = initial_tool_schemas(registry, context_mode="max")
-    assert ungranted not in _names(resident) and granted[-1] in _names(resident)
+    assert ungranted not in _names(resident) and granted[-1] not in _names(resident)
+    assert ungranted not in _names(registry.schemas()) and granted[-1] in _names(registry.schemas())
     loop._setup_dynamic_tools(registry, resident, [], context_mode="max")
     refused = registry.execute_result("enable_tools", {"tools": ungranted})
     assert refused.status != "ok" and ungranted not in _names(resident)
@@ -171,7 +172,7 @@ def test_a_selector_the_actor_cannot_call_is_never_recommended(tmp_path, monkeyp
                       metadata={"initiator": "consciousness"} if dispatch_only else None)
     if dispatch_only:
         registry._ctx.task_constraint = None  # a root task the consciousness started
-    resident = initial_tool_schemas(registry, context_mode="max")
+    resident = initial_tool_schemas(registry, context_mode="max", schema_names=_names(registry.schemas()))
     if dispatch_only:
         assert set(disabled) <= set(_names(resident))  # dispatch-only policy keeps the schema visible
     else:
@@ -191,21 +192,26 @@ def test_a_selector_the_actor_cannot_call_is_never_recommended(tmp_path, monkeyp
     assert ("list_available_tools" in miss) is ("list_available_tools" not in disabled)
 
 
-def test_a_low_or_max_diagnostic_keeps_its_role_and_is_not_told_to_call_the_selector(tmp_path, monkeypatch):
+def test_a_max_diagnostic_keeps_its_role_with_compact_selection_controls(tmp_path, monkeypatch):
     from ouroboros import provider_models
     from ouroboros.tool_capabilities import TASK_DIAGNOSTIC_TOOL_NAMES
 
     monkeypatch.setattr("ouroboros.work_diagnostics.context_ref", lambda ctx: {"task_id": "observed"})
     registry = _child(tmp_path, monkeypatch, "local_readonly_subagent", "max")
     resident = initial_tool_schemas(registry, context_mode="max")
-    assert set(_names(resident)) <= TASK_DIAGNOSTIC_TOOL_NAMES and "enable_tools" not in _names(resident)
+    from ouroboros.tool_capabilities import schema_selection_tools_for_context
+    assert set(_names(resident)) <= TASK_DIAGNOSTIC_TOOL_NAMES | schema_selection_tools_for_context(registry._ctx)
+    assert "enable_tools" in _names(resident)
     monkeypatch.setitem(provider_models.PROVIDER_TOOL_SCHEMA_LIMITS, "openai", len(resident) - 2)
     loop._setup_dynamic_tools(registry, resident, [], context_mode="max")
     fitted = _round(registry, resident)
     assert loop_model_call._fit_route_tool_ceiling(fitted)
     notice = fitted.messages[-1]["content"]
-    assert "enable_tools" not in notice and "list_available_tools marks them not loaded." in notice
-    assert registry.execute_result("enable_tools", {"tools": "read_file"}).status == "blocked"
+    assert "enable_tools" in notice
+    assert ("list_available_tools marks them not loaded" in notice) is ("list_available_tools" in _names(resident))
+    assert registry.execute_result("enable_tools", {"tools": "read_file"}).status == "ok"
+    denied = registry.execute_result("enable_tools", {"tools": "write_file"})
+    assert denied.status == "blocked" and registry.get_schema_by_name("write_file") is None
 
 
 @pytest.mark.parametrize("profile", PROFILES)

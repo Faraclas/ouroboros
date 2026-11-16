@@ -319,7 +319,7 @@ def test_child_profiles_expose_existing_descendant_controls(tmp_path, constraint
         task_constraint=task_constraint,
     ))
 
-    names = {item["function"]["name"] for item in initial_tool_schemas(registry)}
+    names = {item["function"]["name"] for item in registry.schemas()}
     assert {"peek_task", "cancel_task", "discard_child_result"} <= names
 
 
@@ -357,9 +357,8 @@ def test_local_readonly_verify_is_typed_zero_run_only(tmp_path, monkeypatch):
     registry = ToolRegistry(repo_dir=tmp_path, drive_root=data)
     registry.set_context(ctx)
 
-    from ouroboros.tool_policy import initial_tool_schemas
-    initial_names = {item["function"]["name"] for item in initial_tool_schemas(registry)}
-    assert "verify_and_record" in initial_names
+    permitted_names = {item["function"]["name"] for item in registry.schemas()}
+    assert "verify_and_record" in permitted_names
     verify_schema = registry.get_schema_by_name("verify_and_record")
     assert verify_schema is not None
     assert verify_schema["function"]["parameters"]["properties"]["contract_kind"]["enum"] == ["delegation_zero_run"]
@@ -652,7 +651,7 @@ def test_discovery_lists_the_callable_catalog_in_every_mode(mode):
     assert names
     for name in names:
         assert f"- {name} [" in output, f"schemas() offers {name!r} but discovery does not list it"
-    assert ("[not loaded]" in output) is (mode in {"low", "nano"})
+    assert "[not loaded]" in output
 
 
 def test_burst_absorb_clause_states_the_prefix_write_cost():
@@ -663,7 +662,7 @@ def test_burst_absorb_clause_states_the_prefix_write_cost():
     tmp = pathlib.Path(tempfile.mkdtemp())
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
     schema = next(
-        s for s in initial_tool_schemas(registry)
+        s for s in registry.schemas()
         if s["function"]["name"] == "schedule_subagent"
     )
     description = schema["function"]["description"]

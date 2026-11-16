@@ -22,21 +22,20 @@ def test_core_surface_includes_user_message_and_media():
     assert "send_links" in CORE_TOOL_NAMES
 
 
-def test_initial_tool_schemas_include_media_and_meta_tools():
+def test_initial_tool_schemas_keep_meta_and_load_media_on_demand():
     registry = _build_registry()
     names = {schema["function"]["name"] for schema in initial_tool_schemas(registry)}
-    assert "send_photo" in names
-    assert "send_links" in names
+    assert "send_photo" not in names
+    assert "send_links" not in names
+    assert {"send_photo", "send_links"} <= {s["function"]["name"] for s in registry.schemas()}
     assert "list_available_tools" in names
     assert "enable_tools" in names
 
 
-def test_non_core_listing_excludes_core_media_tools():
+def test_unloaded_listing_includes_nonresident_core_tools():
     registry = _build_registry()
     names = {entry["name"] for entry in list_non_core_tools(registry)}
-    assert "send_photo" not in names
-    assert "send_links" not in names
-    assert "plan_task" not in names
+    assert {"send_photo", "send_links", "plan_task"} <= names
 
 
 def test_loop_bootstraps_from_tool_policy():
@@ -53,26 +52,24 @@ def test_advisory_tools_in_core_tool_names():
     assert "review_status" in CORE_TOOL_NAMES
 
 
-def test_advisory_tools_in_initial_schemas():
-    """preflight_review and review_status must appear in initial tool schemas;
-    the advisory_review compat alias is callable but never advertised."""
+def test_advisory_tools_are_permitted_without_initial_residency():
+    """Canonical review schemas load on demand; the alias is never advertised."""
     registry = _build_registry()
     names = {schema["function"]["name"] for schema in initial_tool_schemas(registry)}
-    assert "preflight_review" in names
-    assert "advisory_review" not in names
-    assert "review_status" in names
+    assert {"preflight_review", "review_status"}.isdisjoint(names)
+    permitted = {s["function"]["name"] for s in registry.schemas()}
+    assert {"preflight_review", "review_status"} <= permitted
+    assert "advisory_review" not in permitted
 
 
-def test_heal_skill_tools_are_core_visible_in_initial_schemas():
-    """Heal prompts must be able to call skill_review and
-    skill_preflight without enable_tools (enable_tools is blocked in heal
-    mode). Pin both the tool_policy SSOT and registry.core_only fallback."""
+def test_skill_tools_remain_core_permitted_and_load_on_demand():
+    """Core capability membership does not imply ordinary Turn-1 residency."""
     assert "skill_review" in CORE_TOOL_NAMES
     assert "skill_preflight" in CORE_TOOL_NAMES
     registry = _build_registry()
     names = {schema["function"]["name"] for schema in initial_tool_schemas(registry)}
-    assert "skill_review" in names
-    assert "skill_preflight" in names
+    assert "skill_review" not in names
+    assert "skill_preflight" not in names
     core_only_names = {schema["function"]["name"] for schema in registry.schemas(core_only=True)}
     assert "skill_review" in core_only_names
     assert "skill_preflight" in core_only_names
@@ -90,12 +87,13 @@ def test_enable_tools_does_not_duplicate_active_tool_schemas():
     core_result = registry.execute("enable_tools", {"tools": "preflight_review"})
     names_after_core = [schema["function"]["name"] for schema in tool_schemas]
     assert names_after_core.count("preflight_review") == 1
-    assert "Already loaded: preflight_review" in core_result
+    assert "Call schemas loaded" in core_result
+    assert "Already loaded: preflight_review" in registry.execute("enable_tools", {"tools": "preflight_review"})
 
     extra_result = registry.execute("enable_tools", {"tools": "plan_task"})
     names_after_extra = [schema["function"]["name"] for schema in tool_schemas]
     assert names_after_extra.count("plan_task") == 1
-    assert "Already loaded: plan_task" in extra_result
+    assert "Call schemas loaded" in extra_result
 
     extra_again_result = registry.execute("enable_tools", {"tools": "plan_task"})
     names_after_extra_again = [schema["function"]["name"] for schema in tool_schemas]
@@ -111,15 +109,16 @@ def test_nano_initial_view_uses_compact_schema_selection():
         for schema in initial_tool_schemas(registry, context_mode="nano")
     }
     assert nano_names
-    assert nano_names <= max_names
-    assert len(nano_names) < len(max_names)
+    low_names = {s["function"]["name"] for s in initial_tool_schemas(registry, context_mode="low")}
+    assert nano_names == low_names == max_names
 
 
 def test_list_available_tools_lists_names_when_everything_is_resident():
     """#1262: residency is an attribute of a row, never the answer. A Max task
     whose whole catalog is loaded still gets the callable names back."""
     registry = _build_registry()
-    tool_schemas = initial_tool_schemas(registry)
+    tool_schemas = initial_tool_schemas(
+        registry, schema_names=[s["function"]["name"] for s in registry.schemas()])
     messages = []
     loop_mod._setup_dynamic_tools(registry, tool_schemas, messages)
 
@@ -141,7 +140,7 @@ def test_list_available_tools_lists_names_when_everything_is_resident():
     assert [s["function"]["name"] for s in tool_schemas].count("plan_task") == 1
 
 
-def test_live_extension_tools_are_initial_not_non_core(monkeypatch):
+def test_live_extension_tools_are_permitted_and_initially_unloaded(monkeypatch):
     from ouroboros import extension_loader
 
     registry = _build_registry()
@@ -159,8 +158,9 @@ def test_live_extension_tools_are_initial_not_non_core(monkeypatch):
     try:
         initial_names = {schema["function"]["name"] for schema in initial_tool_schemas(registry)}
         non_core_names = {entry["name"] for entry in list_non_core_tools(registry)}
-        assert tool_name in initial_names
-        assert tool_name not in non_core_names
+        assert tool_name not in initial_names
+        assert tool_name in non_core_names
+        assert tool_name in {s["function"]["name"] for s in registry.schemas()}
     finally:
         with extension_loader._lock:
             extension_loader._tools.pop(tool_name, None)

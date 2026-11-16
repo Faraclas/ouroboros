@@ -557,7 +557,10 @@ def test_main_room_page_shows_the_room_less_retellings_whole_to_a_nanny_and_the_
             "memory_read(node_id='legacy-b01-r1')") in short and "  Main was quiet." not in short
     bound_task = {"id": "bound", "chat_id": 1}  # bound to alpha
     bound = mv.capture_memory_view(tmp_path, bound_task, mv.view_spec_for_task(bound_task, tmp_path))
-    assert bound.spec.room_id == str(rooms["alpha"]) and mv.render_story(bound) == story
+    assert bound.spec.room_id == str(rooms["alpha"]) and mv.render_story(bound) == ""
+    opted_task = {**bound_task, "memory_view": {"story": True}}
+    opted = mv.capture_memory_view(tmp_path, opted_task, mv.view_spec_for_task(opted_task, tmp_path))
+    assert mv.render_story(opted) == story
     assert "A room-less era." not in mv.render_room(bound) and "The retired flat summary" not in mv.render_room(bound)
     wake_task = {"id": "w1", "chat_id": 1, "metadata": {"usage_category": "consciousness"}}
     wake = mv.capture_memory_view(tmp_path, wake_task, mv.view_spec_for_task(wake_task, tmp_path))
@@ -739,9 +742,12 @@ def test_project_integrator_defaults_preserve_valid_explicit_keys(tmp_path, expl
     rooms = shared.projects(tmp_path)
     spec = mv.view_spec_for_task({"id": "bound", "chat_id": 1, "memory_view": explicit}, tmp_path)
     assert spec.room_id == str(explicit.get("room_id", rooms["alpha"]))
-    assert (spec.live_rooms, spec.marks) == (live, marks)
+    assert (spec.live_rooms, spec.marks, spec.story) == (live, marks, False)
+    explicit_story = mv.view_spec_for_task(
+        {"id": "bound", "chat_id": 1, "memory_view": {"story": True}}, tmp_path)
+    assert explicit_story.story is True
     main = mv.view_spec_for_task({"id": "main", "chat_id": 1}, tmp_path)
-    assert (main.room_id, main.live_rooms, main.marks) == ("1", "lines", "all")
+    assert (main.room_id, main.live_rooms, main.marks, main.story) == ("1", "lines", "all", True)
 
 
 def test_project_view_keeps_own_and_global_marks_without_foreign_rooms(tmp_path):
@@ -760,3 +766,30 @@ def test_project_view_keeps_own_and_global_marks_without_foreign_rooms(tmp_path)
     _main, main = _view(tmp_path, MAIN_TASK)
     assert all(rule in main for rule in ("GLOBAL_RULE", "ALPHA_RULE", "BETA_RULE"))
     assert "## Live rooms" in main
+
+
+def test_project_keeps_own_sealed_pages_parts_and_f4_without_cross_room_story(tmp_path):
+    from ouroboros.tools.chronicle import page_covers
+    from ouroboros.memory_floor import floor_elements
+
+    rooms, rows = _install(tmp_path)
+    store = ChronicleStore(tmp_path)
+    own = next(row for row in rows if row.get("chat_id") == rooms["alpha"])
+    address = _addr(own)
+    covers = page_covers(tmp_path, str(rooms["alpha"]), from_addr=address, to_addr=address)["covers"]
+    page = store.publish_page(room_id=str(rooms["alpha"]), text="ALPHA_SEALED_HISTORY", covers=covers,
+                              author=shared.MIND)
+    assert page.ok, page
+    part = store.publish_part(room_id=str(rooms["alpha"]), text="ALPHA_PART_HISTORY " * 100,
+                              member_ids=[page.record["id"]], author=shared.MIND,
+                              expected_sequence=store.room_head(str(rooms["alpha"])))
+    assert part.ok, part
+    project, text = _view(tmp_path, {"id": "bound", "chat_id": 1})
+    assert mv.render_story(project) == ""
+    assert "ALPHA_PART_HISTORY" in _section(text, "### Pages of this room")
+    assert "Old Main talk." not in text
+    assert "ALPHA_PART_HISTORY" in str(project.room["under_parts"])
+    # The existing F4 floor must retain a recoverable address if it folds this local history.
+    forms = [item for item in floor_elements(project) if item[0] == "F4"]
+    assert any(ident == part.record["id"] and part.record["id"] in short
+               for _step, ident, _whole, short in forms)

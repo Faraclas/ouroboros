@@ -23,7 +23,9 @@ def _built(tmp_path, monkeypatch, *, books=80_000, ratio=None, page_chars=0):
         ChronicleStore(memory.drive_root).ensure_activated()
         _page(memory.drive_root, "1", 10, 11, text="Story. " * (page_chars // 7))
     core = context._capture_context_core(env, memory, dict(_TASK), None, None)
-    core = dataclasses.replace(core, architecture_md=core.architecture_md + "\n\n" + "word " * (books // 5))
+    # Explicit synthetic full-book coverage, not an ordinary captured-book start.
+    core = dataclasses.replace(core, architecture_md=core.architecture_md + "\n\n" + "word " * (books // 5),
+                               reference_books=())
     if ratio is not None:
         monkeypatch.setattr(context_fit, "_route_calibration_ratio", lambda *_a, **_kw: ratio)
 

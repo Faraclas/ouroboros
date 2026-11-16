@@ -80,7 +80,7 @@ def test_an_unpinned_server_starts_on_demand_in_every_mode_and_the_map_names_its
     for mode in ("max", "low", "nano"):
         names = set(_names(initial_tool_schemas(registry, context_mode=mode)))
         assert not any(name.startswith("mcp_gitlab__") for name in names), mode
-        assert ("mcp_slack__history" in names) is (mode != "nano"), mode  # a pin is Low/Max residency
+        assert "mcp_slack__history" in names, mode  # a pin is residency in every mode
         if mode == "low":
             from ouroboros.tool_policy import select_tool_schemas
             # The context-fit frame reselects an initial snapshot, not the live registry.
@@ -163,7 +163,9 @@ def test_a_load_goes_first_under_a_route_ceiling_after_selectors_and_history(reg
     from ouroboros import loop as loop_module, provider_models
 
     _servers()
-    resident = initial_tool_schemas(registry)
+    # Deliberately opt in to optional built-ins so this fixture exercises eviction,
+    # not the lean initial view (which already has room for this MCP load).
+    resident = [s for s in registry.schemas() if not s["function"]["name"].startswith("mcp_gitlab__")]
     loop_module._setup_dynamic_tools(registry, resident, [])
     registry._ctx.active_model, registry._ctx.active_use_local = "openai::gpt-fixture", False
     from ouroboros.tool_capabilities import CORE_TOOL_NAMES, META_TOOL_NAMES

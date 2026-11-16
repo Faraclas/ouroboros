@@ -276,7 +276,7 @@ def test_acting_tool_visibility_is_acting_set(tmp_path):
     reg, _ctx, _wt = _acting_registry(tmp_path)
     names = set(reg.initial_tool_names())
     # The schema selectors ride every role (#1860): they load schemas and grant nothing.
-    assert names == set(ACTING_SUBAGENT_TOOL_NAMES) | META_TOOL_NAMES
+    assert names == set(ACTING_SUBAGENT_TOOL_NAMES) | META_TOOL_NAMES | {"compact_context"}
     assert "commit_reviewed" not in names
     assert "integrate_subagent_patch" in names
 
@@ -634,7 +634,7 @@ def test_acting_schemas_subset_of_acting_set(tmp_path):
     reg, _ctx, _wt = _acting_registry(tmp_path, grants=("mcp_foo",))
     names = {s["function"]["name"] for s in reg.schemas()}
     # No first-party tool outside the acting set and its selectors; ungranted ext/MCP never leak.
-    assert names <= set(ACTING_SUBAGENT_TOOL_NAMES) | META_TOOL_NAMES
+    assert names <= set(ACTING_SUBAGENT_TOOL_NAMES) | META_TOOL_NAMES | {"compact_context"}
     assert reg._acting_tool_grants() == {"mcp_foo"}
 
 

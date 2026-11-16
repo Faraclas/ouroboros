@@ -13,7 +13,8 @@ def _start(f, monkeypatch):
     snap = syn.snapshot(role='integrator', story=syn.pages(2, 200),
         room_facts=syn.room(lane1=[syn.spoken(i, 'ouroboros', 400) for i in range(2400)], lane2=2))
     snap = dataclasses.replace(snap, spec=dataclasses.replace(snap.spec, work_room_levels=2))
-    core = cf.ContextCore('Required core', 'Constitution', 'b' * 600000, '', 'Identity', 'f' * 1000,
+    # Synthetic full books supply the pressure formerly supplied by eager schemas.
+    core = cf.ContextCore('Required core', 'Constitution', 'b' * 900000, '', 'Identity', 'f' * 1000,
                          '"Assignment"', False, memory_view_json=mv.snapshot_json(snap))
     plan = cf.build_context_fit_plan(None, core, {'id': 'authored-main', 'type': 'task'},
         preferred_mode='max', tool_schemas=f.registry.schemas(), route_resolver=lambda *a, **k: (

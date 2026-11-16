@@ -156,7 +156,8 @@ def test_owner_max_is_judged_on_the_completed_start_view_with_the_real_catalog(m
     snap = syn.snapshot(role="integrator", story=syn.pages(2, 200),
         room_facts=syn.room(lane1=[syn.spoken(i, "ouroboros", 400) for i in range(replies)], lane2=2))
     snap = dataclasses.replace(snap, spec=dataclasses.replace(snap.spec, work_room_levels=2))
-    core = cf.ContextCore("Required core", "Constitution", "b" * 600_000, "", "Identity", "f" * 1_000,
+    # Synthetic full-book fixture keeps real capacity pressure after lean initial schemas.
+    core = cf.ContextCore("Required core", "Constitution", "b" * 740_000, "", "Identity", "f" * 1_000,
         '"Assignment"', False, memory_view_json=mv.snapshot_json(snap))
     plan = cf.build_context_fit_plan(None, core, {"id": "authored-main", "type": "task"}, preferred_mode="max",
         tool_schemas=f.registry.schemas(), route_resolver=lambda *_a, **_kw: (

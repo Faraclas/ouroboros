@@ -11,7 +11,7 @@ import pytest
 def _rendered(registry):
     from ouroboros.tool_policy import initial_tool_schemas
 
-    return {schema["function"]["name"]: schema["function"] for schema in initial_tool_schemas(registry)}
+    return {schema["function"]["name"]: schema["function"] for schema in registry.schemas()}
 
 
 @pytest.fixture(scope="module")

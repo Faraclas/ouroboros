@@ -96,13 +96,12 @@ def test_rollback_in_core_tool_names():
     assert "vcs_rollback" in CORE_TOOL_NAMES
 
 
-def test_rollback_in_initial_tool_schemas():
-    """rollback_to_target must be visible in the runtime initial_tool_schemas path."""
+def test_rollback_in_permitted_tool_schemas():
+    """Recovery remains permitted independently of initial schema residency."""
     import pathlib, tempfile
     from ouroboros.tools.registry import ToolRegistry
-    from ouroboros.tool_policy import initial_tool_schemas
     with tempfile.TemporaryDirectory() as d:
         reg = ToolRegistry(repo_dir=pathlib.Path(d), drive_root=pathlib.Path(d))
-        schemas = initial_tool_schemas(reg)
+        schemas = reg.schemas()
         names = {s["function"]["name"] for s in schemas}
         assert "vcs_rollback" in names
