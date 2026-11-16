@@ -33,8 +33,9 @@ def _receipt_args(decision="incomplete"):
 
 @pytest.mark.parametrize("carrier", ["working", "exact_pause", "owner_wait"])
 @pytest.mark.parametrize("decision", ["incomplete", "unknown"])
+@pytest.mark.parametrize("context_mode", ["max", "low", "nano"])
 def test_restored_readonly_definite_unrun_can_record_only_its_receipt(
-        tmp_path, monkeypatch, carrier, decision, stub_delegate_engines):
+        tmp_path, monkeypatch, carrier, decision, context_mode, stub_delegate_engines):
     from ouroboros import delegate_custody as custody
     from ouroboros.outcomes import read_verification_receipts
     from ouroboros.tool_policy import initial_tool_schemas
@@ -44,7 +45,15 @@ def test_restored_readonly_definite_unrun_can_record_only_its_receipt(
     assert custody.emit(tmp_path, custody.START_FAILED, {
         "task_id": ctx.task_id, "invocation_id": "invoke-one", "definite": True})
     assert not custody.open_runs(tmp_path) and not custody.pending_invocations(tmp_path)
-    schemas = {row["function"]["name"]: row["function"] for row in initial_tool_schemas(registry)}
+    from ouroboros.tools.tool_discovery import bind_resident_schemas
+
+    ctx.active_context_mode = context_mode
+    resident = initial_tool_schemas(registry, context_mode=context_mode)
+    assert "verify_and_record" not in {row["function"]["name"] for row in resident}
+    bind_resident_schemas(registry, resident)
+    loaded = registry.execute_result("enable_tools", {"tools": "verify_and_record"})
+    assert loaded.status == "ok", loaded.text
+    schemas = {row["function"]["name"]: row["function"] for row in resident}
     properties = schemas["verify_and_record"]["parameters"]["properties"]
     assert properties["contract_kind"]["enum"] == ["delegation_zero_run"]
     assert "check" not in properties and "task_id" not in properties
