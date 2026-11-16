@@ -9,14 +9,14 @@ const same = (a, b) => !!a && !!b && ['model', 'use_local', 'credential_profile_
 const node = (doc, tag, cls = '', text = '') => { const el = doc.createElement(tag); el.className = cls; el.textContent = text; return el; };
 export const primaryModelLabel = value => value ? `${parseModelSource(value.model).model || value.model}${value.use_local ? ' · Local' : ''}` : 'Model not read';
 
-export function createRoomModel({ projectId = '', doc = document, onSaved = () => {}, onRead = () => {} } = {}) {
+export function createRoomModel({ projectId = '', doc = document, onSaved = () => {}, onRead = () => {}, onCancel = () => {} } = {}) {
     const root = node(doc, 'section', 'room-model-editor');
     const saved = node(doc, 'p', 'ui-field-help'), status = node(doc, 'p', 'ui-field-help'); status.setAttribute('role', 'status');
     const host = node(doc, 'div', 'model-role-editor'); host.id = `room-model-${++sequence}`;
     const actions = node(doc, 'div', 'pm-content-actions');
     const make = (text, run) => { const b = node(doc, 'button', 'btn btn-default', text); b.type = 'button'; b.addEventListener('click', run); return b; };
     let stored = null, base = null, editor = null, dirty = false, dead = false, pending = null, blocked = false;
-    let loadSequence = 0, editorSettings = null;
+    let loadSequence = 0, editorSettings = null, editorCatalog = null;
     const abort = new AbortController();
     const read = url => fetchJson(url, { cache: 'no-store', signal: AbortSignal.any([abort.signal, AbortSignal.timeout(30000)]) });
     const draft = () => {
@@ -27,7 +27,7 @@ export function createRoomModel({ projectId = '', doc = document, onSaved = () =
     function paint() {
         saved.textContent = `Saved primary: ${primaryModelLabel(stored)}`;
         host.inert = !!pending;
-        apply.disabled = !editor || !stored || !!pending || blocked || !dirty;
+        apply.disabled = !editor || !stored || !!pending || blocked || !dirty || !draft().model;
         check.disabled = !!pending; apply.textContent = pending ? 'Applying…' : 'Apply';
     }
     function sync(value) {
@@ -41,14 +41,15 @@ export function createRoomModel({ projectId = '', doc = document, onSaved = () =
     }
     function renderEditor() {
         editor?.destroy();
-        editor = createModelRolesEditor({ hostId: host.id, doc: () => doc, showContext: false,
-            onChange() { dirty = true; status.textContent = 'Unsaved choice'; paint(); } });
+        editor = createModelRolesEditor({ hostId: host.id, doc: () => doc, showContext: false, browseModels: true,
+            onChange() { ++loadSequence; dirty = true; status.textContent = 'Unsaved choice'; paint(); } });
         editor.load({ ...editorSettings, OUROBOROS_MODEL: stored.model, USE_LOCAL_MAIN: stored.use_local,
             [MODEL_ACCOUNTS_KEY]: { main: stored.credential_profile_id } },
         { providerProfiles: editorSettings?._meta?.setup_contract?.providerProfiles || {}, modelSlots: [
             { slot: 'main', settingKey: 'OUROBOROS_MODEL', inputId: `${host.id}-input`, settingsToggleId: `${host.id}-local`, label: 'Primary model' },
         ] });
         editor.mount();
+        if (editorCatalog) editor.adoptCatalog(editorCatalog);
     }
     async function load({ editorRequired = true } = {}) {
         if (pending) return pending;
@@ -65,10 +66,13 @@ export function createRoomModel({ projectId = '', doc = document, onSaved = () =
             if (dirty) { base = { ...stored }; status.textContent = 'Current model checked. Your draft is kept; Apply compares this version.'; paint(); return; }
             const settings = await read('/api/settings');
             if (dead || request !== loadSequence) return;
+            const settingsChanged = JSON.stringify(editorSettings) !== JSON.stringify(settings);
             editorSettings = settings;
-            if (!dirty) renderEditor();
+            // Reopening an unchanged editor must not replace a field under a
+            // keyboard gesture or reset its Search toggle while reads finish.
+            if (!dirty && (!editor || settingsChanged)) renderEditor();
             status.textContent = dirty ? 'Your draft is kept.' : ''; paint();
-            try { const catalog = await read('/api/model-catalog'); if (!dead && request === loadSequence) editor.adoptCatalog(catalog); }
+            try { const catalog = await read('/api/model-catalog'); if (!dead && request === loadSequence) { editorCatalog = catalog; editor.adoptCatalog(catalog); } }
             catch (error) { if (!dead) status.textContent = `Suggestions unavailable: ${error.message}. Your saved selection is kept.`; }
         } catch (error) { if (!dead && request === loadSequence) { status.textContent = `Could not read the room model: ${error.message}`; paint(); } }
     }
@@ -96,13 +100,14 @@ export function createRoomModel({ projectId = '', doc = document, onSaved = () =
     });
     apply.className = 'btn btn-primary'; apply.dataset.roomModelApply = '';
     const check = make('Check current model', () => void load()); check.dataset.roomModelCheck = '';
-    const cancel = make('Cancel draft', () => { if (!pending) { dirty = false; base = stored && { ...stored }; if (editorSettings) renderEditor(); status.textContent = ''; paint(); } });
+    function cancelDraft() { if (!pending && !blocked) { dirty = false; base = stored && { ...stored }; if (editorSettings && editor) renderEditor(); status.textContent = ''; paint(); } }
+    const cancel = make('Cancel', () => { if (!pending) { cancelDraft(); onCancel(); } });
     actions.append(apply, check, cancel);
     root.append(saved, host, node(doc, 'p', 'ui-field-help', projectId
         ? 'This project’s following primary changes between calls; in-flight calls finish unchanged. Helpers, reviewers and Safety keep their own routes. Availability is checked when a call starts.'
         : 'Main’s global primary and its inherited defaults. Project selections stay independent. Changes apply between calls; dispatched calls finish unchanged.'), actions, status);
     paint();
-    return { root, load, sync, hasPendingSave: () => !!pending || blocked,
+    return { root, load, sync, cancelDraft, hasPendingSave: () => !!pending || blocked,
         pendingSave: () => pending || Promise.resolve(!blocked),
         destroy() { dead = true; ++loadSequence; abort.abort(); editor?.destroy(); } };
 }
@@ -111,15 +116,15 @@ export function createRoomModel({ projectId = '', doc = document, onSaved = () =
 export function createComposerModel({ el, row, projectId, onSaved, doc = document }) {
     el.classList.add('chat-capsule', 'chat-model-mode'); el.dataset.known = 'false';
     const head = node(doc, 'button', 'chat-capsule-head ui-hit-area'); head.type = 'button'; head.setAttribute('aria-expanded', 'false');
-    const name = node(doc, 'span', 'chat-capsule-name', 'Model'), value = node(doc, 'span', 'chat-capsule-value', 'Not read'); value.dataset.i18nAuthored = '';
-    head.append(name, value); el.append(head);
+    const value = node(doc, 'span', 'chat-capsule-value', 'Not read'); value.dataset.i18nAuthored = '';
+    head.append(value); el.append(head);
     let opened = false, position = null, last = null, dead = false;
     const panel = node(doc, 'div', 'ui-popup room-model-popup'); panel.hidden = true;
-    const model = createRoomModel({ projectId, doc, onRead: sync, onSaved(next) { sync(next); onSaved?.(); } }); panel.append(model.root);
+    const model = createRoomModel({ projectId, doc, onRead: sync, onCancel() { close(false); head.focus({ preventScroll: true }); }, onSaved(next) { sync(next); onSaved?.(); } }); panel.append(model.root);
     const capsule = { el, kind: 'model', peers: [], isOpen: () => opened, isSettled: () => true,
         snapClosed: close, measureName() {}, relayout() { position?.reposition(); }, sayHint() {} };
-    function close() { opened = false; el.dataset.open = 'false'; panel.hidden = true; position?.destroy(); position = null; head.setAttribute('aria-expanded', 'false'); }
-    function sync(next) { if (!next || dead) return; last = next; value.textContent = primaryModelLabel(next); head.setAttribute('aria-label', `Primary model: ${value.textContent}. Change model`); el.dataset.known = 'true'; model.sync(next); }
+    function close(discard = true) { if (opened && discard && !model.hasPendingSave()) model.cancelDraft(); opened = false; el.dataset.open = 'false'; panel.hidden = true; position?.destroy(); position = null; head.setAttribute('aria-expanded', 'false'); }
+    function sync(next) { if (!next || dead) return; last = next; value.textContent = parseModelSource(next.model).model || next.model; head.setAttribute('aria-label', `Primary model: ${value.textContent}. Change model`); el.dataset.known = 'true'; model.sync(next); }
     async function open() {
         capsule.peers.forEach(peer => peer.snapClosed()); opened = true; el.dataset.open = 'true';
         if (!panel.isConnected) doc.body.append(panel);
@@ -128,10 +133,10 @@ export function createComposerModel({ el, row, projectId, onSaved, doc = documen
     }
     const click = () => opened ? close() : void open();
     const outside = event => { if (!el.contains(event.target) && !panel.contains(event.target) && !event.target.closest?.('.ui-model-options')) close(); };
-    const key = event => { if (opened && event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); close(); head.focus({ preventScroll: true }); } };
+    const key = event => { if (opened && event.key === 'Escape') { event.preventDefault(); close(); head.focus({ preventScroll: true }); } };
     head.addEventListener('click', click); doc.addEventListener('pointerdown', outside); doc.addEventListener('keydown', key);
     // Initial read is scoped, independent of bounded sidebar presence.
     void model.load({ editorRequired: false });
     return { capsule, syncState(data) { sync(data?.primary_model || last); }, hasPendingSave: model.hasPendingSave, pendingSave: model.pendingSave,
-        destroy() { dead = true; close(); model.destroy(); panel.remove(); head.removeEventListener('click', click); doc.removeEventListener('pointerdown', outside); doc.removeEventListener('keydown', key); } };
+        destroy() { dead = true; close(false); model.destroy(); panel.remove(); head.removeEventListener('click', click); doc.removeEventListener('pointerdown', outside); doc.removeEventListener('keydown', key); } };
 }

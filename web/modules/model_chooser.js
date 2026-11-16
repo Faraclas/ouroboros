@@ -12,8 +12,8 @@ export function modelOptions(items = []) {
         .filter((item) => !seen.has(item.value) && seen.add(item.value));
 }
 
-export function matchingModelOptions(items, query) {
-    const search = String(query || '').trim().toLocaleLowerCase();
+export function matchingModelOptions(items, query, { browse = false, searching = false } = {}) {
+    const search = String(browse && !searching ? '' : query || '').trim().toLocaleLowerCase();
     return modelOptions(items).filter(({ value, label }) => !search
         || value.toLocaleLowerCase().includes(search) || label.toLocaleLowerCase().includes(search));
 }
@@ -42,6 +42,11 @@ export function updateModelChooser(input, items) {
     choosers.get(input)?.update(items);
 }
 
+/** Room pickers opt into browsing; all other model editors remain editable. */
+export function setModelChooserSearch(input, enabled) {
+    choosers.get(input)?.search(enabled);
+}
+
 /** Bind once per real input; dispose before its owner replaces or removes it. */
 export function bindModelChooser(input) {
     if (!input || choosers.has(input)) return () => {};
@@ -56,6 +61,9 @@ export function bindModelChooser(input) {
     let composing = false;
     let opened = false;
     let position = null;
+    const browse = input.hasAttribute('data-model-browse');
+    let searching = false;
+    if (browse) { input.readOnly = true; input.setAttribute('aria-autocomplete', 'none'); }
     const disposers = [];
     const listen = (target, type, listener) => {
         target.addEventListener(type, listener);
@@ -75,12 +83,12 @@ export function bindModelChooser(input) {
     }
 
     function render() {
-        const selected = visible[active]?.value;
-        visible = matchingModelOptions(items, input.value);
+        const selected = visible[active]?.value ?? (browse && !searching ? input.value : undefined);
+        visible = matchingModelOptions(items, input.value, { browse, searching });
         list.innerHTML = optionsHtml(visible, list.id)
-            || '<div class="ui-model-empty">No matching suggestions. You can keep this model ID.</div>';
-        highlight(selected === undefined ? -1 : visible.findIndex((item) => item.value === selected));
+            || `<div class="ui-model-empty">${browse && !searching ? 'No models listed. Turn on Search to enter a model ID.' : 'No matching suggestions. You can keep this model ID.'}</div>`;
         position?.reposition();
+        highlight(selected === undefined ? -1 : visible.findIndex((item) => item.value === selected));
     }
 
     function close() {
@@ -103,6 +111,8 @@ export function bindModelChooser(input) {
         input.setAttribute('aria-expanded', 'true');
         render();
         if (!position) position = bindPopoverPosition(list, { anchor: input });
+        // Scroll only after viewport placement has bounded the list's height.
+        if (browse && !searching) highlight(visible.findIndex((item) => item.value === input.value));
         doc.addEventListener('pointerdown', outside);
         doc.defaultView.addEventListener('blur', close);
     }
@@ -129,7 +139,7 @@ export function bindModelChooser(input) {
     listen(input, 'keydown', (event) => {
         if (composing || event.isComposing) return;
         if (event.key === 'Escape' && opened) {
-            event.preventDefault(); event.stopPropagation(); close();
+            event.preventDefault(); if (!browse) event.stopPropagation(); close();
         } else if (event.key === 'Tab') close();
         else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
             event.preventDefault();
@@ -137,6 +147,10 @@ export function bindModelChooser(input) {
             const delta = event.key === 'ArrowDown' ? 1 : -1;
             highlight(visible.length ? (active < 0 ? (delta > 0 ? 0 : visible.length - 1)
                 : (active + delta + visible.length) % visible.length) : -1);
+        } else if ((event.key === 'Home' || event.key === 'End') && opened && browse && !searching) {
+            event.preventDefault(); highlight(visible.length ? (event.key === 'Home' ? 0 : visible.length - 1) : -1);
+        } else if (event.key === ' ' && browse && !searching && !opened) {
+            event.preventDefault(); open();
         } else if (event.key === 'Enter' && opened && active >= 0) {
             event.preventDefault(); choose(visible[active].value);
         }
@@ -147,7 +161,12 @@ export function bindModelChooser(input) {
         const option = event.target.closest('[data-model-value]');
         if (option && list.contains(option)) choose(option.dataset.modelValue);
     });
-    choosers.set(input, { update(next) {
+    choosers.set(input, { search(enabled) {
+        if (!browse) return;
+        searching = !!enabled; input.readOnly = !searching;
+        input.setAttribute('aria-autocomplete', searching ? 'list' : 'none');
+        if (opened) { render(); if (!searching) highlight(visible.findIndex((item) => item.value === input.value)); }
+    }, update(next) {
         items = modelOptions(next);
         if (opened && !composing) render();
     } });
