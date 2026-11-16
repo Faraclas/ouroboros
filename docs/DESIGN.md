@@ -446,10 +446,14 @@ Enter as a line break.
 
 ### Composer owner controls
 
-The model value itself opens the shared editable Source/Model/Account chooser above the row:
-its multi-field form needs a panel, not a catalog-sized strip. Catalogs suggest, never restrict or
-replace choices. Apply compares the saved binding; Check current model recovers uncertain outcomes.
-This panel and the inline mode strips are mutually exclusive and preserve the message draft.
+Only the model name opens the room's Provider/Model/Account panel above the row, also shared by
+Dashboard Projects (owner 12.11). Configured active providers load draft catalogs; unavailable
+saved routes stay identified. The full browse list scrolls to the saved value; arrows move the highlight. Search,
+off by default beside Local, enables typing and filtering; turning it off restores the full list.
+Unknown IDs remain enterable in Search. Apply compares the saved binding; Check current model
+recovers uncertain outcomes. Cancel, Escape and outside press discard the draft and dismiss the
+popup. Pending or unconfirmed saves still require settlement/readback. This panel and inline
+mode strips are mutually exclusive and preserve the message draft.
 
 Each composer orders **current model**, **Context**, **Effort**, **Subagents** after ☰.
 Main controls its global primary; Projects copy it once and edit their independent saved binding,

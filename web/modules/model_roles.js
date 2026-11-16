@@ -11,7 +11,7 @@ import { PROCESSING_PREFERENCE_KEY, MODEL_PROCESSING_PREFERENCES_KEY, PROCESSING
     processingSelectHtml, processingIntentLabel, processingCapabilityNote, catalogModelOptions } from './route_editor_primitives.js';
 import { revealNewRow } from './ui_helpers.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
-import { modelChooserHtml, bindModelChoosers, updateModelChooser } from './model_chooser.js';
+import { modelChooserHtml, bindModelChoosers, updateModelChooser, setModelChooserSearch } from './model_chooser.js';
 
 export const MODEL_ACCOUNTS_KEY = 'OUROBOROS_MODEL_ACCOUNTS';
 export const MODEL_CONTEXT_KEY = 'OUROBOROS_MODEL_CONTEXT_WINDOWS';
@@ -76,7 +76,7 @@ export function modelRolesHost(id) {
 
 /** In-memory form controller; refreshes have no settings or login side effects. */
 export function createModelRolesEditor({ hostId, store = claudexorStatus,
-    doc = () => document, onChange = () => {}, catalogFetch = fetchJson, showContext = true } = {}) {
+    doc = () => document, onChange = () => {}, catalogFetch = fetchJson, showContext = true, browseModels = false } = {}) {
     const getDoc = typeof doc === 'function' ? doc : () => doc;
     let slots = [];
     let rows = [];
@@ -179,8 +179,19 @@ export function createModelRolesEditor({ hostId, store = claudexorStatus,
     // A saved source whose key is gone stays selectable and labelled; discovery
     // only widens the list, it never rewrites the owner's assignment.
     function sourceGroupsFor(row, facts = {}) {
-        return modelSourceGroups({ sources: catalog.model_sources, providers: apiProviders, connections,
+        const groups = modelSourceGroups({ sources: catalog.model_sources, providers: apiProviders, connections,
             providerProfiles, current: row.source, inheritLabel: `Uses ${inheritName(row)}`, ...facts });
+        if (!browseModels) return groups;
+        const accounts = accountRows(store.snapshot || {});
+        const active = option => option.value.startsWith(API_CHOICE_PREFIX)
+            ? apiProviders.some(provider => sourceChoice(provider.id) === option.value)
+            : catalog.model_sources.some(source => `subscription:${source.id}` === option.value
+                && store.accountsKnown && accounts.some(account => account.harness === source.credentialHarness && account.enabled));
+        // A saved unavailable route remains identifiable, never silently replaced.
+        return groups.map(group => ({ ...group, options: group.options.filter(option => option.value
+            && (active(option) || option.value === sourceChoice(row.source))).map(option => ({
+                ...option, disabled: option.disabled || !active(option),
+            })) })).filter(group => group.options.length);
     }
     // A saved API source that cannot send says why under its row; the select keeps it chosen.
     function keyNote(row) {
@@ -230,8 +241,8 @@ export function createModelRolesEditor({ hostId, store = claudexorStatus,
         const inputId = inputIdFor(row);
         return `<div class="model-role-row" data-model-role="${escapeHtml(row.id)}">
             <div class="model-role-controls">
-                ${selectHtml(`data-model-role-source aria-label="${escapeHtml(row.slot.label)} source"`, sourceGroupsFor(row), sourceChoice(row.source))}
-                ${modelChooserHtml(`id="${escapeHtml(inputId)}" data-model-role-model aria-label="${escapeHtml(row.slot.label)}${isFallback ? ` ${index + 1}` : ''}"`, row.model, `${hostId}-${row.id}-models`, [], { placeholder: row.slot.slot === 'main' ? 'Choose a model' : emptyUsesText(row) })}
+                ${browseModels ? '<label class="ui-field">Provider' : ''}${selectHtml(`data-model-role-source aria-label="${escapeHtml(row.slot.label)} ${browseModels ? 'provider' : 'source'}"`, sourceGroupsFor(row), sourceChoice(row.source))}${browseModels ? '</label><label class="ui-field">Model' : ''}
+                ${modelChooserHtml(`id="${escapeHtml(inputId)}" data-model-role-model ${browseModels ? 'data-model-browse readonly' : ''} aria-label="${escapeHtml(row.slot.label)}${isFallback ? ` ${index + 1}` : ''}"`, row.model, `${hostId}-${row.id}-models`, [], { placeholder: row.slot.slot === 'main' ? 'Choose a model' : emptyUsesText(row) })}${browseModels ? '</label>' : ''}
                 <select class="ui-control" data-model-role-account aria-label="${escapeHtml(row.slot.label)} account" ${sourceId(row) ? '' : 'hidden'}></select>
                 ${isFallback ? `<span class="model-role-order"><button type="button" class="btn btn-default" data-model-up aria-label="Move fallback up" ${index === 0 ? 'disabled' : ''}>↑</button><button type="button" class="btn btn-default" data-model-down aria-label="Move fallback down" ${index === total - 1 ? 'disabled' : ''}>↓</button><button type="button" class="btn btn-default" data-model-remove aria-label="Remove fallback">Remove</button></span>` : ''}
             </div>
@@ -253,8 +264,10 @@ export function createModelRolesEditor({ hostId, store = claudexorStatus,
             return `<section class="model-role-group" data-model-role-group="${escapeHtml(slot.slot)}">
                 <div class="model-role-head"><h4 title="${escapeHtml(slot.note || '')}">${escapeHtml(slot.label.replace(/ Model$/, ''))}</h4>
                     ${slot.settingsToggleId ? `<label class="local-toggle ui-field ui-field-inline"><input class="ui-checkbox" id="${escapeHtml(slot.settingsToggleId)}" type="checkbox" data-model-local aria-label="${escapeHtml(slot.label)} local runtime" ${local ? 'checked' : ''}> Local</label>` : ''}
+                    ${browseModels ? '<label class="local-toggle ui-field ui-field-inline"><input class="ui-checkbox" type="checkbox" data-model-search> Search</label>' : ''}
                     ${slot.slot === 'fallback' ? '<button type="button" class="btn btn-default" data-model-add>Add fallback</button>' : ''}
                 </div>
+                ${browseModels ? '<p class="ui-field-help">Local uses the built-in local runtime on this machine.</p>' : ''}
                 ${slot.slot === 'fallback' ? '<p class="model-role-copy">Tried in this order when the acting model refuses, cannot be reached or loses its answer. A wait starts only when none of them answers.</p>' : ''}
                 ${matching.map((row, index) => rowHtml(row, index, matching.length)).join('')}
             </section>`;
@@ -299,7 +312,11 @@ export function createModelRolesEditor({ hostId, store = claudexorStatus,
             const account = node.querySelector('[data-model-role-account]');
             account.hidden = !sourceId(row);
             const credentialHarness = catalog.model_sources.find((entry) => entry.id === sourceId(row))?.credentialHarness || '';
-            const accountHtml = selectHtml('', [{ options: profileOptionsFor(profiles[credentialHarness], row.account, { accountsKnown: store.accountsKnown && Boolean(credentialHarness) }) }], row.account);
+            const pins = profileOptionsFor(profiles[credentialHarness], row.account, { accountsKnown: store.accountsKnown && Boolean(credentialHarness) });
+            if (browseModels) for (const pin of pins) {
+                if (pin.value) pin.disabled = !profiles[credentialHarness]?.some(profile => profile.id === pin.value && profile.enabled);
+            }
+            const accountHtml = selectHtml('', [{ options: pins }], row.account);
             const accountOptions = accountHtml.slice(accountHtml.indexOf('>') + 1, accountHtml.lastIndexOf('</select>'));
             if (account.innerHTML !== accountOptions) account.innerHTML = accountOptions;
             updateModelChooser(node.querySelector('[data-model-role-model]'), catalogModelOptions(itemsFor(row).map((item) => ({
@@ -351,6 +368,25 @@ export function createModelRolesEditor({ hostId, store = claudexorStatus,
             .finally(() => { clearTimeout(timer); requests.delete(key); updateCatalogViews(); });
         requests.set(key, { promise, controller });
         return promise;
+    }
+
+    function refreshApiCatalog() {
+        // The existing endpoint reads configured API catalogs together. Only a
+        // room-provider change requests it; typing/status paints do not refetch.
+        requests.get('api')?.controller.abort();
+        const controller = new AbortController(), request = { controller };
+        const current = () => !destroyed && requests.get('api') === request;
+        const timer = setTimeout(() => controller.abort(), MODEL_CATALOG_TIMEOUT_MS);
+        requests.set('api', request);
+        request.promise = Promise.resolve().then(() => catalogFetch('/api/model-catalog', { cache: 'no-store', signal: controller.signal }))
+            .then(data => { if (current()) {
+                if (!Array.isArray(data?.items)) throw Error(data?.error || 'Model catalog response has no model list');
+                catalog = mergeModelCatalog(catalog, data);
+            } })
+            .catch(error => { if (current()) catalog = mergeModelCatalog(catalog, {
+                read_state: 'transport', errors: [{ error: error.message || String(error) }],
+            }); })
+            .finally(() => { clearTimeout(timer); if (current()) { requests.delete('api'); updateCatalogViews(); } });
     }
 
     async function responseLimit(row, node, apply = false) {
@@ -408,6 +444,7 @@ export function createModelRolesEditor({ hostId, store = claudexorStatus,
             node.querySelector('[data-model-role-source]').addEventListener('change', (event) => {
                 row.source = sourceFromChoice(event.target.value); row.model = ''; row.account = ''; row.context = 0;
                 changed(row.slot.slot); render();
+                if (browseModels && !sourceId(row)) refreshApiCatalog();
                 host()?.querySelector(`[data-model-role="${row.id}"] [data-model-role-model]`)?.focus();
             });
             node.querySelector('.model-role-details')?.addEventListener('toggle', (event) => {
@@ -468,6 +505,9 @@ export function createModelRolesEditor({ hostId, store = claudexorStatus,
         }
         element.querySelectorAll('[data-model-role-group]').forEach((group) => {
             const slot = slots.find((entry) => entry.slot === group.dataset.modelRoleGroup);
+            group.querySelector('[data-model-search]')?.addEventListener('change', (event) => {
+                for (const input of group.querySelectorAll('[data-model-role-model]')) setModelChooserSearch(input, event.target.checked);
+            });
             group.querySelector('[data-model-local]')?.addEventListener('change', (event) => {
                 rows.filter((row) => row.slot === slot).forEach((row) => { row.local = event.target.checked; });
                 changed(); updateCatalogViews();
