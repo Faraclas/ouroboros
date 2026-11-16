@@ -159,17 +159,26 @@ def test_receipt_custody_failure_stays_an_error_without_a_recorded_verdict(proce
 
 
 @pytest.mark.parametrize("secret", ["1", "a"])
-def test_selected_secret_cannot_rewrite_the_verdict_vocabulary(process_context, monkeypatch, secret):
+@pytest.mark.parametrize("padding", [0, 250])
+def test_selected_secret_cannot_rewrite_the_verdict_vocabulary(process_context, monkeypatch, secret, padding):
     registry, ctx, workspace, data = process_context
     monkeypatch.setattr("ouroboros.config.load_settings", lambda: {"CUSTOM_KEY": secret})
-    result = _verify(registry, workspace, check=[sys.executable, "-c", "import os; print(os.environ['TOKEN'])"],
+    code = "import os; print(os.environ['TOKEN'])" + (" # " + "x" * padding if padding else "")
+    result = _verify(registry, workspace, check=[sys.executable, "-c", code],
                      expected="zzz", env_from_settings={"TOKEN": "CUSTOM_KEY"})
     receipt = _receipts(data, ctx.task_id)[-1]
     fact = result.meta["verification"]
     assert (fact["status"], fact["contract_kind"], fact["expected_match"], fact["criterion_source"]) == (
         "fail", "explicit_command", "substring", "agent_defined")
     assert fact["receipt_ts"] == receipt["ts"] and fact["check_rendering"] == receipt["check_rendering"]
-    assert fact["check"] == receipt["check"]  # the identity text is masked exactly as the receipt's
+    # The receipt retains identity; the published fact is a masked 200-character
+    # diagnostic. Interpreter paths and redaction expansion can cross that bound.
+    expected_check = receipt["check"]
+    if len(expected_check) > 200:
+        size = len(expected_check)
+        expected_check = expected_check[:200] + f"\n…[truncated {size - 200} of {size} chars]"
+    # Publication masks the newly added diagnostic marker too, not the verdict enums.
+    assert fact["check"] == expected_check.replace(secret, "***")
 
 
 def test_wide_characters_stay_inside_the_result_meta_bound(process_context):
