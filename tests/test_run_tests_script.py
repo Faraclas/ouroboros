@@ -356,7 +356,8 @@ def test_the_documented_command_is_the_script():
     for doc in ("CONTRIBUTING.md", "README.md", "docs/development/14-build-and-ci.md"):
         assert "scripts/run_tests.py" in (REPO / doc).read_text(encoding="utf-8"), doc
     system = " ".join((REPO / "prompts/SYSTEM.md").read_text(encoding="utf-8").split())
-    assert "Read DEVELOPMENT §14 before selecting commit, adoption or publication test evidence; selected is not full." in system
+    assert "Read DEVELOPMENT §14 before commit/adoption/publication evidence selection" in system
+    assert "selected is not full" in system
 
 
 @pytest.mark.serial

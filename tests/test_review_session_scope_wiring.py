@@ -862,5 +862,7 @@ def test_the_brief_of_a_three_file_change_on_the_real_tree_is_measured(tmp_path)
     # grew the repository index past the old 234,000 ceiling; same headroom again.
     assert without_diff < 260_000, without_diff
     assert sections["repository_index"] > 20_000          # the index really ran
-    assert sections["governance_stable_inline"] > 40_000  # BIBLE really inline
+    bible = (REPO_ROOT / "BIBLE.md").read_text(encoding="utf-8").strip()
+    assert bible in task  # Full constitutional text, regardless of editorial size.
+    assert sections["governance_stable_inline"] >= len(bible)
     assert sections["change_checklist"] > 0 and sections["coupling_checklist"] > 0

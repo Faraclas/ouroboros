@@ -174,7 +174,13 @@ def test_a_ceiling_routes_tool_fit_stays_only_where_its_notice_stays(data_root, 
     and the fit with it, so the next route sends the whole list and reads no notice. A same-family candidate
     writes into the shared transcript, so its fit stays with its notice even when it fails."""
     from ouroboros import provider_models
+    from ouroboros.tool_policy import initial_tool_schemas
 
+    # Exercise a loaded catalogue above the provider ceiling, not the lean
+    # ordinary Turn 1 view (which intentionally has fewer than 100 schemas).
+    monkeypatch.setattr(loop_mod, "initial_tool_schemas", lambda registry, **kwargs:
+                        initial_tool_schemas(registry, **kwargs, schema_names=[
+                            schema["function"]["name"] for schema in registry.schemas()]))
     monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "openai::fb-direct,fb/two")
     monkeypatch.setitem(provider_models.PROVIDER_TOOL_SCHEMA_LIMITS, "openai", 100)
     llm = _RouteLLM(data_root, **{primary: [_death], "openai::fb-direct": [] if ceiling_route_answers else [_death]})
