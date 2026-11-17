@@ -7,10 +7,13 @@ The existing tree-sitter Markdown grammars own syntax; PyYAML owns frontmatter.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import html
 import string
-from dataclasses import dataclass
+import threading
+from collections import OrderedDict
+from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 import yaml
@@ -183,13 +186,57 @@ def parse_markdown_navigation(raw: bytes, source_path: str) -> tuple[Mapping[str
 
 
 def parse_markdown_source(raw: bytes, source_path: str) -> MarkdownSource:
-    """Parse supplied bytes, including exact Git/index bytes, without any I/O."""
+    """Parse supplied bytes, including exact Git/index bytes, without any I/O.
+
+    The result is a pure function of ``(source_path, raw)``, so a parse is
+    reused only when the caller's freshly read bytes are identical (the key IS
+    the bytes: no mtime, size or hash shortcut can accept a stale file). Only
+    successes are kept, so an error is re-derived every call. Every caller gets
+    its own frontmatter mapping, so mutating it cannot reach the memo.
+    """
+    key = (str(source_path), raw)
+    with _PARSE_LOCK:
+        cached = _PARSE_MEMO.get(key)
+        if cached is not None:
+            _PARSE_MEMO.move_to_end(key)
+            return _private_frontmatter(cached)
     try:
-        return _parse_markdown_source(raw, source_path)
+        source = _parse_markdown_source(raw, source_path)
     except MarkdownSourceError:
         raise
     except (UnicodeError, ValueError, yaml.YAMLError) as exc:
         raise MarkdownSourceError(f"{source_path}: {type(exc).__name__}: {exc}") from exc
+    if len(raw) <= _PARSE_MEMO_MAX_SOURCE:
+        global _PARSE_MEMO_BYTES
+        with _PARSE_LOCK:
+            if key not in _PARSE_MEMO:
+                _PARSE_MEMO[key] = source
+                _PARSE_MEMO_BYTES += len(raw)
+                while _PARSE_MEMO_BYTES > _PARSE_MEMO_MAX_BYTES and len(_PARSE_MEMO) > 1:
+                    (_, old), _ = _PARSE_MEMO.popitem(last=False)
+                    _PARSE_MEMO_BYTES -= len(old)
+    return _private_frontmatter(source)
+
+
+_PARSE_LOCK = threading.Lock()
+_PARSE_MEMO: "OrderedDict[tuple[str, bytes], MarkdownSource]" = OrderedDict()
+_PARSE_MEMO_BYTES = 0
+_PARSE_MEMO_MAX_SOURCE = 1 << 20
+_PARSE_MEMO_MAX_BYTES = 16 << 20
+
+
+def clear_parse_memo() -> None:
+    global _PARSE_MEMO_BYTES
+    with _PARSE_LOCK:
+        _PARSE_MEMO.clear()
+        _PARSE_MEMO_BYTES = 0
+
+
+def _private_frontmatter(source: MarkdownSource) -> MarkdownSource:
+    """Everything else on a source is immutable; only frontmatter mappings are not."""
+    if source.frontmatter is None:
+        return source
+    return replace(source, frontmatter=copy.deepcopy(source.frontmatter))
 
 
 def _parse_markdown_source(raw: bytes, source_path: str) -> MarkdownSource:

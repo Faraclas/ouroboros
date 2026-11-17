@@ -150,3 +150,76 @@ def test_malformed_book_yaml_uses_existing_context_gap_without_losing_identity(t
         assert "Reference book source unavailable" in text
         assert "My complete identity." in text
         assert "My whole earlier biography." in text
+
+
+# --- parse reuse: a pure function of (path, exact bytes) ---------------------
+
+def _count_native_parses(monkeypatch):
+    from ouroboros import markdown_source
+
+    calls = []
+    real = markdown_source._parse_markdown_source
+    monkeypatch.setattr(markdown_source, "_parse_markdown_source",
+                        lambda raw, path: calls.append(path) or real(raw, path))
+    return calls
+
+
+def test_unchanged_bytes_reuse_the_parse_with_identical_result(monkeypatch):
+    calls = _count_native_parses(monkeypatch)
+    raw = b"---\na: 1\n---\n# T\n\nIntro [x](y.md).\n"
+    first, second = parse_markdown_source(raw, "a.md"), parse_markdown_source(raw, "a.md")
+    assert calls == ["a.md"] and first == second
+
+
+def test_same_size_edit_or_other_path_is_never_served_stale(monkeypatch):
+    calls = _count_native_parses(monkeypatch)
+    one, two = b"# One\n\nAlpha.\n", b"# One\n\nAlphb.\n"  # same size, same mtime in a real file
+    assert len(one) == len(two)
+    assert "Alpha" in parse_markdown_source(one, "a.md").text
+    assert "Alphb" in parse_markdown_source(two, "a.md").text
+    parse_markdown_source(one, "b.md")
+    assert calls == ["a.md", "a.md", "b.md"]
+
+
+def test_mutating_returned_frontmatter_cannot_poison_reuse():
+    raw = b"---\nk: {n: [1, 2]}\n---\n# T\n\nIntro.\n"
+    first = parse_markdown_source(raw, "a.md")
+    first.frontmatter["k"]["n"].append(3)
+    first.frontmatter["extra"] = True
+    again = parse_markdown_source(raw, "a.md")
+    assert again.frontmatter == {"k": {"n": [1, 2]}}
+    again.frontmatter["k"]["n"].clear()
+    assert parse_markdown_source(raw, "a.md").frontmatter == {"k": {"n": [1, 2]}}
+
+
+def test_errors_are_never_cached(monkeypatch):
+    from ouroboros import markdown_source
+
+    for _ in range(2):
+        with pytest.raises(MarkdownSourceError):
+            parse_markdown_source(b"bad\xff", "bad.md")
+    real, state = markdown_source._markdown_parser, {"down": True}
+
+    def parser(grammar, path):
+        if state["down"]:
+            raise MarkdownSourceError("Native parser unavailable")
+        return real(grammar, path)
+
+    monkeypatch.setattr(markdown_source, "_markdown_parser", parser)
+    with pytest.raises(MarkdownSourceError):
+        parse_markdown_source(b"# T\n\nx\n", "ok.md")
+    state["down"] = False
+    assert parse_markdown_source(b"# T\n\nx\n", "ok.md").headings
+
+
+def test_memo_is_bounded_and_oversized_sources_are_not_kept(monkeypatch):
+    from ouroboros import markdown_source
+
+    monkeypatch.setattr(markdown_source, "_PARSE_MEMO_MAX_BYTES", 100)
+    monkeypatch.setattr(markdown_source, "_PARSE_MEMO_MAX_SOURCE", 60)
+    for i in range(10):
+        parse_markdown_source(f"# T{i}\n\n{'x' * 30}\n".encode(), f"{i}.md")
+    assert markdown_source._PARSE_MEMO_BYTES <= 100
+    assert markdown_source._PARSE_MEMO_BYTES == sum(len(k[1]) for k in markdown_source._PARSE_MEMO)
+    parse_markdown_source(b"# Big\n\n" + b"y" * 100, "big.md")
+    assert all(k[0] != "big.md" for k in markdown_source._PARSE_MEMO)

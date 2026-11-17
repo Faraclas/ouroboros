@@ -1582,3 +1582,12 @@ def _isolate_direct_activities(monkeypatch):
     from supervisor import active_activity
 
     monkeypatch.setattr(active_activity, "_DIRECT_ACTIVITY_REGISTRY", active_activity.DirectActivityRegistry())
+
+
+@pytest.fixture(autouse=True)
+def _fresh_markdown_parse_memo():
+    """The parse memo is process-global; tests that fake native parsers must not inherit hits."""
+    from ouroboros import markdown_source
+
+    markdown_source.clear_parse_memo()
+    yield
