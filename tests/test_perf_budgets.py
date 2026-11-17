@@ -198,16 +198,22 @@ def test_chat_history_reads_a_bounded_recent_window_with_zero_artifact_work(
     from ouroboros.gateway import history_paging
     from ouroboros.gateway.history import make_chat_history_endpoint
     from ouroboros.task_results import write_task_result
+    from tests._dialogue import import_all, seed
 
     (tmp_path / "logs").mkdir()
     write_task_result(tmp_path, "t1", "completed", result="done", ts="2026-08-08T05:00:00Z")
     ds.append(tmp_path, "chat", {"ts": "2026-08-08T00:00:00Z", "direction": "in", "text": "hello"})
+    progress = []
     for i in range(4000):
         hours, rem = divmod(i, 3600)
-        ds.append(tmp_path, "progress", {
+        progress.append({
             "ts": f"2026-08-08T{hours:02d}:{rem // 60:02d}:{rem % 60:02d}Z",
             "content": f"telemetry-{i}", "task_id": "t1", "pad": "x" * 600,
         })
+    # Reader-volume fixture only. Keep real task status/chat production above;
+    # the measured endpoint still reads all 4,000 rows' real SQL substrate.
+    seed(tmp_path, live={"progress": progress})
+    import_all(tmp_path)
     end = ds.stream_end(tmp_path, "progress")
     assert end > 3 * history_paging._RECENT_WINDOW_BYTES
 

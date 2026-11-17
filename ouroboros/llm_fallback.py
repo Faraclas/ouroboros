@@ -446,7 +446,10 @@ class _RecoveryLadderMixin:
                         native_failure = None
                     if native_failure is not None:
                         raise native_failure
-                    response = consume_stream(response, expected_choices=candidate.get("n", 1)) if candidate.get("stream") else response
+                    if candidate.get("stream"):
+                        from ouroboros.llm_openai_compatible import _copilot_chat_snapshot_fields
+                        response = consume_stream(response, expected_choices=candidate.get("n", 1),
+                                                  chat_snapshot_fields=_copilot_chat_snapshot_fields(target))
                     return bind_native_output(bind_http_observations(response))
 
             try:
@@ -634,7 +637,10 @@ class _RecoveryLadderMixin:
                         native_failure = None
                     if native_failure is not None:
                         raise native_failure
-                    response = await consume_stream_async(response, expected_choices=candidate.get("n", 1)) if candidate.get("stream") else response
+                    if candidate.get("stream"):
+                        from ouroboros.llm_openai_compatible import _copilot_chat_snapshot_fields
+                        response = await consume_stream_async(response, expected_choices=candidate.get("n", 1),
+                                                              chat_snapshot_fields=_copilot_chat_snapshot_fields(target))
                     return bind_native_output(bind_http_observations(response))
 
             try:

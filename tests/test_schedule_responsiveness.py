@@ -228,9 +228,14 @@ def test_a_busy_followup_policy_read_persists_no_wait_and_no_audit(q, monkeypatc
     data["tasks"].append(row)
     queue_schedules._write_scheduled_tasks(data, q.root)
     audits, before = len(events(q.root)), _rows(q)["legacy"]
+    prior_wait = store.bounded_wait(10)
     with held_store(q.root):
         automatic_pass()
-        view = followup_policy.policy_view(q.root, q.queue.load_schedule_store(q.root), before)
+        # automatic_pass must supply its own no-wait scope. Only this ancillary
+        # classification read borrows a nonblocking budget, not the consumer.
+        with store.acquisition_budget(0):
+            view = followup_policy.policy_view(q.root, q.queue.load_schedule_store(q.root), before)
+    assert store.bounded_wait(10) == prior_wait
     assert view.get("busy") is True and view["wait"] == "followup_authority_unavailable"
     assert _rows(q)["legacy"] == before and len(events(q.root)) == audits and q.pending == []
     automatic_pass()

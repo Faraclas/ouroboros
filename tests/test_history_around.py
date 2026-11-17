@@ -44,19 +44,26 @@ def _say(root, first, count, chat_id=1, prefix="m"):
                             "text": f"{prefix}{first + index}"} for index in range(count)])
 
 
+def _chatter(first, count):
+    return [{"ts": _ts(index), "direction": "in", "chat_id": 1,
+             "text": f"m{index}"} for index in range(first, first + count)]
+
+
 def _history(root):
     """Owner chatter, then a task far back (its owner message, its reply and narration), then a long
     present that a newest page cannot reach past."""
-    _say(root, 0, 40)
-    _append(root, "chat", [
+    chat_rows = _chatter(0, 40) + [
         {"ts": _ts(40), "direction": "in", "chat_id": 1, "text": "please audit the release"},
         {"ts": _ts(42), "direction": "out", "chat_id": 1, "task_id": "t-old", "text": "Auditing the release now."},
-    ])
-    _append(root, "progress", [{"ts": _ts(43 + index), "chat_id": 1, "task_id": "t-old", "content": f"step {index}"}
-                               for index in range(3)])
-    _say(root, 50, 400)
-    _append(root, "progress", [{"ts": _ts(460 + index), "chat_id": 1, "task_id": "t-new", "content": f"now {index}"}
-                               for index in range(3)])
+    ] + _chatter(50, 400)
+    progress_rows = ([{"ts": _ts(43 + index), "chat_id": 1, "task_id": "t-old", "content": f"step {index}"}
+                      for index in range(3)]
+                     + [{"ts": _ts(460 + index), "chat_id": 1, "task_id": "t-new", "content": f"now {index}"}
+                        for index in range(3)])
+    # Settled reader history, not a live-append witness. Individual tests still
+    # append their special rows; frontier cases remain explicitly staged.
+    dialogue_test.seed(root, live={"chat": chat_rows, "progress": progress_rows})
+    dialogue_test.import_all(root)
 
 
 def _texts(page):

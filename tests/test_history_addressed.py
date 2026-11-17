@@ -19,7 +19,7 @@ from ouroboros.gateway.history import make_chat_history_endpoint
 from ouroboros.gateway.task_events import _TaskEventCursorFollower, iter_task_events
 from ouroboros.projects_registry import bind_task_to_project, create_project
 from ouroboros.task_results import write_task_result
-from tests._dialogue import seed
+from tests._dialogue import seed, import_all
 from tests.test_chat_history_paging import isolated_runtime  # noqa: F401  (autouse: state/queue roots, no lifecycle row)
 from tests.test_dialogue_addressed_readers import metered
 
@@ -63,13 +63,18 @@ def own_room(root):
 
 def foreign_rooms(root, rooms: int, rows: int):
     """``rooms`` other Projects with ``rows`` answers and narration rows each: other rooms' history."""
+    chat_rows, progress_rows = [], []
     for room in range(rooms):
         chat = create_project(root, f"foreign-{room}", name=f"Foreign {room}")["chat_id"]
         for index in range(rows):
-            ds.append(root, "chat", {"ts": ts(index), "chat_id": chat, "direction": "out",
-                                     "task_id": f"foreign-task-{room}", "text": f"foreign {room} {index}"})
-            ds.append(root, "progress", {"ts": ts(index), "chat_id": chat, "task_id": f"foreign-task-{room}",
-                                         "content": f"foreign step {room} {index}"})
+            chat_rows.append({"ts": ts(index), "chat_id": chat, "direction": "out",
+                              "task_id": f"foreign-task-{room}", "text": f"foreign {room} {index}"})
+            progress_rows.append({"ts": ts(index), "chat_id": chat, "task_id": f"foreign-task-{room}",
+                                  "content": f"foreign step {room} {index}"})
+    # Import unrelated volume only. own_room's dispatch, frontier and lineage
+    # witnesses below continue through their real producers.
+    seed(root, live={"chat": chat_rows, "progress": progress_rows})
+    import_all(root)
 
 
 READERS = {

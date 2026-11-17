@@ -106,6 +106,20 @@ def _copilot_chat_blocks_route(target: Dict[str, Any]) -> bool:
         return False
 
 
+def _copilot_chat_snapshot_fields(target: Dict[str, Any]) -> frozenset[str]:
+    """Copilot Chat's top-level opaque values replace, readable deltas append.
+
+    Microsoft vscode 5ab3503f, extensions/copilot/src/platform/networking/node/
+    stream.ts (SSEProcessor reasoningByChoice), corroborates the JSON sibling.
+    """
+    from ouroboros.copilot_responses import uses_copilot_responses
+
+    if _copilot_chat_blocks_route(target) and not uses_copilot_responses(
+            target.get("base_url"), target.get("resolved_model")):
+        return frozenset({"reasoning_opaque", "cot_id"})
+    return frozenset()
+
+
 def _project_copilot_system_strings(target: Dict[str, Any], messages: List[Dict[str, Any]]) -> None:
     """Normalize only the observed Copilot Chat SYSTEM send copy.
 

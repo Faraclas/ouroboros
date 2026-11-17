@@ -15,7 +15,7 @@ import pytest
 
 from ouroboros import chat_chain, dialogue_import as di, dialogue_positions as dp, dialogue_store as ds, store
 from ouroboros.utils import iter_jsonl_objects, jsonl_chain_handles, jsonl_generation_signature
-from tests._dialogue import chat_rows, lines, progress_rows, seed
+from tests._dialogue import chat_rows, import_all, lines, progress_rows, seed
 
 
 def chat(cmid="", text="hi", *, chat_id=1, direction="in", ts="2026-10-17T00:00:00+00:00", **extra):
@@ -262,10 +262,15 @@ def _room_fixture(root, foreign_rooms, rows_per_room=40):
     ds.append(root, "chat", chat("", "child row", direction="out", chat_id=1, task_id="t-child", parent_task_id="t-bound", root_task_id="t-bound"))
     ds.append(root, "chat", chat("origin-1", "owner", chat_id=1))
     ds.append(root, "chat", chat("", "started", direction="out", chat_id=1, origin_message_ref={"chat_id": 1, "client_message_id": "origin-1"}))
-    for room in range(foreign_rooms):
-        for n in range(rows_per_room):
-            ds.append(root, "chat", chat("", f"foreign {room}-{n}", direction="out", chat_id=1000 + room))
-            ds.append(root, "progress", progress(f"ft-{room}", chat_id=1000 + room))
+    # Inert settled-reader volume, not writer/live-emission coverage. Keep the
+    # named origin's real acceptance and dispatch above: imports do not dispatch.
+    seed(root, live={
+        "chat": [chat("", f"foreign {room}-{n}", direction="out", chat_id=1000 + room)
+                 for room in range(foreign_rooms) for n in range(rows_per_room)],
+        "progress": [progress(f"ft-{room}", chat_id=1000 + room)
+                     for room in range(foreign_rooms) for _ in range(rows_per_room)],
+    })
+    import_all(root)
 
 
 def test_room_candidates_are_the_rooms_own_rows_its_tasks_and_its_origins(tmp_path):

@@ -4,7 +4,7 @@ Rules for dependency locks, pytest lanes, CI and commit-gate tests, and Actions 
 
 ### Python dependency locks
 
-`pyproject.toml` + `uv.lock` are the one dependency authority; `requirements-runtime.lock` and `requirements.txt` are generated projections (ARCHITECTURE §8 "Build scripts"). A dependency change updates the metadata, runs `uv lock`, regenerates the runtime export with the exact README command and leaves the CI clean-diff check green; the pinned `tool.uv.required-version` and the digest-pinned `setup-uv` action make a resolver change deliberate. Docs may pair the checkout-free `uv tool install` form with a full commit SHA, never claiming it locks dependencies or calling it a release-artifact install or a development environment.
+`pyproject.toml` + `uv.lock` own dependencies; `requirements-runtime.lock` and `requirements.txt` are generated (ARCHITECTURE §8 "Build scripts"). After metadata edits, run pinned `uv lock` and README's exact runtime export; CI requires a clean diff. `tool.uv.required-version` and digest-pinned `setup-uv` make resolver changes deliberate. Checkout-free `uv tool install` docs may name a full commit SHA, never claim locked dependencies, release-artifact installation or a development environment.
 
 ### Pytest marker lanes
 
@@ -32,6 +32,9 @@ CI runs the default suite in two passes, each owned by `scripts/run_tests.py` be
 
 - Mark `@pytest.mark.serial` (or list the file in `_SERIAL_TEST_FILES` in `tests/conftest.py`) only for a shared resource the test cannot isolate: a fixed port, a real daemon, a process-global its fixture cannot restore. An owned child, a private root or port 0 is not one. Under `-n` such a test flakes on kill/reap or port-reclaim timing or crashes its worker, and with `--max-worker-restart=0` a dead worker fails its co-located batch. A merely slow test is made faster or split, never `serial`.
 - Keep every other test parallel-safe: `tmp_path` (never a fixed path), `monkeypatch.setenv`/`delenv`/`setattr`, no execution-order assumptions; a fixture-restored global stays parallel (`tests/conftest.py::_isolate_workspace_executor_globals`).
+
+Use `tests._dialogue.seed` + `import_all` for inert reader volume only;
+keep rows/order/size/assertions and real producer witnesses.
 
 ### The local battery entry point
 

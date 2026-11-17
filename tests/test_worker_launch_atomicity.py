@@ -354,9 +354,14 @@ def test_restore_drops_contention_for_reconcile_and_holds_positive_possible(worl
 
     _, root, pending = world
     registered, task = admitted(world)
+    prior_wait = store.bounded_wait(10)
     with held_store(root):
-        assert occurrences.restore_verdict(copy.deepcopy(task)) == "busy"
-        assert restore([task]) == [], "contention at boot is not a manual hold"
+        # Real contention/classification, not twice the ten-second acquisition
+        # patience: elapsed duration is not this test's contract.
+        with store.acquisition_budget(0):
+            assert occurrences.restore_verdict(copy.deepcopy(task)) == "busy"
+            assert restore([task]) == [], "contention at boot is not a manual hold"
+    assert store.bounded_wait(10) == prior_wait
     pending.clear()
     queue.check_scheduled_tasks()  # readable again: the occurrence protocol republishes the same task
     assert [t["id"] for t in pending] == [task["id"]]

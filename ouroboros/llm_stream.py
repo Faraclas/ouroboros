@@ -288,8 +288,10 @@ class _Accumulator:
 
 
 class ChatAccumulator(_Accumulator):
-    def __init__(self, expected_choices: int = 1, on_generation_id: Callable | None = None):
+    def __init__(self, expected_choices: int = 1, on_generation_id: Callable | None = None,
+                 *, snapshot_fields: frozenset[str] = frozenset()):
         super().__init__()
+        self.snapshot_fields = snapshot_fields
         self.body: dict = {"object": "chat.completion"}
         self.choices: dict[int, dict] = {}
         self.expected_choices = expected_choices
@@ -353,7 +355,14 @@ class ChatAccumulator(_Accumulator):
         substantive = any(value not in (None, "", [], {}) for key, value in delta.items() if key != "role")
         if choice.get("finish_reason") and substantive:
             self._note(f"choice {index}: content after finish_reason {choice['finish_reason']!r}; accepted")
-        _delta(choice["message"], delta, self._note, chat_path=("choice", index))
+        # A caller-qualified wire dialect may carry complete opaque snapshots.
+        # Only top-level message fields participate; nested tool text still folds
+        # normally. Null cannot erase earlier evidence, as on the JSON sibling.
+        _snapshot(choice["message"], {key: value for key, value in delta.items()
+                                       if key in self.snapshot_fields})
+        _delta(choice["message"], {key: value for key, value in delta.items()
+                                  if key not in self.snapshot_fields},
+               self._note, chat_path=("choice", index))
         logprobs = update.get("logprobs")
         if isinstance(logprobs, dict):
             _delta(choice.setdefault("logprobs", {}), logprobs, self._note)
@@ -598,7 +607,8 @@ class _SSEFrames:
 
 
 class _StreamAssembly:
-    def __init__(self, response: Any, native: bool, expected_choices: int, *, defer_binding: bool = False):
+    def __init__(self, response: Any, native: bool, expected_choices: int, *, defer_binding: bool = False,
+                 chat_snapshot_fields: frozenset[str] = frozenset()):
         from ouroboros.usage_accounting import (
             AttemptReservation, current_physical_attempt_drive_root, last_physical_attempt_capture,
         )
@@ -614,7 +624,8 @@ class _StreamAssembly:
         self.generation_binding_error = ""
         self.generation_bound = False
         self.accumulator = (AnthropicAccumulator() if native else
-                            ChatAccumulator(expected_choices, self.observe_generation))
+                            ChatAccumulator(expected_choices, self.observe_generation,
+                                            snapshot_fields=chat_snapshot_fields))
         self.frames = _SSEFrames()
         self.raw: list[bytes] = []
         headers = getattr(response, "headers", {})
@@ -737,10 +748,11 @@ class _StreamAssembly:
         return self.accumulator.result()
 
 
-def consume_stream(stream: Any, *, native: bool = False, expected_choices: int = 1) -> AssembledResponse:
+def consume_stream(stream: Any, *, native: bool = False, expected_choices: int = 1,
+                   chat_snapshot_fields: frozenset[str] = frozenset()) -> AssembledResponse:
     from ouroboros.response_cleanup import close_response
     response = stream if native else getattr(stream, "response", stream)
-    assembly = _StreamAssembly(response, native, expected_choices)
+    assembly = _StreamAssembly(response, native, expected_choices, chat_snapshot_fields=chat_snapshot_fields)
     try:
         chunks = response.iter_content(chunk_size=8192) if native else response.iter_bytes()
         for chunk in chunks:
@@ -760,12 +772,14 @@ def consume_stream(stream: Any, *, native: bool = False, expected_choices: int =
     return AssembledResponse(body)
 
 
-async def consume_stream_async(stream: Any, *, expected_choices: int = 1) -> AssembledResponse:
+async def consume_stream_async(stream: Any, *, expected_choices: int = 1,
+                               chat_snapshot_fields: frozenset[str] = frozenset()) -> AssembledResponse:
     from ouroboros._usage_wait import presend_off_loop
     from ouroboros.response_cleanup import close_response_async
 
     response = getattr(stream, "response", stream)
-    assembly = _StreamAssembly(response, False, expected_choices, defer_binding=True)
+    assembly = _StreamAssembly(response, False, expected_choices, defer_binding=True,
+                               chat_snapshot_fields=chat_snapshot_fields)
     try:
         if assembly.pending_generations:
             await presend_off_loop(assembly.bind_pending_generations)
