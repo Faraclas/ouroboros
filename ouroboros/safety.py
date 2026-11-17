@@ -26,6 +26,7 @@ from ouroboros.loop_llm_call import classify_llm_exception, is_rate_limit_text
 from ouroboros.pricing import emit_llm_usage_event, normalize_usage_cost, infer_provider_from_model
 from ouroboros.utils import sanitize_tool_result_for_log
 from ouroboros.config import runtime_setting
+from ouroboros.secret_masking import SECRET_TOKEN_PATTERNS
 
 from ouroboros.safety_records import (
     _safety_drive_root, _record_safety_usage, _emit_durable_safety_event, _emit_safety_mode_skip, coalesce_verdicts, verdict_history_bytes,
@@ -364,10 +365,10 @@ def _is_secret_key(key: str) -> bool:
 
 # Known inline secret shapes. Do not boundary-anchor sk-/pk-/rk-/gh* tokens:
 # over-redaction is acceptable, under-redaction is not.
-_SECRET_INLINE_PATTERNS = (
-    re.compile(r"(sk|pk|rk|gh[opsu])[-_][A-Za-z0-9_\-]{16,}"),
-    re.compile(r"\bBearer\s+[A-Za-z0-9._\-]{16,}", re.IGNORECASE),
-    re.compile(r"\bapi[_-]?key\s*[:=]\s*['\"]?[A-Za-z0-9._\-]{16,}['\"]?", re.IGNORECASE),
+_SECRET_INLINE_PATTERNS = SECRET_TOKEN_PATTERNS + (
+    ('embedded_key', re.compile(r"(sk|pk|rk|gh[opsu])[-_][A-Za-z0-9_\-]{16,}")),
+    ('bearer_value', re.compile(r"\bBearer\s+[A-Za-z0-9._\-]{16,}", re.IGNORECASE)),
+    ('api_key_assignment', re.compile(r"\bapi[_-]?key\s*[:=]\s*['\"]?[A-Za-z0-9._\-]{16,}['\"]?", re.IGNORECASE)),
 )
 
 
@@ -380,38 +381,66 @@ def _redact_secret_value(value: Any) -> Any:
     return "[REDACTED]"
 
 
-def _redact_secrets_in_arguments(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """Redact secret-like keys and inline secret shapes from tool arguments."""
-    def _walk(value: Any) -> Any:
+def _redact_secrets_in_arguments(arguments: Dict[str, Any], *, findings=None) -> Dict[str, Any]:
+    """Project without secret values; findings describe heuristics, never consent."""
+    def _record(path, rule, shapes=()):
+        if findings is not None:
+            findings.append({"path": path, "rule": rule, **({'shapes': shapes} if shapes else {})})
+
+    def _text(value, path):
+        shapes = []
+        redacted = _redact_secrets_in_text(value, shapes=shapes)
+        if redacted != value:
+            _record(path, "inline_shape", shapes)
+        return redacted
+
+    def _walk(value: Any, path) -> Any:
         if isinstance(value, dict):
             out = {}
             for k, v in value.items():
+                # Keys can carry inline values too; paths contain only projected keys.
+                shapes = []
+                masked_key = _redact_secrets_in_text(str(k), patterns=SECRET_TOKEN_PATTERNS, shapes=shapes)
+                key = masked_key
+                ordinal = 2
+                while key in out:
+                    key = f"{masked_key} #{ordinal}"
+                    ordinal += 1
+                here = path + [key]
+                if shapes:
+                    _record(here, "inline_shape_field_name", shapes)
+                if key != masked_key:
+                    _record(here, "projected_key_collision")
                 if _is_secret_key(k):
-                    out[k] = _redact_secret_value(v)
+                    out[key] = _redact_secret_value(v)
+                    if out[key] != v:
+                        _record(here, "field_name")
                 else:
-                    out[k] = _walk(v)
+                    out[key] = _walk(v, here)
             return out
         if isinstance(value, (list, tuple)):
-            return [_walk(v) for v in value]
+            return [_walk(v, path + [i]) for i, v in enumerate(value)]
         if isinstance(value, str):
-            return _redact_secrets_in_text(value)
+            return _text(value, path)
         if isinstance(value, (int, float, bool)) or value is None:
             return value
-        # Repr fallback is also scrubbed in case it contains a token.
-        return _redact_secrets_in_text(repr(value))
+        return _text(repr(value), path)
 
     try:
-        return _walk(arguments)
+        return _walk(arguments, [])
     except Exception:
-        # Never let redaction itself block every unknown tool.
-        return {"_redacted": "[REDACTION_FAILED]"}
+        # Losing the subject or owner evidence is infrastructure failure, not SAFE.
+        # Do not let exception text (which may contain the value) reach the checker/log.
+        raise ValueError("SAFETY_REDACTION_UNAVAILABLE: subject projection failed") from None
 
 
-def _redact_secrets_in_text(text: str) -> str:
-    """Strip common inline-secret shapes out of a free-form string."""
+def _redact_secrets_in_text(text: str, *, patterns=None, shapes=None) -> str:
+    """Strip credential shapes, retaining only matched rule names when requested."""
     redacted = text
-    for pattern in _SECRET_INLINE_PATTERNS:
-        redacted = pattern.sub("[REDACTED]", redacted)
+    for name, pattern in (_SECRET_INLINE_PATTERNS if patterns is None else patterns):
+        redacted, count = pattern.subn("[REDACTED]", redacted)
+        if count and shapes is not None:
+            shapes.append(name)
     return redacted
 
 
@@ -420,9 +449,13 @@ def _redact_secrets_in_text(text: str) -> str:
 _SAFETY_SUBJECT_CHAR_BUDGET = 250_000
 
 
-def _render_subject_json(arguments: Dict[str, Any]) -> str:
+def _render_subject_json(arguments: Dict[str, Any], *, findings=None) -> str:
     'Serialize the redacted call arguments exactly as the check prompt embeds them.'
-    safe_args = _redact_secrets_in_arguments(arguments or {})
+    return _serialize_subject_json(_redact_secrets_in_arguments(arguments or {}, findings=findings))
+
+
+def _serialize_subject_json(safe_args) -> str:
+    """Render an already-projected value without masking its provenance again."""
     try:
         rendered = json.dumps(safe_args, indent=2, default=repr, ensure_ascii=False)
     except Exception:
@@ -637,14 +670,17 @@ def _recipient_facts(ctx, tool_name, arguments):
     return {**keep, "host_listed": True, "same_task_tree": bool(own_root and own_root == target)}
 
 
-def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, ctx=None, resolved_binding=None,
-                        image_parts=None):
+def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, args_findings=None,
+                        ctx=None, resolved_binding=None, image_parts=None):
     """Fixed host evidence, with authorship separate from semantic authorization."""
     from dataclasses import asdict, is_dataclass
     from ouroboros.place_guard import call_place_facts
     from ouroboros.places import load_places
     from ouroboros.tool_access import canonical_data_root
 
+    if args_findings is None or args_json is None:
+        args_findings = []
+        args_json = _render_subject_json(arguments, findings=args_findings)
     metadata = getattr(ctx, "task_metadata", None) or {}
     kind = work_kind(metadata)
     focus = metadata.get("focus") or {}
@@ -736,10 +772,15 @@ def _build_check_prompt(tool_name, arguments, messages=None, *, args_json=None, 
         "earlier_verdicts": earlier,
         "earlier_safe_verdicts_omitted": omitted_safe,
     }
+    context_findings = []
+    safe_bundle = _redact_secrets_in_arguments(bundle, findings=context_findings)
+    safe_bundle["subject"]["redaction"] = {
+        "coverage": "heuristic_not_exhaustive", "findings": args_findings,
+        "context_findings": context_findings,
+    }
     return (f"Runtime mode: {_runtime_mode(ctx)}\nHost evidence (provenance is not consent):\n"
-            + _render_subject_json(bundle) + "\nProposed tool call:\nTool: " + tool_name
-            + "\nArguments:\n" + (args_json if args_json is not None else _render_subject_json(arguments))
-            + "\nIs this safe?")
+            + _serialize_subject_json(safe_bundle) + "\nProposed tool call:\nTool: " + tool_name
+            + "\nArguments:\n" + args_json + "\nIs this safe?")
 
 
 def _parse_safety_response(text: str) -> Optional[Dict[str, Any]]:
@@ -1195,7 +1236,8 @@ def _run_llm_check(
     resolved_binding: Optional[Any] = None,
 ) -> Tuple[bool, str]:
     """Run a single light-model safety check and classify the verdict."""
-    args_json = _render_subject_json(arguments)
+    args_findings = []
+    args_json = _render_subject_json(arguments, findings=args_findings)
     from ouroboros.owner_words import ensure_followup_owner_evidence
     ensure_followup_owner_evidence(ctx)
     if getattr(ctx, "_owner_evidence_gaps", None):
@@ -1204,10 +1246,10 @@ def _run_llm_check(
         return _Assessment(*_subject_too_large_blocked(ctx, tool_name, len(args_json)), status="TOO_LARGE")
     image_parts = []
     try:
-        prompt = _build_check_prompt(tool_name, arguments, messages, args_json=args_json,
+        prompt = _build_check_prompt(tool_name, arguments, messages, args_json=args_json, args_findings=args_findings,
                                      ctx=ctx, resolved_binding=resolved_binding, image_parts=image_parts)
     except (OSError, ValueError, TypeError) as exc:
-        return _hold(ctx, tool_name, f"Owner evidence unavailable: {sanitize_tool_result_for_log(str(exc))}")
+        return _hold(ctx, tool_name, f"Checker evidence unavailable: {sanitize_tool_result_for_log(str(exc))}")
     if len(prompt.encode("utf-8")) > _SAFETY_BUNDLE_BYTE_BUDGET:
         return _hold(ctx, tool_name, "The complete mandatory evidence bundle is too large", status="TOO_LARGE")
     _use_local_light, _is_local_fallback, _skip_reason = _resolve_safety_routing()

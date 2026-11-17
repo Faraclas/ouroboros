@@ -3,8 +3,8 @@
 Each placeholder reader recognizes only a shape emitted by its matching
 producer. Keeping the small mechanical contract here prevents a display
 placeholder from being persisted without treating arbitrary values ending in
-``...`` as secrets to erase. Known token and PEM patterns belong to stored
-diagnostic projections; file-tool results preserve their source content.
+``...`` as secrets to erase. Known patterns serve diagnostics and Safety;
+file-tool results preserve source content.
 """
 
 from __future__ import annotations
@@ -174,8 +174,8 @@ def looks_masked_secret(value: Any) -> bool:
     return text == CONFIGURED_SECRET_PLACEHOLDER or looks_masked_mcp_secret(text)
 
 
-# Well-known entropy token formats (SSOT; ``observability`` reuses this list
-# for forensic redaction). File-tool results do not apply these patterns.
+# Well-known token formats shared by diagnostic projections and Safety subjects.
+# Heuristic matches are not credential attestations. File-tool reads stay exact.
 SECRET_TOKEN_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = (
     ("bearer_token", re.compile(r"(?i)\bBearer\s+[A-Za-z0-9_\-./+=]{16,}")),
     ("basic_auth", re.compile(r"(?i)\bBasic\s+[A-Za-z0-9+/=]{16,}")),
