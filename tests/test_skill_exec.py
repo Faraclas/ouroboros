@@ -975,8 +975,9 @@ def test_skill_exec_allows_warnings_under_blocking(tmp_path, monkeypatch):
     assert "hello from skill" in payload["stdout"]
 
 
-def test_toggle_skill_refreshes_a_stale_dependency_fingerprint(tmp_path, monkeypatch):
-    """Inverted pin: a stale fingerprint used to refuse Enable; the enable owner now refreshes it."""
+@pytest.mark.parametrize("authorized", [False, True])
+def test_toggle_skill_refreshes_a_stale_dependency_fingerprint(tmp_path, monkeypatch, authorized):
+    """Agent Enable refreshes stale packages only when the current install is covered."""
     from ouroboros.marketplace.isolated_deps import DEPS_STATE_FILENAME, FINGERPRINT_FILENAME, isolated_env_dir
     from ouroboros.skill_loader import skill_state_dir
 
@@ -1003,10 +1004,25 @@ def test_toggle_skill_refreshes_a_stale_dependency_fingerprint(tmp_path, monkeyp
     monkeypatch.setattr("ouroboros.marketplace.isolated_deps._install_python_packages",
                         lambda packages, *args, **kwargs: installs.append(list(packages)) or [])
 
+    checks = []
+    def covering_install(name, arguments, **kwargs):
+        checks.append((name, arguments))
+        return authorized, "" if authorized else "covering installation permission is absent"
+    monkeypatch.setattr("ouroboros.safety.check_safety", covering_install)
+
     resp = skill_exec_mod._handle_toggle_skill(ctx, skill="alpha", enabled=True)
 
-    assert json.loads(resp)["enabled"] is True and installs == [["wheel"]]
-    assert (state_dir / "enabled.json").exists()
+    assert len(checks) == 1 and checks[0][0] == "install_skill_dependencies"
+    arguments = checks[0][1]
+    assert arguments["skill"] == "alpha" and arguments["target"] == str(skill_dir)
+    assert [(s["kind"], s["package"]) for s in arguments["install_specs"]] == [("pip", "wheel")]
+    if authorized:
+        assert json.loads(resp)["enabled"] is True and installs == [["wheel"]]
+        assert (state_dir / "enabled.json").exists()
+    else:
+        assert "SKILL_TOGGLE_ERROR" in resp and "deps_authorization" in resp
+        assert not installs and not (state_dir / "enabled.json").exists()
+        assert json.loads((state_dir / DEPS_STATE_FILENAME).read_text()) == stale_state
 
 
 def test_skill_exec_refuses_missing_manifest_permission_grant(tmp_path, monkeypatch):

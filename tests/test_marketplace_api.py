@@ -291,10 +291,11 @@ def test_clawhub_fresh_install_rolls_back_payload_on_dependency_failure(monkeypa
     assert not (tmp_path / "state" / "skills" / "demo" / "clawhub.json").exists()
 
 
+@pytest.mark.parametrize('authorized', [False, True])
 @pytest.mark.parametrize('basis', ['trusted', 'owner_skip'])
 @pytest.mark.parametrize('floor_ok', [False, True])
 @pytest.mark.parametrize('mode', ['advanced', 'cyber_pro'])
-def test_registry_acceptance_floor_precedes_package_execution(monkeypatch, tmp_path, basis, floor_ok, mode):
+def test_registry_acceptance_floor_precedes_package_execution(monkeypatch, tmp_path, basis, floor_ok, mode, authorized):
     from ouroboros.skill_source_install import accept_and_turn_on
 
     monkeypatch.setenv('OUROBOROS_RUNTIME_MODE', mode)
@@ -314,11 +315,26 @@ def test_registry_acceptance_floor_precedes_package_execution(monkeypatch, tmp_p
         install_record={'source': {'id': 'clawhub', 'kind': 'registry', 'name': 'ClawHub'},
                         'basis': basis, 'official': False, 'turn_on_when_ready': False})
     assert result.ok and order == [], 'landing must not execute packages before the acceptance floor'
+    if authorized:
+        # Positive: an actual owner-selected exact release covers its declarations.
+        # trusted/owner_skip only admit executable bytes and are not install consent.
+        from ouroboros.skill_install_record import read_install_record, write_install_record
+        from ouroboros.skill_loader import find_skill
+        skill = find_skill(tmp_path, 'demo', repo_path='')
+        record = read_install_record(tmp_path, 'demo')
+        write_install_record(tmp_path, 'demo', {**record, 'installed_by': 'owner',
+                                              'release': {'digest': skill.content_hash}})
     outcome = accept_and_turn_on(tmp_path, 'demo', repo_path='', repo_dir=tmp_path / 'repo')
-    assert order == (['preflight', 'deps'] if floor_ok else ['preflight'])
+    assert order == (['preflight', 'deps'] if floor_ok and authorized else ['preflight'])
     assert outcome['accepted'] is floor_ok
     if not floor_ok:
         assert outcome['setup_error'] and not (tmp_path / 'state/skills/demo/deps.json').exists()
+    elif not authorized:
+        assert outcome['deps_status'] == 'authorization_required' and outcome['turn_on'] == 'not_ready'
+        assert 'permission' in outcome['setup_error']
+        assert not (tmp_path / 'state/skills/demo/deps.json').exists()
+    else:
+        assert outcome['deps_status'] == 'installed'
 
 
 def test_clawhub_target_override_rejects_foreign_identity_before_landing(monkeypatch, tmp_path):
