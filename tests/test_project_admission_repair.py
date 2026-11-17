@@ -260,7 +260,7 @@ def test_legacy_omitted_routing_fields_survive_writer_and_new_preparation(room, 
     assert basis["project"]["lifecycle"] == "active" and basis["project"]["routing_generation"] == 0
     folder = tmp_path / "legitimate-new-room"
     folder.mkdir()
-    monkeypatch.setattr(subagent_worktrees, "provision_genesis_project", lambda **kw: SimpleNamespace(path=folder))
+    monkeypatch.setattr(subagent_worktrees, "provision_genesis_project", lambda **kw: SimpleNamespace(path=folder, base_sha="fixture-genesis-seed"))
     missing = registry.project_admission_view(room.root, "new-room", allow_unregistered=True)
     created = registry.ensure_project_workspace(room.root, "new-room", tmp_path / "repo",
                                                 return_project=True, admission_basis=missing)

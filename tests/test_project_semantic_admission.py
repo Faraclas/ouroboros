@@ -353,7 +353,7 @@ def test_own_ensure_returns_the_exact_winning_preparation_row(room, tmp_path, mo
 
     chosen = tmp_path / "own-folder"
     chosen.mkdir()
-    monkeypatch.setattr(subagent_worktrees, "provision_genesis_project", lambda **kw: SimpleNamespace(path=chosen))
+    monkeypatch.setattr(subagent_worktrees, "provision_genesis_project", lambda **kw: SimpleNamespace(path=chosen, base_sha="fixture-genesis-seed"))
     row = registry.ensure_project_workspace(room.root, "target", tmp_path / "repo", return_project=True)
     basis = registry.project_admission_basis("target", row)
     assert row["working_dir"] == str(chosen)
@@ -603,7 +603,7 @@ def test_real_promotion_provisions_healthy_room_beside_malformed_neighbor(host, 
         registry.create_project(host.root, "target", working_dir=str(folder) if shape == "existing_folder" else "")
     registry.create_project(host.root, "other")
     raw = corrupt_neighbor(host.root, routing_generation="unknown", visible_revision=[1], delete_error={"x": 2})
-    monkeypatch.setattr(subagent_worktrees, "provision_genesis_project", lambda **kw: SimpleNamespace(path=folder))
+    monkeypatch.setattr(subagent_worktrees, "provision_genesis_project", lambda **kw: SimpleNamespace(path=folder, base_sha="fixture-genesis-seed"))
     events = []
     monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put=events.append))
     outcome = _handle_promote_chat_to_task({
