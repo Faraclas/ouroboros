@@ -18,7 +18,39 @@ export function createResourcePreview({ project, managedProjectIds, onStorage })
     const summary = el('summary', '', 'Cleanup preview — read only'); root.append(summary);
     const body = el('div', 'pm-preview-body'); root.append(body);
     let controller = null, generation = 0, dead = false, loaded = false;
-    function cancel() { ++generation; controller?.abort(); controller = null; }
+    const inspections = new Set();
+    function cancel() { ++generation; controller?.abort(); controller = null;
+        for (const pending of inspections) pending.abort(); inspections.clear(); }
+    function inspectionControl(section, resourceId) {
+        const button = el('button', 'btn btn-default', 'Inspect repository risks'); button.type = 'button';
+        const output = el('div', 'pm-preview-inspection'); section.append(button, output);
+        button.addEventListener('click', async () => {
+            const pending = new AbortController(); inspections.add(pending);
+            button.disabled = true; output.replaceChildren(note('Inspecting this recorded location…'));
+            try {
+                const data = await fetchJson(`/api/projects/${encodeURIComponent(project.id)}/detail?inspect_resource=${encodeURIComponent(resourceId)}`, {
+                    cache: 'no-store', signal: AbortSignal.any([pending.signal, AbortSignal.timeout(120000)]),
+                });
+                if (dead || pending.signal.aborted || !section.isConnected) return;
+                const risk = data.resource_inspection;
+                if (data.project?.id !== project.id || risk?.resource_id !== resourceId) throw Error('Inspection response is incomplete.');
+                output.replaceChildren(note(`${risk.status} · ${risk.arrangement} · observed ${risk.observed_at}`));
+                const facts = risk.facts || {}, count = value => value == null ? 'unknown' : String(value);
+                output.append(note(`Local changes: ${count(facts.uncommitted)} tracked · ${count(facts.untracked)} untracked · ${count(facts.ignored)} ignored entries · ${count(facts.stashes)} stashes.`));
+                output.append(note(`Commits absent from local remote-tracking refs: ${count(facts.commits_not_in_remote_tracking)}. Branches without upstream: ${count(facts.branches_without_upstream)}.`));
+                output.append(note(`Local remote-tracking references: ${count(facts.remote_tracking_refs)}.`));
+                output.append(note(risk.remote_coverage), note(risk.coverage));
+                const locations = el('details', 'pm-section'); locations.append(el('summary', '', 'Git locations and references'));
+                locations.append(note(`Branch: ${facts.branch || 'detached / unknown'} · HEAD: ${facts.head || 'unborn / unknown'}`));
+                for (const path of [facts.root, facts.git_dir, facts.common_dir, ...(facts.worktrees || [])].filter(Boolean)) locations.append(el('p', 'pm-path', path));
+                output.append(locations);
+                if (risk.warning) output.append(note(risk.warning));
+                for (const gap of risk.gaps || []) output.append(note(`Not inspected: ${gap}`));
+            } catch (error) {
+                if (!dead && !pending.signal.aborted) output.replaceChildren(note(`Inspection unavailable: ${error.message || error}. Nothing was changed.`));
+            } finally { inspections.delete(pending); button.disabled = false; }
+        });
+    }
     function render(data) {
         if (data?.project?.id !== project.id || !Array.isArray(data?.resource_preview?.targets)
             || !Array.isArray(data.resource_preview.gaps)) throw Error('Preview response is incomplete.');
@@ -42,11 +74,38 @@ export function createResourcePreview({ project, managedProjectIds, onStorage })
                 refs.append(el('li', '', `${ref.project_name} (${ref.project_id}) · ${ref.resource_id} · ${relation}${ref.identity_verified ? '' : ' — spelling only; identity unverified'} · ${ref.path}`));
             }
             section.append(el('h4', '', 'Known registered references'), refs);
-            section.append(note('Unique work: not inspected. Uncommitted, untracked, ignored files, local-only commits and stashes are unknown. Backup coverage, occupied/reclaimable size and live or held work using this location are not inspected.'));
+            section.append(note('Repository risks are read only when you press Inspect below. Backup, size and live/held use remain uninspected.'));
             const obs = data.project.resources.find(item => item.id === target.resource_id)?.observation
                 || (target.resource_id === 'starting_folder' ? data.project.working_dir_observation : null);
-            if (obs) section.append(note(`Location: ${obs.status}; ${obs.kind}. Git: ${obs.git.status}${obs.git.branch ? ` · branch ${obs.git.branch}` : ''}${obs.git.root ? ` · root ${obs.git.root}` : ''}. Main/linked/bare arrangement is not classified here.`));
+            if (obs) section.append(note(`Location: ${obs.status}; ${obs.kind}. Git: ${obs.git.status}${obs.git.branch ? ` · branch ${obs.git.branch}` : ''}${obs.git.root ? ` · root ${obs.git.root}` : ''}. Detailed Git arrangement is read on demand below.`));
+            inspectionControl(section, target.resource_id);
             body.append(section);
+        }
+        const footprint = preview.footprint;
+        if (footprint) {
+            body.append(el('h4', '', 'Recorded project footprint'), note(footprint.coverage));
+            for (const record of footprint.entries) {
+                const section = el('section', 'pm-resource');
+                const origins = { unknown: 'Earlier origin unknown', pre_existing: 'Existed when recorded — not proof it predates the project', project_created: 'Created for this project', attached: 'Attached existing location', cloned: 'Cloned for this project', genesis: 'New project workspace' };
+                section.append(el('p', 'pm-path', record.path), note(`${origins[record.origin] || record.origin} · recorded ${record.recorded_at}`));
+                section.append(note(`Source: ${record.source}${record.task_id ? ` · task ${record.task_id}` : ''}`));
+                if (record.source === 'agent_declaration') section.append(note('Agent-declared origin, not independently proved creation.'));
+                if (record.note) section.append(note(record.note));
+                if (!record.observation) section.append(note(record.observation_error || 'No first observation recorded.'));
+                if (record.observation) section.append(note(`First observation: ${record.observation.status}; branch ${record.observation.git?.branch || 'unknown'}; HEAD ${record.observation.git?.head || 'unknown'}. Not a file snapshot.`));
+                if (!preview.targets.some(target => target.path === record.path)) inspectionControl(section, record.id);
+                body.append(section);
+            }
+            for (const path of footprint.legacy_unknown_paths) body.append(note(`Earlier origin unknown: ${path}`));
+            if (footprint.generated) {
+                body.append(el('h4', '', 'Existing task and output records'), note(footprint.generated.coverage));
+                for (const target of footprint.generated.targets) {
+                    const section = el('section', 'pm-resource');
+                    section.append(el('p', 'pm-path', target.path), note(`${target.origin} · ${target.source} · task ${target.task_id}`));
+                    inspectionControl(section, target.id); body.append(section);
+                }
+                for (const gap of footprint.generated.gaps) body.append(note(gap));
+            }
         }
         if (preview.gaps.length) {
             body.append(el('h4', '', 'Coverage gaps'));

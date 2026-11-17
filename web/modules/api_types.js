@@ -772,6 +772,7 @@
  * @property {string=} deleting_at
  * @property {string=} admission_closed_at
  * @property {string=} provenance   // attached | cloned | genesis | none (historical fact)
+ * @property {Object[]=} footprint Raw lifecycle/source writer result only; compact catalog/detail omit history.
  * @property {string=} clone_url
  * @property {string=} trusted_at
  * @property {string=} origin

@@ -72,6 +72,8 @@ def update_project_location(drive_root: Any, project_id: str, *, working_dir: st
             target = str(validate_workspace_root(path, system_repo_dir=system_repo_dir, drive_root=drive_root))
         except WorkspaceRootError as exc:
             raise ProjectManagementError("invalid_project_location", str(exc)) from exc
+    from ouroboros.project_footprint import first_observation, append_observation
+    observation = first_observation(target, source="location_selected", origin="pre_existing") if target else None
     pid = registry.sanitize_project_id(project_id)
     with registry._file_write_lock(registry._registry_path(drive_root)):
         data = registry._load(drive_root, strict=True, project_id=pid)
@@ -85,6 +87,8 @@ def update_project_location(drive_root: Any, project_id: str, *, working_dir: st
         if row.get("working_dir", "") != target or row.get("working_dir_configured") is not True:
             # Freeze the old legacy association BEFORE changing its projection source.
             row["resources"] = resources_for_project(row)
+            if observation:
+                append_observation(row, observation)
             row.update(working_dir=target, working_dir_configured=True,
                        routing_generation=row["routing_generation"] + 1)
             _view(row, projects=data["projects"])
@@ -226,6 +230,7 @@ def _view(row: dict, *, include_notes: bool = True, projects: list[dict] | None 
             "lifecycle_label": {"active": "active", "deleting": "closing",
                                 "tombstoned": "closed"}[row["lifecycle"]],
             "resources": resources_for_project(row), "location": project_location(row)}
+    view.pop("footprint", None)  # history is opt-in, never catalog/context bulk
     if not include_notes:
         view.pop("notes")
     return view
@@ -348,7 +353,9 @@ def _path_identity(path: str) -> str:
 
 
 def _edit_resource(drive_root: Any, project_id: str, *, path: str = "", label: str = "",
-                   resource_id: str = "", detach: bool = False) -> dict:
+                   resource_id: str = "", detach: bool = False, inspect: bool = True) -> dict:
+    from ouroboros.project_footprint import first_observation, append_observation
+    observation = first_observation(path, source="resource_attached", origin="unknown", inspect=inspect) if not detach else None
     pid = registry.sanitize_project_id(project_id)
     with registry._file_write_lock(registry._registry_path(drive_root)):
         data = registry._load(drive_root, strict=True, project_id=pid)
@@ -366,16 +373,17 @@ def _edit_resource(drive_root: Any, project_id: str, *, path: str = "", label: s
             if any(_path_identity(item["path"]) == _path_identity(path) for item in resources):
                 return _view(row, projects=data["projects"])  # same path in another room is independently valid
             resources.append({"id": uuid.uuid4().hex, "path": path, "label": label, "added_at": utc_now_iso()})
+            append_observation(row, observation)
         row["resources"] = resources
         view = _view(row, projects=data["projects"])
         registry._save(drive_root, data)
         return view
 
 
-def add_project_resource(drive_root: Any, project_id: str, path: str, label: str = "") -> dict:
+def add_project_resource(drive_root: Any, project_id: str, path: str, label: str = "", *, inspect: bool = True) -> dict:
     if not isinstance(label, str):
         raise ProjectManagementError("invalid_resource", "label must be a string")
-    return _edit_resource(drive_root, project_id, path=_resource_path(path), label=label.strip())
+    return _edit_resource(drive_root, project_id, path=_resource_path(path), label=label.strip(), inspect=inspect)
 
 
 def detach_project_resource(drive_root: Any, project_id: str, resource_id: str) -> dict:
@@ -426,7 +434,7 @@ def observe_resource(path: str) -> dict:
 
 
 def project_detail_view(drive_root: Any, project_id: str, *, resource_preview: bool = False,
-                        system_repo_dir: Any = None) -> dict:
+                        system_repo_dir: Any = None, inspect_resource: str = "") -> dict:
     pid = registry.sanitize_project_id(project_id)
     # Validate routing only on the addressed room. Breadcrumbs use raw
     # neighbours from that SAME capture, not their execution authority.
@@ -446,7 +454,12 @@ def project_detail_view(drive_root: Any, project_id: str, *, resource_preview: b
     row["resources"] = [{**item, "observation": observe(item["path"])} for item in row["resources"]]
     result = {"project": row}
     if resource_preview:
+        from ouroboros.project_footprint import view, generated_targets
         result["resource_preview"] = _resource_preview(projects, row, drive_root, system_repo_dir)
+        result["resource_preview"]["footprint"] = {**view(project), "generated": generated_targets(drive_root, project_id)}
+    if inspect_resource:
+        from ouroboros.project_footprint import inspect_target
+        result["resource_inspection"] = inspect_target(drive_root, project_id, inspect_resource)
     return result
 
 

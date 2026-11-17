@@ -26,7 +26,16 @@ def preview_server(tmp_path):
     repo = pathlib.Path(__file__).parents[1]
     data, ordinary, habitat = tmp_path / 'data', tmp_path / 'external', tmp_path / 'habitat'
     ordinary.mkdir(); habitat.mkdir()
+    from tests.test_repository_risk import git
+    from ouroboros.project_footprint import record_target
+    git(ordinary, 'init', '-q')
+    (ordinary / 'untracked-work.txt').write_text('unique work')
     r.create_project(data, 'alpha', name='Ordinary resource inspection', working_dir=str(ordinary))
+    record_target(data, 'alpha', str(tmp_path / 'test-environment'), task_id='fixture', origin='project_created', note='Explicit generated test environment; no automatic shell coverage')
+    from ouroboros.task_results import write_task_result
+    generated = tmp_path / 'recorded-task-checkout'; generated.mkdir()
+    git(generated, 'init', '-q'); (generated / 'untracked').write_text('recorded task output')
+    write_task_result(data, 'fixture-task', 'completed', project_id='alpha', workspace_root=str(generated))
     r.create_project(data, 'beta', name='Conversation only')
     r.create_project(data, 'viper-interface', name='Viper Interface', working_dir=str(habitat))
     alias = tmp_path / 'habitat-alias'; alias.symlink_to(habitat, target_is_directory=True)
@@ -65,7 +74,7 @@ window.storage=initStorage({state,mount:document.getElementById('dashboard-panel
     while not server.started and thread.is_alive() and time.monotonic() < deadline: time.sleep(.01)
     assert server.started
     def snapshot():
-        return {str(p): p.read_bytes() for base in (data, ordinary, habitat) for p in base.rglob('*') if p.is_file()}
+        return {str(p): p.read_bytes() for base in (data, ordinary, habitat, generated) for p in base.rglob('*') if p.is_file()}
     before = snapshot()
     try: yield f'http://127.0.0.1:{port}', control, before
     finally:
@@ -98,14 +107,25 @@ def test_preview_navigation_keyboard_error_cancel_dispose_and_purity(preview_ser
         summary.focus(); page.keyboard.press('Enter')
         section.get_by_role('button', name='Refresh preview', exact=True).wait_for()
         text = section.inner_text()
-        assert 'Excluded from generic cleanup' in text and 'Unique work: not inspected' in text
+        assert 'Excluded from generic cleanup' in text and 'Backup, size and live/held use remain uninspected' in text
         assert 'Viper Interface' in text and 'missing' in text and 'installation-wide' in text
-        assert section.get_by_role('button').count() == 2
+        assert section.get_by_role('button', name='Inspect repository risks', exact=True).count() >= 3
+        assert section.get_by_role('button', name='Delete', exact=False).count() == 0
+        assert 'Recorded project footprint' in text and 'Agent-declared origin' in text
+        section.get_by_role('button', name='Inspect repository risks', exact=True).first.click()
+        section.get_by_text('Local changes: 0 tracked · 1 untracked · 0 ignored entries · 0 stashes.', exact=True).wait_for()
+        assert 'no remote contacted' in section.inner_text()
+        assert 'extra confirmation' in section.inner_text()
         assert section.locator('a').count() == 0 and not writes
         section.scroll_into_view_if_needed()
         out = pathlib.Path(os.environ.get('PREVIEW_SCREENSHOTS', str(tmp_path / 'screenshots')))
         out.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(out / f'preview-{theme}-{width}.png'))
+        section.get_by_text('Recorded project footprint', exact=True).scroll_into_view_if_needed()
+        page.screenshot(path=str(out / f'footprint-{theme}-{width}.png'))
+        generated = section.locator('.pm-resource').filter(has_text='task fixture-task')
+        generated.get_by_role('button', name='Inspect repository risks', exact=True).click()
+        generated.get_by_text('Local changes: 0 tracked · 1 untracked · 0 ignored entries · 0 stashes.', exact=True).wait_for()
         assert section.evaluate('(n)=>n.scrollWidth<=n.clientWidth+1')
         # Error is local/recoverable, no mutation or hidden global preview job.
         control['error'] = True

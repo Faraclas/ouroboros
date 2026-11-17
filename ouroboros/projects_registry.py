@@ -1000,6 +1000,9 @@ def create_project(
         raise ValueError(f"unusable project id: {project_id!r}")
     cognition = main_cognition()
     ensure_project_cognition(drive_root, baseline=cognition)
+    from ouroboros.project_footprint import first_observation
+    observation = (first_observation(str(working_dir), source="project_registered")
+                   if working_dir and not get_reserved_project(drive_root, pid, strict=True) else None)
     with _file_write_lock(_registry_path(drive_root)), \
             project_admission_guard(drive_root, admission_basis) if admission_basis is not None else nullcontext():
         data = _load(drive_root, strict=True, project_id=pid)
@@ -1031,6 +1034,8 @@ def create_project(
             "pinned": False,
             "delete_error": "",
         }
+        if observation:
+            entry["footprint"] = [observation]
         data["projects"].append(entry)
         _save(drive_root, data)
         log.info("Project registered: %s (chat_id=%s)", pid, entry["chat_id"])
@@ -1051,6 +1056,9 @@ def update_project(
     pid = sanitize_project_id(project_id)
     if not pid:
         return None
+    from ouroboros.project_footprint import first_observation, append_observation
+    target = str(updates.get("working_dir") or "")
+    observation = first_observation(target, source="working_location_bound") if target else None
     allowed = {
         "name", "pinned", "working_dir", "last_active_at", "provenance", "clone_url", "trusted_at",
         # Retained legacy activity fact; current activity comes from dialogue rooms.
@@ -1080,6 +1088,14 @@ def update_project(
                 if key == "working_dir" and value != entry.get(key):
                     entry["routing_generation"] = int(entry.get("routing_generation") or 0) + 1
                 entry[key] = value
+                if key == "working_dir" and observation and value == target:
+                    append_observation(entry, observation)
+            if "provenance" in updates and entry.get("working_dir"):
+                # Preserve the source fact WITH its location. Later location
+                # changes must not relabel a different path as this old clone.
+                append_observation(entry, {"id": uuid.uuid4().hex, "path": entry["working_dir"],
+                    "recorded_at": utc_now_iso(), "source": "project_source", "origin": entry.get("provenance", "unknown"),
+                    "clone_url": entry.get("clone_url", ""), "observation": None})
             _save(drive_root, data)
             return dict(entry)
     return None
@@ -1346,6 +1362,11 @@ def ensure_project_workspace(drive_root: Any, project_id: str, repo_dir: Any,
             entry = update_project(drive_root, entry["id"], working_dir=str(handle.path),
                                    only_if_empty=("working_dir",),
                                    admission_basis=project_admission_basis(entry["id"], entry))
+            try:
+                from ouroboros.project_footprint import record_workspace_creation
+                record_workspace_creation(drive_root, project_id, str(handle.path), handle.base_sha)
+            except (OSError, ValueError):
+                log.warning('Workspace %s bound; origin recording failed', handle.path, exc_info=True)
         except Exception:
             log.warning("Project workspace provisioning failed for %s", project_id, exc_info=True)
             entry = None

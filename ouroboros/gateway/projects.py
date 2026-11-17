@@ -329,6 +329,7 @@ async def api_project_detail(request: Request) -> JSONResponse:
         view = await run_sync_to_completion(
             project_detail_view, request_drive_root(request), str(request.path_params["project_id"]),
             resource_preview=request.query_params.get("resource_preview") == "1",
+            inspect_resource=request.query_params.get("inspect_resource", ""),
             system_repo_dir=getattr(request.app.state, "repo_dir", None))
         return JSONResponse(view)
     except ProjectManagementError as exc:
@@ -483,6 +484,7 @@ async def api_projects_create(request: Request) -> JSONResponse:
         working_dir, provenance, clone_url = "", "none", ""
         init_git_skipped: list = []
         init_git_warnings: list = []
+        init_git_record = None
         if attach_path:
             from ouroboros.project_sources import (
                 attach_snapshot_init,
@@ -496,6 +498,9 @@ async def api_projects_create(request: Request) -> JSONResponse:
             if error:
                 return JSONResponse({"error": error}, status_code=400)
             if bool(body.get("init_git")):
+                if not (resolved / '.git').exists():
+                    from ouroboros.project_footprint import first_observation
+                    init_git_record = await asyncio.to_thread(first_observation, str(resolved / '.git'), source='git_initialized', origin='project_created')
                 # The explicit choice may create a standalone repository inside
                 # an existing one. Validate that resulting worktree geometry.
                 init_error, init_git_skipped = await asyncio.to_thread(attach_snapshot_init, resolved, warnings=init_git_warnings)
@@ -506,7 +511,7 @@ async def api_projects_create(request: Request) -> JSONResponse:
                     validate_workspace_root, resolved, system_repo_dir=repo_dir, drive_root=drive_root
                 )
             except WorkspaceRootError as exc:
-                return JSONResponse({"error": str(exc)}, status_code=400)
+                return JSONResponse({"error": str(exc), **({'created_git_path': init_git_record['path']} if init_git_record else {})}, status_code=400)
             working_dir, provenance = str(resolved), "attached"
         elif git_url:
             from ouroboros.project_sources import clone_project_repo
@@ -525,6 +530,9 @@ async def api_projects_create(request: Request) -> JSONResponse:
             origin="owner_ui",
             parent_id=body.get("parent_id", ""),
         )
+        if init_git_record:
+            from ouroboros.project_footprint import store_observation
+            await asyncio.to_thread(store_observation, drive_root, entry['id'], init_git_record)
         if with_workspace:
             workspace = ensure_project_workspace(drive_root, entry["id"], repo_dir)
             if workspace:

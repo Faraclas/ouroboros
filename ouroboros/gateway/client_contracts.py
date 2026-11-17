@@ -569,6 +569,7 @@ class ProjectEntry(TypedDict, total=False):
     pinned: bool  # absent on legacy rows means unpinned; no routing/activity effect
     cognition: ProjectCognition
     provenance: str
+    footprint: NotRequired[List[Dict[str, Any]]]  # raw lifecycle/source writer result only; catalog/detail omit it
     clone_url: str
     trusted_at: str
     origin: str
@@ -654,12 +655,14 @@ class ProjectResourcePreview(TypedDict):
     targets: List[ProjectResourceTarget]
     gaps: List[str]
     coverage: str
+    footprint: NotRequired[Dict[str, Any]]  # recorded targets, unknown legacy paths and generated-record projection
 
 
 class ProjectDetailResponse(TypedDict):
     """Same room; ?resource_preview=1 adds registered-path observations, not eligibility."""
     project: ProjectEntry
     resource_preview: NotRequired[ProjectResourcePreview]
+    resource_inspection: NotRequired[Dict[str, Any]]  # ?inspect_resource=<recorded id>; local-only facts, no deletion authority
 
 
 class ProjectCreateResponse(TypedDict):

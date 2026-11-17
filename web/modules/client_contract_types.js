@@ -703,11 +703,13 @@
  * @property {ProjectResourceTarget[]} targets
  * @property {string[]} gaps
  * @property {string} coverage
+ * @property {Object=} footprint Recorded targets, legacy unknown paths and generated-record projection.
  */
 
 /** @typedef {Object} ProjectDetailResponse
  * @property {import('./api_types.js').ProjectEntry} project
  * @property {ProjectResourcePreview=} resource_preview
+ * @property {Object=} resource_inspection Local Git facts for inspect_resource=<recorded id>; no deletion authority.
  */
 
 /**
