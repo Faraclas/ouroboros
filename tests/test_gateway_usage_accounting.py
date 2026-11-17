@@ -108,6 +108,7 @@ def test_cost_breakdown_uses_ledger_not_later_compatibility_events(tmp_path, mon
     assert external["cost_final"] is False
     assert payload["accounting"] == {
         "available": True,
+        "extension_unknown_unmetered": 0,  # the seeded external row is not an extension-host callback
         "settled_usd": 0.25,
         "confirmed_usd": 0.25,
         "estimated_usd": 0.0,

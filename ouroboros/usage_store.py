@@ -205,6 +205,23 @@ def _cap_text(value: Any) -> Optional[str]:
     return None if _number(value) is None else str(decimal_of(value))
 
 
+EXTENSION_PROVIDER = "external-extension"  # written only by the extension host's opaque-callback disclosure
+
+
+def extension_callback_key(row: Dict[str, Any]) -> Optional[str]:
+    """Lossless JSON axis tuple of a row the extension host recorded for one of its callbacks.
+
+    Provenance only: an ``external_unmetered`` row from provider ``external-extension`` whose source reads
+    ``extension_<surface>:<skill>:<name>``. An empty model proves nothing, and any other row is not one."""
+    if row.get("kind") != "external_unmetered" or row.get("provider") != EXTENSION_PROVIDER or row.get("model"):
+        return None
+    surface, _, rest = str(row.get("source") or "").partition(":")
+    skill, separator, name = rest.partition(":")
+    if not surface.startswith("extension_") or not surface[len("extension_"):] or not skill or not separator or not name:
+        return None
+    return _json([skill, surface[len("extension_"):], "", str(row.get("category") or "")])
+
+
 def summary_keys(row: Dict[str, Any]) -> List[Tuple[str, str, Optional[str]]]:
     """Every ``(scope, key, cap literal)`` the row contributes to.
 
@@ -240,6 +257,9 @@ def summary_keys(row: Dict[str, Any]) -> List[Tuple[str, str, Optional[str]]]:
         keys.append(("task_root", f"{task}|{'' if legacy else root}", None))
     if kind == "subscription_session":
         keys.extend((name, owner, None) for name, owner in (("root_delegated", root), ("task_delegated", task)) if owner)
+    extension = extension_callback_key(row)
+    if extension is not None:
+        keys.append(("extension", extension, None))
     return keys
 
 
@@ -295,6 +315,19 @@ class SummaryRows:
         under = "" if prefix is None else f"{prefix}|"  # every key, or the keys under "<prefix>|" without it
         return {key[len(under):]: bucket for (held, key), bucket in sorted(self._rows.items())
                 if held == scope and key.startswith(under)}
+
+    def extension_callback_groups(self) -> List[Dict[str, Any]]:
+        """Render the captured extension scope, outside the money transaction."""
+        groups = []
+        for key, bucket in self.buckets("extension").items():
+            skill, surface, model, category = json.loads(key)
+            shown = bucket.render_breakdown()
+            groups.append({"skill": skill, "surface": surface, "model": model, "category": category,
+                           "provider": EXTENSION_PROVIDER, "calls": shown["physical_calls"],
+                           "unknown": shown["unknown_unmetered"], "non_final": shown["non_final_rows"],
+                           "prompt_tokens": shown["prompt_tokens"] or 0,
+                           "completion_tokens": shown["completion_tokens"] or 0})
+        return groups
 
 
 def _bucket_of(record: Any) -> Bucket:
@@ -924,6 +957,7 @@ def migrate_from_journal(root: pathlib.Path | str, *, initialize_journal: bool =
                     report["journal_selected"] = _select_journal(root, path, tier)
                     report["window_index"] = _ensure_read_index(root, path, tier, "attempts_root_time", ROOT_TIME_INDEX)
                     report["dirty_owner_index"] = _ensure_read_index(root, path, tier, "dirty_owners_revision", DIRTY_REVISION_INDEX)
+                    report["extension_summaries"] = _ensure_extension_summaries(root, path, tier)
             else:
                 tier = TIER_ENFORCED if kernel_file_locks_enforced(root / LOCK_REL) else TIER_NAME
                 report = _import(root, path, tier)
@@ -953,6 +987,35 @@ def _ensure_read_index(root: pathlib.Path, path: pathlib.Path, tier: str, name: 
         return "created"
     except (sqlite3.Error, _core.StoreError, UsageAccountingError) as exc:
         log.warning("usage store index %s deferred to the next boot: %s", name, exc)
+        return f"deferred: {type(exc).__name__}"
+
+
+def _ensure_extension_summaries(root: pathlib.Path, path: pathlib.Path, tier: str) -> str:
+    """The ``extension`` summary scope for rows an older body recorded: folded once at the lifespan boot,
+    while writers are quiescent, from the rows that already carry the provenance. Recorded rows are only read.
+    A failed fold leaves the split unavailable until the next boot, never silently partial."""
+    try:
+        with contextlib.ExitStack() as stack:
+            if tier == TIER_NAME:
+                stack.enter_context(_named_lock(root, LOCK_REL.name, timeout_sec=USAGE_LOCK_TIMEOUT_SEC, stale_sec=90.0))
+            conn = stack.enter_context(_core.connection(path, tier, wait_sec=USAGE_LOCK_TIMEOUT_SEC, opener=_connect))
+            if conn.execute("SELECT 1 FROM meta WHERE key='extension_summaries'").fetchone():
+                return "present"
+            with _core.transaction(conn, write=True, commit_wait_sec=USAGE_LOCK_TIMEOUT_SEC):
+                buckets: Dict[str, Bucket] = {}
+                for stored in map(_decode, conn.execute(
+                        "SELECT * FROM attempts WHERE kind='external_unmetered' AND provider=?", (EXTENSION_PROVIDER,))):
+                    key = extension_callback_key(stored)
+                    if key is not None:
+                        buckets.setdefault(key, Bucket()).add(summary_delta(stored))
+                conn.execute("DELETE FROM summaries WHERE scope='extension'")
+                for key, bucket in buckets.items():
+                    conn.execute(f"INSERT OR REPLACE INTO summaries ({','.join(_SUMMARY_COLUMNS)}) "
+                                 f"VALUES ({','.join('?' * len(_SUMMARY_COLUMNS))})", _bucket_record("extension", key, bucket))
+                conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('extension_summaries', ?)", (_json(len(buckets)),))
+        return "folded"
+    except (sqlite3.Error, _core.StoreError, UsageAccountingError) as exc:
+        log.warning("usage store extension summaries deferred to the next boot: %s", exc)
         return f"deferred: {type(exc).__name__}"
 
 
@@ -1063,7 +1126,8 @@ def _build(tmp: pathlib.Path, tier: str, records: Sequence[Dict[str, Any]], prov
         counts = {"attempts": len(last), "summaries": sum(1 for bucket in buckets.values() if bucket.rows),
                   "bindings": len(bound), "dirty_owners": len(owners), "epoch": epoch, "last_seq": last_seq}
         meta = {"schema_version": SCHEMA_VERSION, "lock_tier": tier, "publication_marker": [epoch, last_seq],
-                "import": {**provenance, "header": durable_literals(header) if header else None, "counts": counts}}
+                "import": {**provenance, "header": durable_literals(header) if header else None, "counts": counts},
+                "extension_summaries": True}
         conn.executemany("INSERT INTO meta (key, value) VALUES (?, ?)",
                          [(key, _json(value)) for key, value in meta.items()])
         _commit(conn)

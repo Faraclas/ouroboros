@@ -90,6 +90,66 @@ def _compat_cost_groups(
         bucket["cost"] = round(float(bucket["cost"]), 6)
     return dict(sorted(result.items(), key=lambda item: item[1]["cost"], reverse=True))
 
+_EXTENSION_FIELDS = ("calls", "unknown_unmetered", "non_final_rows", "prompt_tokens", "completion_tokens")
+
+
+def _extension_view(groups: list) -> Dict[str, Any]:
+    """Recorded extension callbacks, as the ledger's own provenance describes them.
+
+    ``skill`` is the extension, ``surface`` the kind of callback (route / registration / ...), both from the
+    row's recorded source (see ``usage_store.extension_callback_key``). The rows carry no price: they are
+    *not metered*, which is neither zero nor proof the callback reached no paid service."""
+    total = dict.fromkeys(_EXTENSION_FIELDS, 0)
+    by_extension: Dict[str, Dict[str, Any]] = {}
+    for group in groups:
+        skill = str(group.get("skill") or "") or "unknown extension"
+        values = {
+            "calls": int(group.get("calls") or 0), "unknown_unmetered": int(group.get("unknown") or 0),
+            "non_final_rows": int(group.get("non_final") or 0),
+            "prompt_tokens": int(group.get("prompt_tokens") or 0),
+            "completion_tokens": int(group.get("completion_tokens") or 0),
+        }
+        entry = by_extension.setdefault(skill, {**dict.fromkeys(_EXTENSION_FIELDS, 0), "surfaces": {}})
+        label = str(group.get("surface") or "") or "callback"
+        entry["surfaces"][label] = entry["surfaces"].get(label, 0) + values["calls"]
+        for field in _EXTENSION_FIELDS:
+            entry[field] += values[field]
+            total[field] += values[field]
+    return {
+        **total,
+        "by_extension": dict(sorted(by_extension.items(), key=lambda item: item[1]["calls"], reverse=True)),
+        "cost": None,
+        "cost_note": "Not metered: the recorded callbacks carry no price. That is not zero, and not proof "
+                     "no paid service was reached.",
+    }
+
+
+def _move_out_of_ai_tables(tables: Dict[str, Dict[str, Any]], groups: list, degraded: bool, infer_category) -> None:
+    """Take each recorded extension callback out of the AI request tables it was folded into.
+
+    The tables are projections; the ledger rows stay as recorded. A bucket left with no calls, no unknown
+    rows and no dollars disappears; one left with no open rows is final again unless the ledger is degraded."""
+    for group in groups:
+        model, provider, category = (str(group.get(name) or "") for name in ("model", "provider", "category"))
+        removal = {"calls": int(group.get("calls") or 0), "unknown_unmetered": int(group.get("unknown") or 0),
+                   "non_final_rows": int(group.get("non_final") or 0),
+                   "prompt_tokens": int(group.get("prompt_tokens") or 0),
+                   "completion_tokens": int(group.get("completion_tokens") or 0)}
+        keys = {"by_model": model or "unattributed", "by_api_key": provider or "unattributed",
+                "by_model_category": infer_category(model) if model else "unattributed",
+                "by_task_category": category or "unattributed"}
+        for table, key in keys.items():
+            bucket = tables[table].get(key)
+            if bucket is None:
+                continue
+            for field, amount in removal.items():
+                bucket[field] = max(0, int(bucket.get(field) or 0) - amount)
+            if bucket["non_final_rows"] == 0 and not degraded:
+                bucket["cost_final"] = True
+            if not (bucket["calls"] or bucket["unknown_unmetered"] or bucket.get("cost")):
+                del tables[table][key]
+
+
 def make_cost_breakdown_endpoint(data_dir: pathlib.Path):
     def _cost_breakdown_response() -> JSONResponse:
         try:
@@ -97,8 +157,10 @@ def make_cost_breakdown_endpoint(data_dir: pathlib.Path):
             from ouroboros.usage_accounting import usage_breakdown
 
             # Display read: the store's summary rows; contention past the short display
-            # wait reports accounting unavailable (503), never a zero.
-            breakdown = usage_breakdown(data_dir, allow_stale=True)
+            # wait reports accounting unavailable (503), never a zero. Capture extension and total
+            # summaries in the SAME snapshot; decode and render only after releasing it.
+            breakdown = usage_breakdown(data_dir, allow_stale=True, include_extensions=True)
+            extension_groups = breakdown.pop("extension_callback_groups")
             unattributed = dict(breakdown.get("unattributed") or {})
             by_model_raw = dict(breakdown.get("by_model") or {})
             try:
@@ -110,28 +172,9 @@ def make_cost_breakdown_endpoint(data_dir: pathlib.Path):
             from ouroboros.settings_setup_contract import resolve_total_budget_usd
             resolved_limit = resolve_total_budget_usd()
             limit = live_limit if 0 < live_limit < float("inf") else float(resolved_limit or 0.0)
-            accounting = {field: breakdown.get(field) for field in _ACCOUNTING_SUMMARY_FIELDS}
-            accounting.update({
-                "available": True,
-                "authority": "physical_attempt_ledger",
-                "limit_usd": round(limit, 6),
-                # Room above KNOWN (settled) spend, the admission rule's own number.
-                "remaining_known_usd": (
-                    round(max(0.0, limit - float(breakdown.get("settled_usd") or 0.0)), 6)
-                    if limit > 0
-                    else None
-                ),
-            })
-            return JSONResponse({
-                # Compatibility fields now project the physical-attempt ledger;
-                # events.jsonl is import evidence, never a second cost authority.
-                "total_cost": round(float(breakdown.get("settled_usd") or 0.0), 6),
-                "total_calls": int(breakdown.get("physical_calls") or 0),
-                "total_prompt_tokens": int(breakdown.get("prompt_tokens") or 0),
-                "total_completion_tokens": int(breakdown.get("completion_tokens") or 0),
-                "total_cached_tokens": int(breakdown.get("cached_tokens") or 0),
-                "total_cache_write_tokens": int(breakdown.get("cache_write_tokens") or 0),
-                "prompt_cache_ttls": dict(breakdown.get("prompt_cache_ttls") or {}),
+            degraded = bool(breakdown.get("integrity_degraded"))
+            extension = _extension_view(extension_groups)
+            tables = {
                 "by_model": _compat_cost_groups(by_model_raw, dict(unattributed.get("model") or {})),
                 "by_api_key": _compat_cost_groups(
                     dict(breakdown.get("by_provider") or {}),
@@ -146,6 +189,37 @@ def make_cost_breakdown_endpoint(data_dir: pathlib.Path):
                     dict(breakdown.get("by_category") or {}),
                     dict(unattributed.get("category") or {}),
                 ),
+            }
+            _move_out_of_ai_tables(tables, extension_groups, degraded, infer_model_category)
+            accounting = {field: breakdown.get(field) for field in _ACCOUNTING_SUMMARY_FIELDS}
+            accounting.update({
+                # Whole-ledger counts stay whole: extension callbacks are still unmetered rows.
+                "extension_unknown_unmetered": extension["unknown_unmetered"],
+                "available": True,
+                "authority": "physical_attempt_ledger",
+                "limit_usd": round(limit, 6),
+                # Room above KNOWN (settled) spend, the admission rule's own number.
+                "remaining_known_usd": (
+                    round(max(0.0, limit - float(breakdown.get("settled_usd") or 0.0)), 6)
+                    if limit > 0
+                    else None
+                ),
+            })
+            return JSONResponse({
+                # Compatibility fields now project the physical-attempt ledger;
+                # events.jsonl is import evidence, never a second cost authority.
+                "total_cost": round(float(breakdown.get("settled_usd") or 0.0), 6),
+                # Requests and unproven dispatches; never relabel an ambiguous row as a known model call.
+                "total_calls": max(0, int(breakdown.get("physical_calls") or 0) - extension["calls"]),
+                "total_physical_calls": int(breakdown.get("physical_calls") or 0),
+                "extension_activity": extension,
+                "total_prompt_tokens": max(0, int(breakdown.get("prompt_tokens") or 0) - extension["prompt_tokens"]),
+                "total_completion_tokens": max(
+                    0, int(breakdown.get("completion_tokens") or 0) - extension["completion_tokens"]),
+                "total_cached_tokens": int(breakdown.get("cached_tokens") or 0),
+                "total_cache_write_tokens": int(breakdown.get("cache_write_tokens") or 0),
+                "prompt_cache_ttls": dict(breakdown.get("prompt_cache_ttls") or {}),
+                **tables,
                 "accounting": accounting,
                 "unattributed": unattributed,
             })
