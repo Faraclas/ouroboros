@@ -103,6 +103,7 @@ def registry(tmp_path, monkeypatch):
     return state
 
 
+@pytest.mark.parametrize('actor', ['owner', 'ouroboros'])
 @pytest.mark.parametrize("mode,enforcement,feedback,converted,admitted", [
     ("advanced", "blocking", "clean", False, True),
     ("advanced", "blocking", "warnings", False, True),
@@ -117,11 +118,11 @@ def registry(tmp_path, monkeypatch):
     ("advanced", "advisory", "author_running", True, False),
     ("cyber_pro", "blocking", "unavailable", False, True),
 ])
-def test_direct_install_uses_current_acceptance(registry, monkeypatch, mode, enforcement, feedback, converted, admitted):
+def test_direct_install_separates_acceptance_from_install_authority(registry, monkeypatch, mode, enforcement, feedback, converted, admitted, actor):
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", mode)
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", enforcement)
     registry.feedback = feedback
-    record = {"source": {"id": "clawhub", "kind": "registry"}, "basis": "review"}
+    record = {"source": {"id": "clawhub", "kind": "registry"}, "basis": "review", 'installed_by': actor}
     if converted:
         record["converted_from"] = ".clawhub.json"
     result = install.install_skill(registry.drive, registry.repo, slug="demo", install_record=record)
@@ -129,9 +130,10 @@ def test_direct_install_uses_current_acceptance(registry, monkeypatch, mode, enf
 
     assert result.ok
     assert loaded.review.gate_for(loaded.content_hash)["executable_review"] is admitted
-    assert registry.events == (["review", "packages"] if admitted else ["review"])
-    assert result.deps_status == ("installed" if admitted else "pending_review")
-    if admitted:
+    installs = admitted and actor == 'owner' and not converted
+    assert registry.events == (["review", "packages"] if installs else ["review"])
+    assert result.deps_status == ('installed' if installs else 'authorization_required' if admitted else 'pending_review')
+    if installs:
         assert skill_deps_not_ready(registry.drive, loaded, strict=True) == ("", "")
         assert result.deps_fingerprint["status"] == "installed"
     else:

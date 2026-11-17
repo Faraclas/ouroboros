@@ -197,12 +197,10 @@ def _skill_names_from_review_history(
     return {"names": names, "coverage": coverage}
 
 
-# Unready packages are installed by the enable owner, never by a paid review: whatever admits the
-# bytes admits their declared dependencies (skill_dependencies.ensure_skill_dependencies).
+# Byte admission and covering installation authority meet at skill_dependencies.
 _DEPENDENCY_ACTION = {"phase": "dependencies", "tool": "toggle_skill", "reason": (
-    "toggle_skill enabled=true installs or refreshes the declared dependencies when the review gate admits "
-    "the current bytes; it repairs an enabled skill too. Enable only where owner intent covers it, "
-    "never over an owner's OFF.")}
+    "toggle_skill enabled=true prepares admitted dependencies when owner authorization covers their installation; "
+    "review alone does not grant it. It also repairs unchanged installed dependencies, never over an owner's OFF.")}
 
 
 def skill_readiness_for_execution(

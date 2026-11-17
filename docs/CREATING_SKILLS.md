@@ -514,13 +514,12 @@ install:
     package: ddgs
 ```
 
-Bare `dependencies` entries are treated as Python packages. `pip`,
-`pipx`, `uv`, `npm`, and `node` specs are installed once the review gate admits the exact
-bytes (a reviewer verdict, a trusted release, the owner's skip or edit, Cyber Pro) by one owner
-(`skill_dependencies.ensure_skill_dependencies`: at enable, review end, install, author finish
-and startup; no new paid review is required) and only under the skill's `.ouroboros_env` directory.
-Global package-manager specs remain manual setup guidance. Exact resources and
-explicit build actions use the same isolated install owner:
+Bare `dependencies` entries are Python packages. `skill_dependencies.ensure_skill_dependencies`
+serves enable/review/install/author-finish/startup: byte admission is not installation permission.
+New `pip`/`pipx`/`uv`/`npm`/`node` installs need covering owner authorization; unchanged installed
+upkeep and exact owner-selected releases retain theirs. Packages need no paid review and stay
+under `.ouroboros_env`. Global-manager specs remain manual guidance. Exact resources/builds
+use the same isolated owner:
 
 ```yaml
 install_specs:

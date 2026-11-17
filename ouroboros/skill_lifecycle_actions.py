@@ -73,7 +73,7 @@ def _caller_action_error(ctx: Any, action: str, owner_actor: str, owner_source: 
     # A selected payload or a copied owner reference cannot widen Presence.
     if presence_ceiling_from_context(ctx) is not None:
         return "a Presence task cannot issue owner-only skill authority", {}
-    needs_owner = action in {"grant", "attest", "delete"} or (
+    needs_owner = action in {"grant", "attest", "delete"} or (action == "enable" and owner_source is not None) or (
         action == "enable" and constraint is not None
         and (constraint.has_selected_skill or not constraint.allow_enable)
     )
@@ -107,7 +107,7 @@ def _reconcile(skill: Any, drive_root: Path, repo_path: str, *, enabling: bool =
 
 
 def _toggle(skill: Any, drive_root: Path, repo_path: str, enabled: bool, actor: str, reason: str, *,
-            progress: Any = None) -> dict:
+            progress: Any = None, ctx: Any = None, owner_source: Any = None) -> dict:
     """Enable or disable one skill. Enabling establishes the declared packages itself (the
     seam is idempotent, so Enable on an enabled skill repairs it and Enable again retries a
     failure); ``progress`` receives the job's message while packages install."""
@@ -127,10 +127,13 @@ def _toggle(skill: Any, drive_root: Path, repo_path: str, enabled: bool, actor: 
             return _refusal("Grant it the keys and permissions it asks for first.", code="grants", **facts)
         from ouroboros.skill_dependencies import dependency_sentence, ensure_skill_dependencies
 
-        deps_status, detail = ensure_skill_dependencies(drive_root, skill, progress=progress)
+        deps_status, detail = ensure_skill_dependencies(
+            drive_root, skill, progress=progress, ctx=ctx, owner_source=owner_source,
+            owner_requested=actor in {"owner_ui", "owner_cli"})
         if deps_status not in {"installed", "not_required"}:
-            code = "dependencies_failed" if deps_status == "failed" else "acceptance"
-            return _refusal(dependency_sentence(code) if code == "dependencies_failed" else "It turns on after a review passes.",
+            code = ("deps_authorization" if deps_status == "authorization_required" else
+                    "dependencies_failed" if deps_status == "failed" else "acceptance")
+            return _refusal(dependency_sentence(code) if code != "acceptance" else "It turns on after a review passes.",
                             code=code, detail=detail, deps_status=deps_status, **facts)
     elif collision:
         from ouroboros import extension_loader
@@ -202,8 +205,8 @@ def reconcile_turn_on_when_ready(
         if result.get("extension_action") == "extension_load_error":
             return {**out, "action": "load_error", "error": str(result.get("error") or "")}
         code = str(result.get("code") or "")
-        return {**out, "action": "not_ready", "missing": ["dependencies" if code == "dependencies_failed" else code],
-                **({"error": result["error"], "detail": result.get("detail", "")} if code == "dependencies_failed" else {})}
+        return {**out, "action": "not_ready", "missing": ["dependencies" if code in {"dependencies_failed", "deps_authorization"} else code],
+                **({"error": result["error"], "detail": result.get("detail", "")} if code in {"dependencies_failed", "deps_authorization"} else {})}
     except Exception as exc:
         log.warning("turn-on-when-ready reconcile failed for %s", skill_name, exc_info=True)
         return {**out, "action": "error", "error": f"{type(exc).__name__}: {exc}"}
@@ -389,7 +392,7 @@ def run_skill_action(
             return delete_local_skill(drive, loaded, payload_root=payload_root, repo_path=repo_path)
         return _toggle(loaded, drive, repo_path, action == "enable", actor,
                        json.dumps({key: value for key, value in source.items() if key != "text"}) if source else task_id,
-                       progress=_progress.set if _progress is not None else None)
+                       progress=_progress.set if _progress is not None else None, ctx=ctx, owner_source=source)
 
     result = run_lifecycle_job_blocking(
         kind=action, target=skill_name, source="skills" if _owner_actor else "tool", runner=apply,

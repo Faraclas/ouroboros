@@ -1,7 +1,7 @@
 """One owner readies a skill's packages whenever a runnable skill is requested (sprint 2026-10-19).
 
-Whatever admits the exact bytes (``gate_for(content_hash).executable_review``) admits the
-declarations they carry: Enable installs them, a refusal is typed and names its remedy, a slow
+Admitted bytes and owner-authorized packages stay separate: explicit owner Enable installs
+the declarations; a refusal is typed and names its remedy, a slow
 owner action answers its running job, the startup pass runs for every skill that should be on,
 and the host, not the card, names the removal a skill offers. Every guard asserts both
 directions (fires on the broken case, quiet on the working one).
@@ -75,7 +75,10 @@ def reviewed(drive: pathlib.Path, name: str = "demo", status: str = "clean"):
 
 
 def request_turn_on(drive: pathlib.Path, name: str = "demo", basis: str = "review") -> None:
-    write_install_record(drive, name, {"basis": basis, "release": {"digest": "d"}, "source": {"id": "hub"},
+    # This positive fixture represents an OWNER-selected exact release, not review consent.
+    skill = find_skill(drive, name, repo_path="")
+    write_install_record(drive, name, {"basis": basis, "release": {"digest": skill.content_hash},
+                                       "source": {"id": "hub"}, "installed_by": "owner",
                                        "turn_on_when_ready": True})
 
 
@@ -87,7 +90,7 @@ def offline(*args, **kwargs):
     raise RuntimeError("pip install failed: no network")
 
 
-# ── the invariant: whatever admits the bytes admits their packages ──
+# ── owner Enable installs admitted declarations, never unreviewed bytes ──
 
 @pytest.mark.parametrize("reason", ADMITTING + REFUSING)
 def test_enable_installs_for_every_admitting_gate_reason_and_refuses_before_any_install_otherwise(drive, installs, monkeypatch, reason):
@@ -217,6 +220,7 @@ def test_the_startup_pass_readies_every_skill_that_should_be_on_and_leaves_the_r
     from ouroboros import skill_builtin
 
     make_skill(drive, "on")
+    request_turn_on(drive, "on")
     save_enabled(drive, "on", True, actor="owner_ui")
     reviewed(drive, "on")
     make_skill(drive, "requested")
@@ -307,7 +311,7 @@ def test_an_install_whose_packages_failed_succeeds_and_says_so_in_one_line():
 
 # ── the author finish waits behind a held lane ──
 
-def test_the_author_finish_package_step_waits_behind_a_held_lane(drive, installs, monkeypatch):
+def test_the_author_finish_readiness_step_waits_behind_a_held_lane(drive, installs, monkeypatch):
     from ouroboros.skill_lifecycle_queue import _get_lock
     from ouroboros.skill_source_install import run_in_lane
 
@@ -324,7 +328,7 @@ def test_the_author_finish_package_step_waits_behind_a_held_lane(drive, installs
 
     threading.Thread(target=release_later, daemon=True).start()
     status, _detail = run_in_lane(drive, "deps", "demo", lambda: (released.setdefault("ran", time.monotonic()), ensure_skill_dependencies(drive, skill))[1])
-    assert status == "installed" and installs == [["wheel"]]
+    assert status == "authorization_required" and installs == []
     assert released["ran"] >= released["at"]
 
 

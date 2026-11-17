@@ -270,7 +270,7 @@ def reseed_changed_builtins(drive_root: pathlib.Path, *, seed_dir: Optional[path
         result = install_builtin_skill(
             seed.name, drive_root=pathlib.Path(drive_root), seed_dir=seed_root,
             turn_on_when_ready=previous.get("turn_on_when_ready") is True,
-            installed_by=str(previous.get("installed_by") or "ouroboros"),
+            installed_by="ouroboros",  # an app reseed is not the owner's choice of this new release
             reason=f"app update {target_version} -> {seed_version}",
         )
         if result.get("ok"):

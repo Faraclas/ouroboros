@@ -1,6 +1,6 @@
 # 13. External Skills Layer
 
-Built-in and installed payloads, dependencies, staging and Telegram. Discovery, review, grants, dependency readiness and enablement stay separate facts because collapsing any two turns a UI toggle into execution authority. Granted context snapshots reuse §6; protocol: `CREATING_SKILLS.md`.
+Payloads, dependencies and Telegram: `CREATING_SKILLS.md`. Discovery/review/grants/readiness/enablement stay separate: conflation makes a toggle execution authority. Context snapshots: §6.
 
 ### Skill gates
 
@@ -30,7 +30,7 @@ The thoughts menu and completion notifier read bounded chat/progress windows fro
 
 Updates compare candidate and optional local digests. Replace keeps `.previous`; keep skips; merge uses the owner's task door. Review-basis updates retain payload and lifecycle state; `pending_update` names the candidate. Completion, owner Skip and background startup settle in the lane: accept executable bytes or restore and reconcile, recording `update_rejected` for review, preflight or landing/dependency failure. Startup leaves live reviews alone. The pre-update record restores an interrupted landing; superseded installs discard snapshots. Partial restores keep evidence and never replace payload twice. Update without review binds `owner_skip` to the exact release. Starters accept any source; absent/blank selects defaults, `[]` none. `OUROBOROS_STARTER_SKILLS_TURN_ON` defaults true (§7); built-ins precede git fetches.
 
-ClawHub lands atomically with file hashes; direct review attempts precede `skill_dependencies.ensure_skill_dependencies`, callers own deferred review/acceptance. It uses current hash-bound admission despite review errors. Accepted specs allow literal build/check argv (`marketplace/install_specs.py`); manual steps are guidance. Caches: `state/skills/<name>/dependency_cache`; results: `deps.json`; absent checks stay unknown, drift invalidates readiness. `removal_action` names removal; `provenance.py` clears only the local receipt. Runtimes: `tools/skill_exec.py`, `docs/CREATING_SKILLS.md`.
+`skill_dependencies.ensure_skill_dependencies`: byte admission never grants installation. Reuse ready packages; `deps.json.installation_authority` binds owner-enabled upkeep/retries to specs; context grants recheck scope. Otherwise owner UI/CLI, selected release or Safety covers specs. ClawHub lands atomically with hashes; direct review precedes dependencies, callers defer acceptance. `marketplace/install_specs.py` admits literal build/check argv; manual steps stay guidance. Cache: `state/skills/<name>/dependency_cache`; results: `deps.json`; absent checks unknown; drift unready. `removal_action` names removal; `provenance.py` clears only local receipt. Execution: `tools/skill_exec.py`.
 
 ### Tool result views
 

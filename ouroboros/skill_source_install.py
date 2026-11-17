@@ -341,7 +341,9 @@ def accept_and_turn_on(drive_root: pathlib.Path, name: str, *, repo_path: Option
         out["deps_status"], deps_error = ensure_skill_dependencies(drive, loaded)
         if deps_error:
             out["deps_error"] = deps_error
-            out["setup_error"] = "Its packages did not install; it remains unavailable."
+            from ouroboros.skill_dependencies import dependency_sentence
+            code = "deps_authorization" if out["deps_status"] == "authorization_required" else "deps_failed"
+            out["setup_error"] = dependency_sentence(code) + " It remains unavailable."
     if out["deps_status"] in {"installed", "not_required"}:  # only proven readiness permits turn-on
         out["turn_on"] = reconcile_turn_on_when_ready(drive, name, repo_path=repo_path,
                                                       reason="installed release accepted")["action"]
@@ -605,7 +607,7 @@ def update_installed(drive_root: pathlib.Path, name: str, *, mode: str, digest: 
         raise SkillInstallError("local_changed", f"The local copy of {name} changed; look at it again.",
                                 local_digest=current)
     if (record.get("source") or {}).get("kind") == "registry":
-        return _update_registry(drive_root, name, mode=mode, digest=digest, repo_dir=repo_dir, progress=progress,
+        return _update_registry(drive_root, name, mode=mode, digest=digest, actor=actor, repo_dir=repo_dir, progress=progress,
                                 acceptance_options={"check": check, "check_notes": check_notes,
                                                     "skip_review": skip_review, "task_id": task_id})
     plan = _candidate_plan(drive_root, name, record, rows, repo_dir)
@@ -642,7 +644,7 @@ def update_installed(drive_root: pathlib.Path, name: str, *, mode: str, digest: 
 
 def _update_registry(drive_root: pathlib.Path, name: str, *, mode: str, digest: str,
                      repo_dir: Optional[pathlib.Path], progress: Optional[Callable[[str], None]],
-                     acceptance_options: Dict[str, Any]) -> Dict[str, Any]:
+                     acceptance_options: Dict[str, Any], actor: str = "owner") -> Dict[str, Any]:
     if mode != "replace":
         raise SkillInstallError("bad_mode", "A registry skill updates by replacing it with the newest version.", 400)
     from ouroboros.config import REPO_DIR
@@ -652,7 +654,7 @@ def _update_registry(drive_root: pathlib.Path, name: str, *, mode: str, digest: 
     version = rejected.get("version") if digest and rejected.get("digest") == digest else None
     result = update_skill(pathlib.Path(drive_root), pathlib.Path(repo_dir or REPO_DIR), sanitized_name=name,
                           version=version, expected_digest=digest, progress_callback=progress,
-                          auto_review=False, acceptance_options=acceptance_options)
+                          auto_review=False, acceptance_options=acceptance_options, actor=actor)
     if not result.ok:
         raise SkillInstallError(result.error_code or "registry_update_failed", result.error or "update failed",
                                 int(result.error_status or 400),

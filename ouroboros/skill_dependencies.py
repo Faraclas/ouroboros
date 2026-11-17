@@ -180,6 +180,7 @@ _DEPENDENCY_SENTENCES = {
     "deps_stale": "Its packages are out of date.",
     "deps_declaration_desync": "Its package list does not match its files.",
     "dependencies_failed": "Its packages did not install.",
+    "deps_authorization": "Installing its packages needs your permission.",
 }
 
 
@@ -189,14 +190,20 @@ def dependency_sentence(code: str) -> str:
     return _DEPENDENCY_SENTENCES.get(str(code or ""), _DEPENDENCY_SENTENCES["deps_missing"])
 
 
-def ensure_skill_dependencies(drive_root: pathlib.Path, loaded: Any, *, progress: Any = None) -> tuple[str, str]:
+def ensure_skill_dependencies(drive_root: pathlib.Path, loaded: Any, *, progress: Any = None,
+                              ctx: Any = None, owner_requested: bool = False,
+                              owner_source: Any = None) -> tuple[str, str]:
     """Establish the declared packages of ``loaded`` whenever a runnable skill is requested.
 
-    The one dependency owner: whatever admits the exact bytes (``gate_for(content_hash)``)
-    admits the declarations they carry, so enable, review end, install acceptance, author
-    finish and the startup pass all call this and nothing else. ``(status, detail)``:
+    The one dependency owner: review admits executable bytes, not installation authority.
+    Passive callers may reuse installed packages, repair owner-enabled unchanged specs,
+    or complete an unchanged owner-selected release. Contextual grants require current
+    context again on reinstall (no new owner question when still covered). Agent requests
+    reach Safety with their actual declarations and owner evidence; UI/CLI enable is a
+    direct owner request. All callers share this seam. ``(status, detail)``:
     ``not_required`` (no auto specs), ``installed`` (already recorded for these specs, or
     installed now), ``not_admitted`` (the gate does not admit the bytes: nothing written),
+    ``authorization_required`` (no install; ask or supply existing owner authority),
     ``failed`` (the installer's text in ``detail``; ``deps.json`` keeps it, the verdict is
     untouched, the next call retries). Idempotent; never takes the lifecycle lane.
     """
@@ -214,13 +221,47 @@ def ensure_skill_dependencies(drive_root: pathlib.Path, loaded: Any, *, progress
                 from ouroboros.marketplace.isolated_deps import DEPS_STATE_FILENAME
                 from ouroboros.skill_loader import skill_state_dir
                 from ouroboros.utils import atomic_write_json
+                state = {**state, "installation_authority":
+                         read_deps_state(drive_root, loaded.name).get("installation_authority") or {}}
                 atomic_write_json(skill_state_dir(drive_root, loaded.name) / DEPS_STATE_FILENAME, state, trailing_newline=True)
             return "installed", ""
         if not loaded.review.gate_for(loaded.content_hash)["executable_review"]:
             return "not_admitted", ""
+        from ouroboros.skill_install_record import read_install_record
+
+        previous = read_deps_state(drive_root, loaded.name)
+        authority = previous.get("installation_authority") or {}
+        upkeep = (authority.get("basis") in {"owner_request", "owner_release"}
+                  and previous.get("specs_hash") == install_specs_hash(auto_specs))
+        record = read_install_record(drive_root, loaded.name) or {}
+        owner_release = (record.get("installed_by") == "owner" and not record.get("converted_from")
+                         and bool((record.get("release") or {}).get("digest"))
+                         and (record.get("release") or {})["digest"] == loaded.content_hash)
+        if owner_requested:
+            authority = {"basis": "owner_request"}
+        elif owner_release:
+            authority = {"basis": "owner_release", "digest": loaded.content_hash}
+        detail = "Installation needs covering owner authorization; recover any existing grant before asking."
+        if ctx is None and not (owner_requested or upkeep or owner_release):
+            return "authorization_required", detail
+        if ctx is not None and not owner_requested:
+            # Current owner limits outrank historical install facts, even for unchanged specs.
+            from ouroboros.safety import check_safety, get_safety_mode, work_kind
+
+            allowed, message = check_safety("install_skill_dependencies", {
+                "skill": loaded.name, "install_specs": auto_specs,
+                "target": str(loaded.skill_dir),
+            }, ctx=ctx, resolved_binding={"owner_source": owner_source or {}})
+            if not allowed:
+                return "authorization_required", message or detail
+            # Off suppresses assessment; never turn that skip into reusable authority.
+            authority = ({"basis": "safety_decision", "task_id": str(getattr(ctx, "task_id", "")),
+                          "owner_source": owner_source or {}, "advised": bool(message)}
+                         if get_safety_mode(work_kind(getattr(ctx, "task_metadata", None))) != "off" else {})
         if progress is not None:
             progress("Installing packages…")
-        install_isolated_dependencies(drive_root, loaded.name, loaded.skill_dir, auto_specs)
+        install_isolated_dependencies(drive_root, loaded.name, loaded.skill_dir, auto_specs,
+                                      installation_authority=authority)
         return "installed", ""
     except Exception as exc:
         log.debug("skill dependency step failed for %s", getattr(loaded, "name", "?"), exc_info=True)

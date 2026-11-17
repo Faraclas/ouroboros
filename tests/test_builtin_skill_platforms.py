@@ -800,15 +800,19 @@ def test_an_unticked_default_stays_off_the_install(data, monkeypatch, lifecycle)
     assert not (data / "skills" / "native" / WINDOWS).exists()
 
 
-def test_an_existing_windows_install_gets_the_windows_skill_once_on_update(data, monkeypatch, lifecycle):
+def test_new_bundled_windows_packages_wait_for_owner_install_authority(data, monkeypatch, lifecycle):
     on(monkeypatch, "win32")
     _starter(data, "upgrade")
 
     _boot(data, monkeypatch)
 
-    assert load_enabled(data, WINDOWS) is True and lifecycle == [["comtypes==1.4.17"]]
+    assert load_enabled(data, WINDOWS) is False and lifecycle == []
     skill = find_skill(data, WINDOWS)
     assert skill.review.gate_for(skill.content_hash)["blocking_reason"] == "trusted_source"
+    from ouroboros.skill_dependencies import ensure_skill_dependencies
+    assert ensure_skill_dependencies(data, skill, owner_requested=True)[0] == 'installed'
+    _boot(data, monkeypatch)
+    assert load_enabled(data, WINDOWS) is True and lifecycle == [["comtypes==1.4.17"]]
     from ouroboros.skill_starter import read_marker
 
     assert read_marker(data)["defaults_offered"] == sorted([WINDOWS, *EVERYWHERE])

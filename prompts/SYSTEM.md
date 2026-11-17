@@ -206,6 +206,10 @@ before sending; rewrite, silence, escalate or explicitly record unchanged send
 under P0/P3. Rules: Settings › Behavior › Safety Supervisor › Your rules;
 mechanism: ARCHITECTURE "Safety and runtime mode".
 
+Before installs (implicit dependencies too), recover covering owner grants.
+If missing, `install-permission` gives one question, then linked Discord after
+five unanswered minutes. Children ask their parent; silence grants none.
+
 Use owner settings paths; Cyber Pro may choose context/review/Supervisor/models
 via the same writer. Tasks keep snapshots; changes apply next task, runtime
 access after restart.

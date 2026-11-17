@@ -876,8 +876,10 @@ def _escalate(
             ctx._owner_wait_max_minutes = int(bound)
         limit = (f"the task waits up to {int(bound)} minutes after this tool batch, then "
                  "continues with a notice" if bound else "the task waits after this tool batch")
+        deadline_fact = (f" Absolute wait deadline: {ctx._owner_wait_deadline_at}." if bound else "")
         return (f"OK: quiz {quiz_id} {delivered}; {limit}, "
-                "preserving its live browser and releasing active execution capacity. "
+                "preserving its live browser and releasing active execution capacity."
+                + deadline_fact + " "
                 "Any incoming mail or an owner hurry request ends the wait; only an owner answer "
                 "answers the question. Other mail leaves the card open. Stop and task deadlines still apply.")
     return (f"OK: quiz {quiz_id} {delivered}; continuing under assumption: "

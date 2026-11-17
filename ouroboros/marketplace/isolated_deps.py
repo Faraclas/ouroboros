@@ -382,6 +382,7 @@ def install_isolated_dependencies(
     specs: List[Dict[str, Any]],
     *,
     timeout_sec: int = _DEFAULT_TIMEOUT_SEC,
+    installation_authority: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Install declared specs through existing process and dependency owners.
 
@@ -460,6 +461,7 @@ def install_isolated_dependencies(
         "installed": installed, "resolved_packages": resolved, "logs": logs[-10:],
         "executable_ready": bool(checked) and all(checked) and not failure if checked else None,
         "status": "failed" if failure else "installed", "error": failure.get("error", ""),
+        "installation_authority": installation_authority or {},
     }
     atomic_write_json(env_root / FINGERPRINT_FILENAME, fingerprint, trailing_newline=True)
     atomic_write_json(skill_state_dir(drive_root, skill_name) / DEPS_STATE_FILENAME, fingerprint, trailing_newline=True)

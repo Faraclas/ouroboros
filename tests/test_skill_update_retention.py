@@ -448,8 +448,9 @@ def test_startup_returns_before_slow_update_settlement_finishes(tmp_path, monkey
     assert not caller.is_alive() and not errors
 
 
+@pytest.mark.parametrize("actor", ["owner", "ouroboros"])
 @pytest.mark.parametrize("trust,auto_review", [("review", False), ("trusted", False), ("review", True)])
-def test_registry_update_uses_new_trust_and_retains_review_rollback(tmp_path, monkeypatch, trust, auto_review):
+def test_registry_update_uses_new_trust_and_retains_review_rollback(tmp_path, monkeypatch, trust, auto_review, actor):
     from ouroboros.marketplace.clawhub import ClawHubSkillSummary
     from tests.test_marketplace_api import _patch_clawhub_install_pipeline
 
@@ -488,8 +489,9 @@ def test_registry_update_uses_new_trust_and_retains_review_rollback(tmp_path, mo
         assert find_skill(drive, "demo").content_hash == old.content_hash
         assert read_install_record(drive, "demo")["update_rejected"]["reason"] == "review_blockers"
         return
-    result = installer.update_installed(drive, "demo", mode="replace", local_digest=old.content_hash)
+    result = installer.update_installed(drive, "demo", mode="replace", local_digest=old.content_hash, actor=actor)
     record = read_install_record(drive, "demo")
+    assert record['installed_by'] == actor
     assert result["basis"] == record["basis"] == trust
     if trust == "trusted":
         assert result["acceptance"]["accepted"] and not result.get("needs_review")

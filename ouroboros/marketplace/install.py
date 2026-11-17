@@ -820,6 +820,7 @@ def update_skill(
     auto_review: bool = True,
     acceptance_options: Optional[Dict[str, Any]] = None,
     expected_digest: str = "",
+    actor: str = "owner",
 ) -> InstallResult:
     """Reinstall by resolving the original slug from persisted provenance.
 
@@ -865,8 +866,9 @@ def update_skill(
                              error_code="restore_failed", error_status=409)
 
     previous = read_install_record(drive_root, sanitized_name) or {}
-    carried = {key: previous[key] for key in ("source", "official", "installed_by", "turn_on_when_ready",
+    carried = {key: previous[key] for key in ("source", "official", "turn_on_when_ready",
                                                "reason", "task_id") if key in previous}
+    carried["installed_by"] = "ouroboros" if actor == "ouroboros" else "owner"
     if carried.get("source"):
         from ouroboros.skill_sources import load_sources
 
