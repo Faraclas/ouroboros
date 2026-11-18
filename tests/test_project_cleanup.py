@@ -305,7 +305,11 @@ def test_task_paths_are_not_implicitly_disposable(setup, tmp_path):
     for path in paths.values(): path.mkdir()
     write_task_result(root, 'task', 'completed', project_id='alpha', **{key: str(path) for key, path in paths.items()})
     targets = plan()['targets']
-    assert len(targets) == 2 and all(t['protection'] and not t['default_selected'] for t in targets)
+    assert len(targets) == 2 and all(not t['default_selected'] for t in targets)
+    workspace = next(t for t in targets if t['path'] == str(paths['workspace_root']))
+    drive = next(t for t in targets if t['path'] == str(paths['child_drive_root']))
+    assert not workspace['protection'] and workspace['warning']
+    assert drive['protection'] == 'runtime_memory_or_recorded_artifact'
 
 
 def test_planning_does_not_create_or_modify_persistent_data(setup):
