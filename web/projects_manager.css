@@ -98,4 +98,4 @@
 .pm-cleanup-check { display:flex; align-items:flex-start; gap:10px; line-height:var(--line-body); cursor:pointer; }
 .pm-cleanup-check input { flex:0 0 auto; margin:4px 0 0; accent-color:var(--accent); }
 .pm-cleanup-targets,.pm-cleanup-targets section { min-width:0; overflow-wrap:anywhere; }
-.pm-cleanup-warning { color:var(--status-warning-fg,var(--text-primary)); line-height:var(--line-body); margin:8px 0; overflow-wrap:anywhere; }
+.pm-cleanup-warning { color:var(--text-primary); line-height:var(--line-body); margin:8px 0; overflow-wrap:anywhere; }

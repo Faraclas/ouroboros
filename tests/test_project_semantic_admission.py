@@ -680,6 +680,9 @@ def test_named_project_consumers_keep_healthy_neighbor_available(room, tmp_path,
         app = SimpleNamespace(state=SimpleNamespace(drive_root=room.root, repo_dir=tmp_path / "repo"))
         path_params = {"project_id": "target"}
 
+        async def body(self):
+            return b""  # ordinary Close keeps all files; it carries no cleanup request
+
         async def json(self):
             return {"id": "fresh-room", "name": "Updated"}
 

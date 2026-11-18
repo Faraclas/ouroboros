@@ -1353,14 +1353,7 @@ def run_project_deletion(
     q = _queue_module()
     first_pass = True
     try:
-        while True:
-            live_ids = _live_project_task_ids(drive_root, project_id)
-            if not live_ids:
-                complete_project_deletion(drive_root, project_id)
-                from ouroboros.project_cleanup_context import run_pending_cleanup
-                run_pending_cleanup(drive_root, project_id)
-                _broadcast_projects_changed(project_id, chat_id)
-                return
+        while live_ids := _live_project_task_ids(drive_root, project_id):
             errors: list[str] = []
             nonsettled_before = {
                 tid for tid in live_ids if not _settled_status(drive_root, tid)
@@ -1419,11 +1412,7 @@ def run_project_deletion(
             while True:
                 remaining = _live_project_task_ids(drive_root, project_id)
                 if not remaining:
-                    complete_project_deletion(drive_root, project_id)
-                    from ouroboros.project_cleanup_context import run_pending_cleanup
-                    run_pending_cleanup(drive_root, project_id)
-                    _broadcast_projects_changed(project_id, chat_id)
-                    return
+                    break
                 stuck = {
                     tid for tid in remaining if not _settled_status(drive_root, tid)
                 }
@@ -1445,6 +1434,12 @@ def run_project_deletion(
                     )
                 wind_down_rounds += 1
                 _time.sleep(_WIND_DOWN_SLEEP_SEC)
+            if not remaining:
+                break
+        complete_project_deletion(drive_root, project_id)
+        from ouroboros.project_cleanup_context import run_pending_cleanup
+        run_pending_cleanup(drive_root, project_id)
+        _broadcast_projects_changed(project_id, chat_id)
     except Exception as exc:
         q.log.exception("Project deletion failed for %s", project_id)
         fail_project_deletion(drive_root, project_id, f"{type(exc).__name__}: {exc}")

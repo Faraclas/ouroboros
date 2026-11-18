@@ -144,6 +144,25 @@ def save_pending(root, system, **extra):
             data = r._load(root, strict=True); data['projects'][0].update(extra); r._save(root, data)
 
 
+@pytest.mark.parametrize('present', [True, False])
+def test_pending_cleanup_without_saved_request_is_noop(setup, monkeypatch, present):
+    root, *_ = setup
+    def unexpected(*args, **kwargs):
+        pytest.fail('cleanup without a saved request must not execute or save')
+    monkeypatch.setattr(cleanup, 'cleanup_execute', unexpected)
+    monkeypatch.setattr(r, '_save', unexpected)
+    if not present:
+        monkeypatch.setattr(r, '_load', lambda *args, **kwargs: {'projects': []})
+    custody.run_pending_cleanup(root, 'alpha')
+
+
+@pytest.mark.parametrize('gone,birth,expected', [(True, 'same', False), (False, 'same', True), (False, 'other', False), (False, '', True)])
+def test_cleanup_lease_uses_positive_platform_absence(monkeypatch, gone, birth, expected):
+    monkeypatch.setattr(custody, 'pid_provably_gone', lambda pid: gone)
+    monkeypatch.setattr(custody, 'process_kernel_birth', lambda pid: birth)
+    assert custody.lease_live({'pid': 42, 'birth': 'same'}) is expected
+
+
 @pytest.mark.parametrize('raises', [True, False])
 def test_pending_unexpected_exception_settled_and_broadcast(setup, monkeypatch, raises):
     root, system, *_ = setup; save_pending(root, system)

@@ -9,6 +9,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from ouroboros import projects_registry as registry, task_store
 from ouroboros.process_identity import process_kernel_birth
+from ouroboros.platform_layer import pid_provably_gone
 
 NESTED_SCAN_DEPTH = 8
 NESTED_SCAN_ENTRIES = 4096
@@ -20,10 +21,10 @@ def lease_live(lease):
     if not isinstance(lease, dict) or not lease.get('pid'):
         return False
     try:
-        pid = int(lease['pid']); os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except (ValueError, OSError):
+        pid = int(lease['pid'])
+        if pid_provably_gone(pid):
+            return False
+    except (TypeError, ValueError, OSError):
         return True  # unknown ownership is not proven dead
     birth = process_kernel_birth(pid)
     return not birth or not lease.get('birth') or birth == lease['birth']
@@ -219,7 +220,9 @@ def run_pending_cleanup(root, project_id):
     from ouroboros.utils import utc_now_iso
     with registry._file_write_lock(registry._registry_path(root)):
         data = registry._load(root, strict=True)
-        project = next(p for p in data['projects'] if p['id'] == project_id)
+        project = next((p for p in data['projects'] if p['id'] == project_id), None)
+        if project is None:
+            return  # an absent registry owner has no saved cleanup request
         request = project.get('cleanup_request')
         if not request or request.get('status') not in {'pending', 'deferred'}:
             return
@@ -239,7 +242,9 @@ def run_pending_cleanup(root, project_id):
         status = 'failed'
     with registry._file_write_lock(registry._registry_path(root)):
         data = registry._load(root, strict=True)
-        project = next(p for p in data['projects'] if p['id'] == project_id)
+        project = next((p for p in data['projects'] if p['id'] == project_id), None)
+        if project is None:
+            return  # the request's registry owner disappeared while the adapter ran
         if project.get('cleanup_request') == request:
             project['cleanup_request'] = {**request, 'status': status, 'finished_at': utc_now_iso(), 'result': result}
             registry._save(root, data)
