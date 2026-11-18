@@ -194,6 +194,9 @@ def _copilot_chat_to_responses_payload(payload: Dict[str, Any]) -> Dict[str, Any
     if mapped_eff:
         out["reasoning"] = {"effort": mapped_eff}
 
+    if payload.get("stream"):
+        out["stream"] = True
+
     if payload.get("temperature") is not None:
         out["temperature"] = payload["temperature"]
 
@@ -388,13 +391,14 @@ def _prepare_request(request: Any, httpx_mod: Any):
     body = json.dumps(_copilot_chat_to_responses_payload(payload)).encode("utf-8")
     path = request.url.path[:-len("/chat/completions")] + "/responses"
     headers = dict(request.headers)
-    headers.update({"content-length": str(len(body)), "accept": "application/json"})
+    headers.update({"content-length": str(len(body)),
+                    "accept": "text/event-stream" if payload.get("stream") else "application/json"})
     return (httpx_mod.Request("POST", request.url.copy_with(path=path), headers=headers,
                               content=body, extensions=dict(request.extensions)),
             str(payload.get("model") or ""), bool(payload.get("stream")))
 
 
-def _convert_response(resp: Any, raw: bytes, model: str, stream: bool, hm: Any):
+def _convert_response(resp: Any, raw: bytes, model: str, stream: bool, hm: Any, *, observed_output=False):
     # The original body has already been decoded. Keep native metadata but not
     # compression/framing headers for bytes that no longer have that encoding.
     headers = [(k, v) for k, v in resp.headers.multi_items()
@@ -406,6 +410,9 @@ def _convert_response(resp: Any, raw: bytes, model: str, stream: bool, hm: Any):
         except (ValueError, UnicodeError) as error:
             raise CopilotRejectedResponse(raw.decode("utf-8", "replace"), "Copilot Responses body is not JSON") from error
         chat = _copilot_responses_to_chat_completion(native, model)
+        message = chat["choices"][0]["message"]
+        if observed_output and native.get("status") == "completed" and not (message.get("content") or message.get("tool_calls")):
+            raise CopilotRejectedResponse(native, "Copilot Responses empty terminal contradicts observed output")
         from ouroboros.copilot_native_custody import observe_native_output
         observe_native_output(native, chat, resp.request)
         raw = _copilot_chat_completion_to_sse(chat) if stream else json.dumps(chat).encode("utf-8")
@@ -464,7 +471,13 @@ def attach_copilot_client(client: Any, *, httpx_mod: Any = None, async_client: b
             if prepared is None:
                 return await send(request, *args, **kwargs)
             native_request, model, stream = prepared
+            if stream:
+                kwargs["stream"] = True  # Do not let HTTPX buffer native SSE before the codec.
             resp = await send(native_request, *args, **kwargs)
+            if stream and resp.status_code == 200 and resp.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "text/event-stream":
+                from ouroboros.copilot_responses_stream import read_stream_async
+                raw, observed = await read_stream_async(resp)
+                return _convert_response(resp, raw, model, stream, httpx_mod, observed_output=observed)
             try:
                 raw = await resp.aread()
             except BaseException:
@@ -488,7 +501,13 @@ def attach_copilot_client(client: Any, *, httpx_mod: Any = None, async_client: b
             if prepared is None:
                 return send(request, *args, **kwargs)
             native_request, model, stream = prepared
+            if stream:
+                kwargs["stream"] = True
             resp = send(native_request, *args, **kwargs)
+            if stream and resp.status_code == 200 and resp.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "text/event-stream":
+                from ouroboros.copilot_responses_stream import read_stream
+                raw, observed = read_stream(resp)
+                return _convert_response(resp, raw, model, stream, httpx_mod, observed_output=observed)
             try:
                 raw = resp.read()
             except BaseException:
