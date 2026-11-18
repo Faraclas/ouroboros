@@ -496,12 +496,15 @@ def _preview_identity(path: str) -> dict:
 
 
 def _preview_overlap(left: dict, right: dict) -> str:
-    a, b = pathlib.Path(left["resolved_path"]), pathlib.Path(right["resolved_path"])
+    a = pathlib.Path(os.path.normcase(left["resolved_path"])).parts
+    b = pathlib.Path(os.path.normcase(right["resolved_path"])).parts
     if a == b or (left["inode"] is not None and left["inode"] == right["inode"]):
         return "same"
-    if a in b.parents:
+    # is_relative_to also walks .parents on Python 3.14; compare the components
+    # directly, preserving platform case/anchor semantics without ancestor objects.
+    if b[:len(a)] == a:
         return "contains"
-    if b in a.parents:
+    if a[:len(b)] == b:
         return "inside"
     return ""
 

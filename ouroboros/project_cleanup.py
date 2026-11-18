@@ -82,12 +82,24 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
         raise ProjectManagementError('managed_project', 'Managed habitat Projects are excluded from generic cleanup', 403)
     if not system_repo_dir:
         raise ProjectManagementError('cleanup_context_missing', 'The system repository root is required')
+    # Resolution is part of the physical access check; denied targets receive
+    # spelling/alias facts only, never stat, Git or nested-content inspection.
+    identities, denials = {}, {}
+    def identity(raw):
+        raw = str(raw)
+        if raw not in identities:
+            denied = authorize(raw) if authorize else ''
+            denials[raw] = denied
+            identities[raw] = ({'resolved_path': str(pathlib.Path(raw).expanduser().resolve(strict=False)),
+                                'identity_status': 'access_denied', 'inode': None}
+                               if denied else _preview_identity(raw))
+        return identities[raw]
     protected = []
     facts_context = custody.context(drive_root, project_id)
     others, closed_others = [], []
     for row in projects:
         for item in _paths(row):
-            observed = _preview_identity(item['path'])
+            observed = identity(item['path'])
             if row['id'] in MANAGED_PROJECT_IDS:
                 protected.append(observed)
             if row['id'] != project_id:
@@ -98,22 +110,29 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
         path = pathlib.Path(entry['path']).expanduser()
         if not path.is_absolute():
             raise ProjectManagementError('invalid_cleanup', 'Recorded cleanup paths must be absolute')
-        if authorize:
-            denied = authorize(str(path))
-            if denied:
-                raise ProjectManagementError('cleanup_access_blocked', denied, 403)
-        observed = _preview_identity(str(path))
-        try:
-            info = path.lstat()
-            observed['operand_inode'] = (info.st_dev, info.st_ino)
-        except FileNotFoundError:
-            observed['operand_inode'] = None
+        observed = dict(identity(str(path)))
+        denied = denials[str(path)]
+        observed['operand_inode'] = None
+        if not denied:
+            try:
+                info = path.lstat()
+                observed['operand_inode'] = (info.st_dev, info.st_ino)
+            except FileNotFoundError:
+                pass
         # Never turn a symlink target into the deletion operand. Its resolved
         # identity still participates in all protection/alias comparisons.
         operand = str(path.parent.resolve() / path.name)
-        key = operand if path.is_symlink() else observed['resolved_path']
-        group = grouped.setdefault(key, {'path': operand, 'identity': observed, 'sources': []})
+        key = operand if denied or path.is_symlink() else observed['resolved_path']
+        group = grouped.setdefault(key, {'path': operand, 'identity': observed, 'sources': [], 'access_denial': denied})
         group['sources'].append(entry)
+        if denied:
+            # Parent-directory aliases may share an operand. No entry order may
+            # erase a denied reference when their sources are coalesced.
+            group['access_denial'] = denied
+            group['identity'] = observed
+    fixed_identities = [(identity(str(p)), inside) for p, inside in custody.fixed_roots(drive_root, system_repo_dir)]
+    copy_identities = [(copy, identity(copy['path'])) for copy in facts_context['copies']]
+    workspace_identities = [identity(p) for p in facts_context['workspaces']]
     targets = []
     for item in grouped.values():
         path, observed, sources = pathlib.Path(item['path']), item['identity'], item['sources']
@@ -125,8 +144,8 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
         output = 'recorded_output' in origins
         kind = 'recorded_output' if output else 'project_created' if created else 'generated_temp' if temp else 'attached_external'
         protection = 'runtime_or_habitat_overlap' if any(_preview_overlap(observed, p) for p in protected) else ''
-        for fixed, inside in custody.fixed_roots(drive_root, system_repo_dir):
-            relation = _preview_overlap(observed, _preview_identity(str(fixed)))
+        for fixed, inside in fixed_identities:
+            relation = _preview_overlap(observed, fixed)
             if relation in ({'same', 'contains', 'inside'} if inside else {'same', 'contains'}):
                 protection = 'runtime_or_habitat_overlap'
         if sources_set & {'task.child_drive_root', 'task.headless_child_drive_root', 'task.artifacts'}:
@@ -134,15 +153,16 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
         if 'task.workspace_root' in sources_set and not created and not temp:
             protection = 'workspace_association_not_disposable'
         copy_record = None
-        for copy in facts_context['copies']:
-            relation = _preview_overlap(observed, _preview_identity(copy['path']))
-            owner = copy.get('task_id')
-            owned = owner in facts_context['task_ids'] or owner == f'project_{project_id}'
-            if relation == 'same' and owned:
-                copy_record = copy
-            elif relation:
-                protection = 'another_copy_or_copy_ancestor'
-        if facts_context['processes'] or any(_preview_overlap(observed, _preview_identity(p)) for p in facts_context['workspaces']):
+        if not protection:
+            for copy, copy_identity in copy_identities:
+                relation = _preview_overlap(observed, copy_identity)
+                owner = copy.get('task_id')
+                owned = owner in facts_context['task_ids'] or owner == f'project_{project_id}'
+                if relation == 'same' and owned:
+                    copy_record = copy
+                elif relation:
+                    protection = 'another_copy_or_copy_ancestor'
+        if facts_context['processes'] or any(_preview_overlap(observed, p) for p in workspace_identities):
             protection = 'live_task_or_process_uses_target'
         if not protection and any(_preview_overlap(observed, p) for p in others):
             protection = 'shared_with_another_project'
@@ -151,14 +171,24 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
         cached = None if risk_cache is None else risk_cache.get(item['path'], {
             'status': 'unavailable', 'gaps': ['New target requires inspection outside the registry lock'],
             'facts': {}, 'cleanup_retain_reason': 'new_target_requires_inspection'})
-        risk, warning = _risk(path, observed, cached)
+        if item['access_denial']:
+            protection = 'caller_access_denied'
+        # Loss inspection cannot make an already-protected target removable.
+        # Report it as uninspected, and inspect afresh if that protection ends.
+        if protection:
+            risk = {'status': 'not_inspected', 'facts': {},
+                    'gaps': ['Loss inspection not performed: ' + protection],
+                    'cleanup_retain_reason': protection}
+            warning = None
+        else:
+            risk, warning = _risk(path, observed, cached)
         if not warning and not (created or temp) and risk['status'] not in {'missing'}:
             warning = {'message': 'This existing or unknown-origin target may contain unique local material. Association is not disposability. Explicitly confirm its loss.',
                        'token': _hash([str(path), observed, risk]), 'unique_work': False, 'unknown': True}
         if any(_preview_overlap(observed, p) for p in closed_others):
             warning = {'message': 'Another closed Project still references this path. Explicitly confirm removing its local material.',
                        'token': _hash([str(path), observed, risk, 'closed_shared']), 'unique_work': True, 'unknown': True}
-        exists = path.exists() or path.is_symlink()
+        exists = None if item['access_denial'] else path.exists() or path.is_symlink()
         reconstruction = None
         retain_reason = protection or risk.get('cleanup_retain_reason', '')
         facts = risk.get('facts', {})
@@ -182,13 +212,14 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
         targets.append({'id': target_id, 'path': item['path'], 'kind': kind,
                         'origins': sorted(origins), 'sources': sources, 'identity': observed,
                         'exists': exists, 'protection': protection, 'retain_reason': retain_reason,
+                        'access_denial': item['access_denial'],
                         'risk': risk, 'warning': warning, 'reconstruction': reconstruction, 'copy_record': copy_record,
                         'selection_token': _hash([target_id, observed, risk]), 'operand_inode': observed['operand_inode'],
                         'default_selected': bool((created or temp) and not output and not retain_reason and
                                                  (mode == 'complete' or (reconstruction and not warning))),
                         'action': 'retain' if retain_reason else 'remove_if_selected'})
     return {'project_id': project_id, 'mode': mode, 'lifecycle': project['lifecycle'],
-            'targets': targets, 'gaps': generated['gaps'],
+            'targets': targets, 'gaps': [*generated['gaps'], *(['Some recorded targets are retained without loss inspection because caller access is denied.'] if any(t['access_denial'] for t in targets) else [])],
             'coverage': 'Recorded targets only. No container inventory or backup verification. Remote refs are local knowledge, not a live push check.'}
 
 

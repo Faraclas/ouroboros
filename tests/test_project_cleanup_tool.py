@@ -26,7 +26,9 @@ def test_child_and_physical_denial_do_not_inspect_or_remove(world, monkeypatch):
     from ouroboros.tools import project_cleanup as tool
     _, repos, ctx, _ = world
     monkeypatch.setattr(tool, '_access', lambda *_: 'physical denial')
-    assert 'physical denial' in _project_cleanup(ctx, 'room')
+    denied = json.loads(_project_cleanup(ctx, 'room'))
+    assert denied['targets'] and all(t['access_denial'] == 'physical denial' for t in denied['targets'])
+    assert all(t['retain_reason'] == 'caller_access_denied' and t['exists'] is None for t in denied['targets'])
     ctx.is_direct_chat = False; ctx.task_metadata = {'parent_task_id': 'parent', 'delegation_role': 'subagent'}
     ctx.task_constraint = TaskConstraint(mode='acting_subagent', surface='self_worktree', write_root=str(repos[0]))
     assert 'ordinary root' in _project_cleanup(ctx, 'room')

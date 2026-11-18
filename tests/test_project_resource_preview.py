@@ -110,3 +110,13 @@ def test_invalid_neighbour_default_is_gap_not_whole_preview_failure(tmp_path):
     ], {'resources': resources, 'working_dir': ''}, tmp_path / 'data', None)
     assert result['gaps'] and any('starting folder' in gap for gap in result['gaps'])
     assert result['targets'][0]['references'][0]['project_id'] == 'bad'
+
+
+def test_component_prefix_overlap_matches_parent_semantics(tmp_path):
+    paths = [tmp_path, tmp_path / 'a', tmp_path / 'a' / 'b', tmp_path / 'ab',
+             tmp_path / 'é', tmp_path / 'é' / 'leaf', tmp_path / 'a' / '..']
+    for a in paths:
+        for b in paths:
+            expected = 'same' if a == b else 'contains' if a in b.parents else 'inside' if b in a.parents else ''
+            assert m._preview_overlap({'resolved_path': str(a), 'inode': None},
+                                      {'resolved_path': str(b), 'inode': None}) == expected
