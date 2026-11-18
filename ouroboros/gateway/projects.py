@@ -530,6 +530,9 @@ async def api_projects_create(request: Request) -> JSONResponse:
             origin="owner_ui",
             parent_id=body.get("parent_id", ""),
         )
+        if git_url and working_dir:
+            from ouroboros.project_footprint import record_clone_creation
+            await asyncio.to_thread(record_clone_creation, drive_root, entry['id'], working_dir)
         if init_git_record:
             from ouroboros.project_footprint import store_observation
             await asyncio.to_thread(store_observation, drive_root, entry['id'], init_git_record)
@@ -681,7 +684,8 @@ async def api_project_delete(request: Request) -> JSONResponse:
 
     The response acknowledges that deletion has STARTED; cancellation runs off
     the event loop because cancelling a running task may join/respawn a worker.
-    Chat, folder, history, memory, id, and immutable bindings are never removed.
+    Chat, history, memory, id and bindings stay. Optional cleanup is a separate
+    durable request executed by that worker only AFTER the tombstone fence.
     """
     try:
         from ouroboros.projects_registry import (
@@ -701,15 +705,30 @@ async def api_project_delete(request: Request) -> JSONResponse:
         # lookup accepts a case-variant for compatibility, but cancellation must
         # not compare that raw route token against canonical task.project_id.
         project_id = str(entry.get("id") or project_id)
-        fenced = await run_sync_to_completion(begin_project_deletion, drive_root, project_id)
+        from ouroboros.project_cleanup_context import MANAGED_PROJECT_IDS
+        if project_id in MANAGED_PROJECT_IDS:
+            return JSONResponse({'error': 'Managed habitat Projects are excluded from generic Close and cleanup', 'reason_code': 'managed_project'}, status_code=403)
+        from ouroboros.gateway.client_contracts import ProjectCloseRequest
+        from ouroboros.gateway.schema import validate_ingress
+        body = await request.json() if await request.body() else {}
+        errors = validate_ingress(body, ProjectCloseRequest)
+        if errors:
+            return JSONResponse({'error': errors[0], 'reason_code': 'invalid_cleanup'}, status_code=400)
+        cleanup_request = body.get('cleanup')
+        if cleanup_request is not None:
+            cleanup_request = {**cleanup_request, 'system_repo_dir': str(getattr(request.app.state, 'repo_dir', ''))}
+        fenced = await run_sync_to_completion(begin_project_deletion, drive_root, project_id, cleanup_request=cleanup_request)
         if fenced is None:
             return JSONResponse({"error": f"unknown project: {project_id}"}, status_code=404)
         chat_id = fenced.get("chat_id")
         _broadcast_projects_changed(project_id, chat_id)
         if str(fenced.get("lifecycle") or "") != PROJECT_TOMBSTONED:
             start_project_deletion(drive_root, project_id, chat_id)
-        return JSONResponse({"ok": True, "project_id": project_id, "folder_untouched": True})
+        return JSONResponse({"ok": True, "project_id": project_id, "folder_untouched": cleanup_request is None})
     except Exception as exc:
+        from ouroboros.project_management import ProjectManagementError
+        if isinstance(exc, ProjectManagementError):
+            return JSONResponse({'error': str(exc), 'reason_code': exc.reason, 'folder_untouched': True, 'cleanup_accepted': False}, status_code=exc.status_code)
         return json_exception(exc)
 
 
@@ -878,6 +897,7 @@ async def api_project_from_task(request: Request) -> JSONResponse:
 
 __all__ = [
     "api_projects_catalog", "api_project_detail", "api_project_reopen",
+    "api_project_cleanup_plan", "api_project_cleanup",
     "api_project_resource_add", "api_project_resource_detach",
     "api_fs_dirs",
     "api_project_delete",
@@ -886,3 +906,49 @@ __all__ = [
     "api_projects_create",
     "api_projects_list",
 ]
+
+
+async def api_project_cleanup_plan(request: Request) -> JSONResponse:
+    """Recorded-target inspection, not authorization or a stable filesystem lease."""
+    from ouroboros.project_cleanup import cleanup_plan
+    from ouroboros.project_management import ProjectManagementError
+    from ouroboros.gateway._helpers import run_sync_to_completion
+    try:
+        result = await run_sync_to_completion(
+            cleanup_plan, request_drive_root(request), str(request.path_params['project_id']),
+            request.query_params.get('mode', 'complete'), getattr(request.app.state, 'repo_dir', None))
+        return JSONResponse(result)
+    except ProjectManagementError as exc:
+        return JSONResponse({'error': str(exc), 'reason_code': exc.reason}, status_code=exc.status_code)
+    except Exception as exc:
+        return json_exception(exc)
+
+
+async def api_project_cleanup(request: Request) -> JSONResponse:
+    from ouroboros.project_cleanup import cleanup_execute
+    from ouroboros.project_management import ProjectManagementError
+    from ouroboros.gateway.client_contracts import ProjectCleanupRequest, ProjectCleanupControlRequest
+    from ouroboros.gateway.schema import validate_ingress
+    from ouroboros.gateway._helpers import run_sync_to_completion
+    try:
+        body = await request.json()
+        errors = validate_ingress(body, ProjectCleanupControlRequest)
+        if errors or ('action' in body and body != {'action': 'clear_pending'}):
+            return JSONResponse({'error': errors[0] if errors else 'clear_pending must be the only cleanup action', 'reason_code': 'invalid_cleanup'}, status_code=400)
+        if body == {'action': 'clear_pending'}:
+            from ouroboros.project_cleanup_context import clear_pending_cleanup
+            return JSONResponse(await run_sync_to_completion(clear_pending_cleanup, request_drive_root(request), str(request.path_params['project_id'])))
+        errors = validate_ingress(body, ProjectCleanupRequest)
+        if errors:
+            return JSONResponse({'error': errors[0], 'reason_code': 'invalid_cleanup'}, status_code=400)
+        result = await run_sync_to_completion(
+            cleanup_execute, request_drive_root(request), str(request.path_params['project_id']),
+            body['mode'], body['selections'], body['confirmations'], 'human',
+            getattr(request.app.state, 'repo_dir', None))
+        return JSONResponse(result)
+    except ProjectManagementError as exc:
+        return JSONResponse({'error': str(exc), 'reason_code': exc.reason}, status_code=exc.status_code)
+    except ValueError:
+        return JSONResponse({'error': 'body must be a JSON object', 'reason_code': 'invalid_cleanup'}, status_code=400)
+    except Exception as exc:
+        return json_exception(exc)

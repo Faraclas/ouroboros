@@ -223,6 +223,7 @@ ouroboros/ — agent core and shared runtime (§6)
   task_tree_ledger.py — append-only `data/task_trees/<root>/blackboard.jsonl`: ephemeral swarm coordination (`tree_note`/`tree_read`), mirrored into the project journal at root completion
   projects_registry.py, project_admission.py, project_management.py — Registry/admission; hierarchy, catalog, content, reopen/resources (§6)
   project_footprint.py, repository_risk.py — Origins, outputs, local Git risks (§6)
+  project_cleanup.py, project_cleanup_context.py — Recorded cleanup, custody (§6)
   project_handoff.py — the Main transfer receipt owed through the terminal outbox after a durable bind (§3 Project handoff receipts)
   project_dialogue.py — read-only chat lens; append-only `logs/chat_annotations.jsonl` (`ROUTING_RECEIPT_FIELDS`) routes only `needs_manual_target` cards; `routing_refusal_cause` (§3 Chat and Projects)
   room_membership.py — canonical stored-row membership for history and inventory; a place row belongs only to its place room (§3 Chat and Projects)
@@ -543,6 +544,7 @@ ouroboros/ — agent core and shared runtime (§6)
     skill_preflight.py — Read-only syntax/schema preflight; widget entries keep classic grammar unless explicitly ESM (§3)
     project_journal.py — journal/workpad/focus; foreign reads for roots, foreign writes refused; tree-ledger mirror (§6)
     project_resources.py — contextual associations; roots manage any room, children list their own (§6)
+    project_cleanup.py — separate Safety-checked root cleanup plans/effects (§6)
     presence.py — configure_presence (the place verb: list, inspect, state, wakes, notes, folder, model, owner accounts) and presence_cancel_work
     task_tree.py — tree_note/tree_read (storage SSOT: task_tree_ledger.py)
     followup.py — state/scheduled_tasks.json tools: manage_schedules list/get, root audited update/disable/delete/restore; schedule_followup notify=true leaves a note

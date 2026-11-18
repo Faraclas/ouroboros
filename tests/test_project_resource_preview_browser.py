@@ -74,12 +74,18 @@ window.storage=initStorage({state,mount:document.getElementById('dashboard-panel
     while not server.started and thread.is_alive() and time.monotonic() < deadline: time.sleep(.01)
     assert server.started
     def snapshot():
-        return {str(p): p.read_bytes() for base in (data, ordinary, habitat, generated) for p in base.rglob('*') if p.is_file()}
+        # SQLite read transactions update the WAL-index shared-memory read marks.
+        # They are not persistent project bytes. Keep the main DB and WAL, and
+        # every owner file, in the byte-for-byte nonmutation check.
+        shm = data / 'state/current.sqlite-shm'
+        return {str(p): p.read_bytes() for base in (data, ordinary, habitat, generated)
+                for p in base.rglob('*') if p.is_file() and p != shm}
     before = snapshot()
     try: yield f'http://127.0.0.1:{port}', control, before
     finally:
         control['hold'] = False; server.should_exit = True; thread.join(10); sock.close(); assert not thread.is_alive()
-        assert before == snapshot()
+        after = snapshot()
+        assert before == after, [p for p in set(before) | set(after) if before.get(p) != after.get(p)]
 
 
 @pytest.mark.parametrize('theme,width', [('dark', 1360), ('dark', 390), ('light', 1360), ('light', 390)])

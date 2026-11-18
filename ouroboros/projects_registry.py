@@ -1101,7 +1101,7 @@ def update_project(
     return None
 
 
-def begin_project_deletion(drive_root: Any, project_id: str) -> Optional[Dict[str, Any]]:
+def begin_project_deletion(drive_root: Any, project_id: str, *, cleanup_request: dict | None = None) -> Optional[Dict[str, Any]]:
     """Close admission/routing before the supervisor cancels the live subtree."""
     pid = sanitize_project_id(project_id)
     if not pid:
@@ -1112,10 +1112,15 @@ def begin_project_deletion(drive_root: Any, project_id: str) -> Optional[Dict[st
             if entry.get("id") != pid:
                 continue
             if entry.get("lifecycle") in {PROJECT_DELETING, PROJECT_TOMBSTONED}:
+                if cleanup_request is not None:
+                    from ouroboros.project_management import ProjectManagementError
+                    raise ProjectManagementError('cleanup_not_accepted', 'Project is already closing or closed; use the cleanup endpoint after closure', 409)
                 return dict(entry)
             from ouroboros.project_management import promote_project_children
 
             promote_project_children(data["projects"], entry)
+            if cleanup_request is not None:
+                entry['cleanup_request'] = {**cleanup_request, 'status': 'pending'}
             entry["lifecycle"] = PROJECT_DELETING
             entry["routing_generation"] = int(entry.get("routing_generation") or 0) + 1
             entry["admission_closed_at"] = utc_now_iso()

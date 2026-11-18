@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -14,6 +15,7 @@ def _request(drive_root, project_id: str = ""):
     return SimpleNamespace(
         app=SimpleNamespace(state=SimpleNamespace(drive_root=drive_root)),
         path_params={"project_id": project_id},
+        body=AsyncMock(return_value=b''),
     )
 
 

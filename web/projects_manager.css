@@ -89,3 +89,13 @@
 .pm-preview-references,.pm-preview-meanings { font-size:var(--type-body); color:var(--text-meta); line-height:var(--line-body); overflow-wrap:anywhere; padding-left:20px; }
 .pm-preview-meanings dd { margin:0 0 12px; }
 .pm-preview-body .btn { margin:4px 8px 4px 0; white-space:normal; text-align:left; }
+
+/* Cleanup uses the shared modal/focus primitive, a single scroller and real labels. */
+.pm-cleanup-dialog { width:min(720px,calc(100vw - 24px)); max-width:calc(100vw - 24px); color:var(--text-primary); }
+.pm-cleanup-dialog .marketplace-modal-body { min-width:0; overflow:auto; }
+.pm-cleanup-mode { display:flex; flex-direction:column; gap:8px; font-size:var(--type-body); font-weight:600; }
+.pm-cleanup-mode select { width:100%; min-width:0; box-sizing:border-box; font:inherit; font-weight:400; min-height:40px; }
+.pm-cleanup-check { display:flex; align-items:flex-start; gap:10px; line-height:var(--line-body); cursor:pointer; }
+.pm-cleanup-check input { flex:0 0 auto; margin:4px 0 0; accent-color:var(--accent); }
+.pm-cleanup-targets,.pm-cleanup-targets section { min-width:0; overflow-wrap:anywhere; }
+.pm-cleanup-warning { color:var(--status-warning-fg,var(--text-primary)); line-height:var(--line-body); margin:8px 0; overflow-wrap:anywhere; }

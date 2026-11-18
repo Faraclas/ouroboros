@@ -59,7 +59,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "tree_note", "tree_read",
     # Main-chat routing capabilities remain in the core permission envelope,
     # independently of ordinary Turn-1 schema residency.
-    "list_projects", "project_resources", "start_task", "tell_task",
+    "list_projects", "project_resources", "project_cleanup", "start_task", "tell_task",
     "move_to_project",
     *COGNITIVE_MEMORY_TOOL_NAMES,
     "chronicle_write",
@@ -482,7 +482,7 @@ OBSERVE_WORLD_MUTATION_TOOLS: frozenset[str] = frozenset({
     # the world beyond the repository: forms, skills, project notes, the owner's interface wording
     "browser_action", "submit_skill_to_hub", "toggle_skill", "skill_owner_action",
     "skill_install", "skill_update",
-    "journal_write", "workpad_write", "project_resources", "pin_ui_translation",
+    "journal_write", "workpad_write", "project_resources", "project_cleanup", "pin_ui_translation",
     "github_write", "pr_merge",
 })
 

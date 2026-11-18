@@ -110,6 +110,9 @@ def resolve_promote_source(
                 drive_root, pid, admission_basis=basis, working_dir=folder,
                 provenance=provenance, clone_url=clone_url, trusted_at=utc_now_iso(),
             )
+        if is_git:
+            from ouroboros.project_footprint import record_clone_creation
+            record_clone_creation(drive_root, pid, folder)
     except Exception as exc:
         return "", "", f"register: {type(exc).__name__}: {exc}", pid, False
     if admission_basis_out is not None:

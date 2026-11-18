@@ -772,6 +772,9 @@
  * @property {string=} deleting_at
  * @property {string=} admission_closed_at
  * @property {string=} provenance   // attached | cloned | genesis | none (historical fact)
+ * @property {boolean=} cleanup_allowed
+ * @property {Object=} cleanup_request
+ * @property {Object[]=} cleanup_history
  * @property {Object[]=} footprint Raw lifecycle/source writer result only; compact catalog/detail omit history.
  * @property {string=} clone_url
  * @property {string=} trusted_at
@@ -1568,3 +1571,8 @@ export const GATEWAY_CONTRACT_VERSION = '7.9.3';
  * checked against recorded task/origin/presentation ownership. It exports the same
  * safe normalized text as skill history; the existing /api/skills JSON contract stays.
  */
+
+/** @typedef {import('./client_contract_types.js').ProjectCleanupRequest} ProjectCleanupRequest */
+/** @typedef {import('./client_contract_types.js').ProjectCleanupPlan} ProjectCleanupPlan */
+/** @typedef {import('./client_contract_types.js').ProjectCleanupResult} ProjectCleanupResult */
+/** @typedef {import('./client_contract_types.js').ProjectCloseRequest} ProjectCloseRequest */

@@ -78,6 +78,11 @@ def record_workspace_creation(drive_root, project_id: str, path: str, base_sha: 
     store_observation(drive_root, project_id, record)
 
 
+def record_clone_creation(drive_root, project_id: str, path: str) -> None:
+    """Called only by successful clone producers, never by authored provenance."""
+    store_observation(drive_root, project_id, first_observation(path, source="clone_producer", origin="cloned"))
+
+
 def store_observation(drive_root, project_id: str, record: dict) -> None:
     """Commit an existing producer's observation; never probe under the writer lock."""
     from ouroboros import projects_registry as registry

@@ -1357,6 +1357,8 @@ def run_project_deletion(
             live_ids = _live_project_task_ids(drive_root, project_id)
             if not live_ids:
                 complete_project_deletion(drive_root, project_id)
+                from ouroboros.project_cleanup_context import run_pending_cleanup
+                run_pending_cleanup(drive_root, project_id)
                 _broadcast_projects_changed(project_id, chat_id)
                 return
             errors: list[str] = []
@@ -1418,6 +1420,8 @@ def run_project_deletion(
                 remaining = _live_project_task_ids(drive_root, project_id)
                 if not remaining:
                     complete_project_deletion(drive_root, project_id)
+                    from ouroboros.project_cleanup_context import run_pending_cleanup
+                    run_pending_cleanup(drive_root, project_id)
                     _broadcast_projects_changed(project_id, chat_id)
                     return
                 stuck = {
@@ -1469,12 +1473,17 @@ def start_project_deletion(drive_root: object, project_id: str, chat_id: Any) ->
 
 def resume_project_deletions(drive_root: object) -> int:
     """Resume interrupted deletion workers from durable registry state."""
-    from ouroboros.projects_registry import PROJECT_DELETING, list_sidebar_projects
+    from ouroboros.projects_registry import PROJECT_DELETING, list_reserved_projects
 
     started = 0
-    for project in list_sidebar_projects(drive_root):
-        if str(project.get("lifecycle") or "") != PROJECT_DELETING:
+    for project in list_reserved_projects(drive_root, strict=True):
+        status = project.get('cleanup_request', {}).get('status')
+        if str(project.get("lifecycle") or "") != PROJECT_DELETING and status not in {'pending', 'deferred'}:
             continue
+        if status == 'deferred':
+            from ouroboros.project_cleanup_context import lease_live
+            if lease_live(project.get('cleanup_lease')):
+                continue
         started += int(start_project_deletion(
             drive_root,
             str(project.get("id") or ""),

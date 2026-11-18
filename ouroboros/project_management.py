@@ -231,7 +231,12 @@ def _view(row: dict, *, include_notes: bool = True, projects: list[dict] | None 
                                 "tombstoned": "closed"}[row["lifecycle"]],
             "resources": resources_for_project(row), "location": project_location(row)}
     view.pop("footprint", None)  # history is opt-in, never catalog/context bulk
+    from ouroboros.project_cleanup_context import MANAGED_PROJECT_IDS
+    view['cleanup_allowed'] = row['id'] not in MANAGED_PROJECT_IDS
+    view.pop('cleanup_lease', None)
     if not include_notes:
+        view.pop('cleanup_request', None)
+        view.pop('cleanup_history', None)
         view.pop("notes")
     return view
 
@@ -319,6 +324,9 @@ def reopen_project(drive_root: Any, project_id: str) -> dict:
         row = next((item for item in data["projects"] if item["id"] == pid), None)
         if row is None:
             raise ProjectManagementError("project_not_found", f"Unknown project: {project_id}", 404)
+        from ouroboros.project_cleanup_context import lease_live
+        if lease_live(row.get('cleanup_lease')) or row.get('cleanup_request', {}).get('status') in {'pending', 'deferred'}:
+            raise ProjectManagementError('cleanup_in_progress', 'Wait until cleanup finishes before reopening; if a saved request is stuck, POST action=clear_pending to the cleanup endpoint', 409)
         if row["lifecycle"] == registry.PROJECT_DELETING:
             raise ProjectManagementError("project_closing", "The Project is still closing; wait for quiescence", 409)
         if row["lifecycle"] == registry.PROJECT_ACTIVE:

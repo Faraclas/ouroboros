@@ -1149,3 +1149,43 @@
  * @property {PrimaryModel} expected_primary_model
  * @property {string=} project_id
  */
+
+/** @typedef {Object} ProjectCleanupRequest
+ * @property {"complete"|"reopen_friendly"} mode
+ * @property {string[]} selections
+ * @property {Object<string,string>} confirmations
+ */
+/** @typedef {Object} ProjectCloseRequest
+ * @property {ProjectCleanupRequest=} cleanup
+ */
+/** @typedef {Object} ProjectCleanupPlan
+ * @property {string} project_id
+ * @property {string} mode
+ * @property {string} lifecycle
+ * @property {Object[]} targets
+ * @property {string[]} gaps
+ * @property {string} coverage
+ */
+/** @typedef {Object} ProjectCleanupResult
+ * @property {string} id
+ * @property {string} phase
+ * @property {string} at
+ * @property {string} project_id
+ * @property {string} mode
+ * @property {"human"|"agent"|"agent-confirmed"} decided_by
+ * @property {Object[]} results
+ * @property {boolean=} ok
+ * @property {boolean=} cleanup_accepted
+ * @property {boolean=} folder_untouched
+ * @property {string=} error
+ */
+
+/**
+ * Cleanup endpoint: action=clear_pending alone cancels a queued request; otherwise
+ * mode, selections and confirmations are all required before cleanup effects.
+ * @typedef {Object} ProjectCleanupControlRequest
+ * @property {"clear_pending"=} action
+ * @property {"complete"|"reopen_friendly"=} mode
+ * @property {string[]=} selections
+ * @property {Object<string,string>=} confirmations
+ */

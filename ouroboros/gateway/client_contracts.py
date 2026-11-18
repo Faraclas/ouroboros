@@ -569,6 +569,9 @@ class ProjectEntry(TypedDict, total=False):
     pinned: bool  # absent on legacy rows means unpinned; no routing/activity effect
     cognition: ProjectCognition
     provenance: str
+    cleanup_allowed: NotRequired[bool]
+    cleanup_request: NotRequired[Dict[str, Any]]
+    cleanup_history: NotRequired[List[Dict[str, Any]]]  # detail only; write-ahead reconstruction and outcomes
     footprint: NotRequired[List[Dict[str, Any]]]  # raw lifecycle/source writer result only; catalog/detail omit it
     clone_url: str
     trusted_at: str
@@ -592,6 +595,50 @@ class ProjectListResponse(TypedDict):
     Ancestor closure can exceed the cap; an addressed chat_id returns only its active room."""
 
     projects: List[ProjectEntry]
+
+
+class ProjectCleanupRequest(TypedDict):
+    mode: Literal["complete", "reopen_friendly"]
+    selections: List[str]
+    confirmations: Dict[str, str]  # target id -> fresh warning token, never client paths
+
+
+class ProjectCleanupControlRequest(TypedDict, total=False):
+    """POST cleanup: either action=clear_pending alone, or all selection fields.
+
+    ProjectCleanupRequest remains the strict selection contract checked before effects.
+    """
+    action: Literal["clear_pending"]
+    mode: Literal["complete", "reopen_friendly"]
+    selections: List[str]
+    confirmations: Dict[str, str]
+
+
+class ProjectCloseRequest(TypedDict):
+    cleanup: NotRequired[ProjectCleanupRequest]  # absent = existing Close-only semantics
+
+
+class ProjectCleanupPlan(TypedDict):
+    project_id: str
+    mode: str
+    lifecycle: str
+    targets: List[Dict[str, Any]]  # recorded path, origins, default selection, protection, risk, warning
+    gaps: List[str]
+    coverage: str
+
+
+class ProjectCleanupResult(TypedDict):
+    id: str
+    phase: str
+    at: str
+    project_id: str
+    mode: str
+    decided_by: Literal["human", "agent", "agent-confirmed"]
+    results: List[Dict[str, Any]]  # per-target removed/already_absent/retained/refused/failed/partially_removed
+    error: NotRequired[str]
+    ok: NotRequired[bool]
+    cleanup_accepted: NotRequired[bool]
+    folder_untouched: NotRequired[bool]
 
 
 class ProjectResourceRequest(TypedDict):
@@ -955,6 +1002,7 @@ __all__ = [
     "ProjectLocation", "ProjectLocationConflictResponse",
     "ProjectResourceRequest", "ProjectResourceGit", "ProjectResourceObservation", "ProjectResource",
     "ProjectCatalogResponse", "ProjectDetailResponse", "ProjectAncestor",
+    "ProjectCleanupRequest", "ProjectCleanupControlRequest", "ProjectCleanupPlan", "ProjectCleanupResult", "ProjectCloseRequest",
     "ProjectResourceReference", "ProjectResourceTarget", "ProjectResourcePreview",
     "ProjectFromTaskRequest", "ProjectTaskBinding", "ProjectFromTaskResponse",
     "FileBrowserEntry", "FileBrowserListResponse", "FileBrowserReadResponse", "FileMkdirRequest", "FileWriteRequest", "FilePathRequest",

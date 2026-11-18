@@ -141,6 +141,7 @@ def collect_routes(
     )
     from ouroboros.gateway.projects import (
         api_projects_catalog, api_project_detail, api_project_reopen,
+        api_project_cleanup_plan, api_project_cleanup,
         api_project_resource_add, api_project_resource_detach,
         api_fs_dirs,
         api_project_delete,
@@ -262,6 +263,8 @@ def collect_routes(
         Route("/api/projects", endpoint=api_projects_list, methods=["GET"]),
         Route("/api/projects/catalog", endpoint=api_projects_catalog, methods=["GET"]),
         Route("/api/projects/{project_id}/detail", endpoint=api_project_detail, methods=["GET"]),
+        Route("/api/projects/{project_id}/cleanup/plan", endpoint=api_project_cleanup_plan, methods=["GET"]),
+        Route("/api/projects/{project_id}/cleanup", endpoint=api_project_cleanup, methods=["POST"]),
         Route("/api/projects/{project_id}/reopen", endpoint=api_project_reopen, methods=["POST"]),
         Route("/api/projects/{project_id}/resources", endpoint=api_project_resource_add, methods=["POST"]),
         Route("/api/projects/{project_id}/resources/{resource_id}/detach", endpoint=api_project_resource_detach, methods=["POST"]),

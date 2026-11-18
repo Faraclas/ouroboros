@@ -536,6 +536,9 @@ D20 = "Presence"
 "ouroboros/projects_registry.py" = "D17"
 "ouroboros/project_management.py" = "D17"
 "ouroboros/project_footprint.py" = "D17"
+"ouroboros/project_cleanup.py" = "D17"
+"ouroboros/project_cleanup_context.py" = "D17"
+"ouroboros/tools/project_cleanup.py" = "D04"
 "ouroboros/repository_risk.py" = "D17"
 "ouroboros/promotion_source.py" = "D08"
 "ouroboros/protected_artifacts.py" = "D04"
@@ -1196,6 +1199,7 @@ allowed = [
   "D17->D06",
   "D17->D07",
   "D17->D08",
+  "D17->D09",
   "D17->D11",
   "D17->D12",
   "D17->D15",
@@ -1324,7 +1328,6 @@ lazy_only = [
   "D16->D11",
   "D16->D15",
   "D17->D02",
-  "D17->D09",
   "D17->D13",
   "D17->D20",
   "D18->D01",

@@ -87,6 +87,7 @@ def _project_resources(ctx: ToolContext, action: str, project_id: str,
 
 
 def resource_tool_entries() -> list[ToolEntry]:
+    from ouroboros.tools.project_cleanup import cleanup_tool_entries
     return [ToolEntry("project_resources", {
         "name": "project_resources",
         "description": (
@@ -99,7 +100,7 @@ def resource_tool_entries() -> list[ToolEntry]:
             "(including outside cwd), not a recursive inventory. Call before a change for before-facts; "
             "project_created is an attributed agent declaration, not host proof. Unreadable targets may be declared without observation; no rights are granted. Tool add never probes the path. inspect reads one recorded "
             "resource/footprint id for local Git cleanup risks; no fetch, preservation or deletion. "
-            "Legacy and opaque shell effects stay unknown; observations confer no deletion authority."),
+            "Legacy and opaque shell effects stay unknown; observations confer no deletion authority. Use the separate Safety-checked project_cleanup tool for cleanup planning/execution."),
         "parameters": {"type": "object", "properties": {
             "action": {"type": "string", "enum": ["list", "add", "detach", "footprint", "record", "inspect"]},
             "project_id": {"type": "string"},
@@ -109,4 +110,4 @@ def resource_tool_entries() -> list[ToolEntry]:
             "origin": {"type": "string", "enum": ["unknown", "pre_existing", "project_created"], "default": "unknown"},
             "note": {"type": "string", "description": "For record: purpose/before-fact limitations; never secrets or deletion authority.", "default": ""},
         }, "required": ["action", "project_id"], "additionalProperties": False},
-    }, _project_resources, safety_policy="skip")]
+    }, _project_resources, safety_policy="skip")] + cleanup_tool_entries()

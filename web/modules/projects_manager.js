@@ -8,10 +8,11 @@ import { createParentSection, projectPath } from './project_parent.js';
 import { createLocationSection } from './project_location.js';
 import { createResourcePreview } from './project_resource_preview.js';
 import { createRoomModel } from './room_model.js';
+import { openProjectCleanup, appendCleanupHistory } from './project_cleanup.js';
 
 // Installation-local labels/policy, not a core lifecycle rule or a name heuristic.
 export const MANAGED_PROJECT_IDS = Object.freeze(['viper-interface', 'viper-discord', 'viper-model-transport']);
-export const canCloseProject = project => project?.id !== 'viper-interface';
+export const canCloseProject = project => project?.id !== 'viper-interface' && project?.cleanup_allowed !== false;
 export const projectLifecycle = project => ({ active: 'active', tombstoned: 'closed', deleting: 'closing' }[project?.lifecycle] || 'unknown');
 const projectPrefix = id => `/api/projects/${encodeURIComponent(id)}/`;
 const message = error => error?.message || String(error);
@@ -191,8 +192,8 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
             const pin = button(project.pinned ? 'Unpin' : 'Pin', async () => { pin.disabled = true; try { await onPin?.(project, !project.pinned); if (validSelection(project.id)) await selectProject(project.id); if (isHere()) await loadCatalog(); } finally { if (pin.isConnected) pin.disabled = false; } }); actions.append(pin);
             if (canCloseProject(project)) {
                 const close = button('Close project…', async () => {
-                    const ok = await openConfirmDialog({ title: 'Close project', body: `Close “${title(project)}”? Unfinished work in this room will be stopped. Its immediate children move to this room’s parent, or to top level; those child rooms and their work otherwise stay unchanged. History, notes and files are kept. Recurring schedules in this room will be paused until you re-enable them in Dashboard Activity. You can reopen this room from Dashboard Projects.`, confirmLabel: 'Close project', danger: true });
-                    if (ok === true) await changeProject(project, '/delete', {}, close, 'Closing…');
+                    const choice = await openProjectCleanup({ project, signal: detailController?.signal });
+                    if (choice) await changeProject(project, '/delete', choice, close, 'Closing…');
                 }); actions.append(close);
             }
         } else if (life === 'closed') {
@@ -200,11 +201,18 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
                 const ok = await openConfirmDialog({ title: 'Reopen project', body: `Reopen “${title(project)}” as the same room? Previous work will not resume. Children previously promoted will not move back. Recurring schedules stay paused until you re-enable them in Dashboard Activity. No files will be created, cloned or restored.`, confirmLabel: 'Reopen project' });
                 if (ok === true) await changeProject(project, '/reopen', {}, reopen, 'Reopening…');
             }, true); actions.append(reopen);
+            if (canCloseProject(project)) {
+                const cleanup = button('Clean up local material…', async () => {
+                    const choice = await openProjectCleanup({ project, closing: false, signal: detailController?.signal });
+                    if (choice?.cleanup) await changeProject(project, '/cleanup', choice.cleanup, cleanup, 'Cleaning…');
+                }); actions.append(cleanup);
+            }
             detail.append(el('p', 'pm-note', 'Closed room · inspect below, or reopen to continue the conversation.'));
         } else detail.append(el('p', 'pm-note', life === 'closing' ? 'Closure is in progress. Reopen becomes available after work has stopped.' : 'Project state unavailable. Refresh to check it.'));
         detail.append(actions, el('p', 'pm-action-status'));
         detail.lastElementChild.dataset.pmActionStatus = ''; detail.lastElementChild.setAttribute('role', 'status');
         detail.append(content);
+        appendCleanupHistory(detail, project);
         if (life === 'active') {
             let model = modelEditors.get(project.id);
             const fresh = !model;
