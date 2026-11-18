@@ -109,7 +109,7 @@ def _archive_files(records, cap_dir):
             raise ValueError("file-result archive is missing")
         with zipfile.ZipFile(archive) as zipped:
             names = zipped.namelist()
-            expected_names = [row["path"] for row in ledger["files"]]
+            expected_names = [row.get("archive_name", row["path"]) for row in ledger["files"]]
             if len(set(names)) != len(names) or sorted(names) != sorted(expected_names):
                 raise ValueError("file-result archive does not match its complete manifest")
         for row in ledger["files"]:
@@ -117,7 +117,7 @@ def _archive_files(records, cap_dir):
             _path(cap_dir, relative)
             if relative in files:
                 raise ValueError(f"duplicate file-result path: {relative}")
-            files[relative] = {**row, "archive_path": str(archive), "member": relative}
+            files[relative] = {**row, "archive_path": str(archive), "member": row.get("archive_name", relative)}
     return files
 
 
