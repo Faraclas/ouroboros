@@ -58,6 +58,16 @@ def scrub_environment(source, *, keep=()) -> dict[str, str]:
                                   or key in projected or key in {"NODE_OPTIONS", "VIRTUAL_ENV"})}
 
 
+def owner_configuration_keys(source) -> list[str]:
+    """Names in ``source`` that carry the owner's provider/account/settings choices or credentials.
+
+    Narrower than ``scrub_environment``: harness controls (OUROBOROS_RUN_UI_SMOKE, browser paths,
+    PYTHON*) are kept, so a disposable UI fixture can drop only what it must own itself."""
+    projected = settings_keys()
+    suffixes = ("_API_KEY", "_TOKEN", "_PASSWORD", "_CREDENTIALS", "_SECRET")
+    return sorted(key for key in source if key in projected or key.endswith(suffixes))
+
+
 # Launch descriptors: launchd/XPC session ids, PyInstaller bootloader state and the
 # shell's location/session bookkeeping. They change with every launch and configure
 # nothing a test may rely on, so the hermetic gate neither passes nor fingerprints

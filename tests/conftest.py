@@ -79,7 +79,7 @@ if os.environ.get("OUROBOROS_ALLOW_LIVE_DATA_TESTS") != "1":
 
 import pytest
 pytest.register_assert_rewrite("tests.ui_media_delivery_smoke")
-pytest_plugins = ["tests.browser_lane", "tests.ci_evidence", "tests.default_lane"]
+pytest_plugins = ["tests.browser_lane", "tests.ci_evidence", "tests.default_lane", "tests.ui_fixture_isolation"]
 
 
 # Provider-catalog class state and its snapshot/restore live in tests/_shared.py,
