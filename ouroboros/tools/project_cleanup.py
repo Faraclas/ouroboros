@@ -1,7 +1,7 @@
 """Safety-checked, ordinary-root surface for explicitly selected cleanup effects."""
 from __future__ import annotations
 
-import json
+from ouroboros.utils import json_dumps
 from functools import partial
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
@@ -50,7 +50,7 @@ def _project_cleanup(ctx: ToolContext, project_id: str, action: str = 'plan', mo
                                      authorize=partial(_access, ctx, 'write'), read_authorize=partial(_access, ctx, 'read'))
         else:
             raise ProjectManagementError('invalid_cleanup', 'action must be plan or execute')
-        return _publish_tool_result(ctx, ToolResult(status='ok', code='OK', text=json.dumps(result, ensure_ascii=False)))
+        return _publish_tool_result(ctx, ToolResult(status='ok', code='OK', text=json_dumps(result, ensure_ascii=False)))
     except (ValueError, OSError) as exc:
         return _publish_tool_result(ctx, ToolResult(status='error', code='TOOL_ERROR', text=str(exc)))
 

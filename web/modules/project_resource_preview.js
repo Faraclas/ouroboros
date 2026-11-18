@@ -1,5 +1,6 @@
 /** Read-only, on-demand explanations. No cleanup authority, jobs or persisted state. */
 import { fetchJson } from './api_client.js';
+import { formatNativePath } from './ui_primitives.js';
 
 const el = (tag, cls, text = '') => {
     const node = document.createElement(tag); node.className = cls; node.textContent = text; return node;
@@ -42,7 +43,7 @@ export function createResourcePreview({ project, managedProjectIds, onStorage })
                 output.append(note(risk.remote_coverage), note(risk.coverage));
                 const locations = el('details', 'pm-section'); locations.append(el('summary', '', 'Git locations and references'));
                 locations.append(note(`Branch: ${facts.branch || 'detached / unknown'} · HEAD: ${facts.head || 'unborn / unknown'}`));
-                for (const path of [facts.root, facts.git_dir, facts.common_dir, ...(facts.worktrees || [])].filter(Boolean)) locations.append(el('p', 'pm-path', path));
+                for (const path of [facts.root, facts.git_dir, facts.common_dir, ...(facts.worktrees || [])].filter(Boolean)) locations.append(el('p', 'pm-path', formatNativePath(path)));
                 output.append(locations);
                 if (risk.warning) output.append(note(risk.warning));
                 for (const gap of risk.gaps || []) output.append(note(`Not inspected: ${gap}`));
@@ -60,8 +61,8 @@ export function createResourcePreview({ project, managedProjectIds, onStorage })
         if (!preview.targets.length) body.append(note('No resource or starting folder is configured. A conversation-only project needs no file cleanup.'));
         for (const target of preview.targets) {
             const section = el('section', 'pm-resource');
-            section.append(el('h4', '', target.label || 'Resource'), el('p', 'pm-path', target.path));
-            section.append(note(`Resolved spelling: ${target.resolved_path}`), note(`Path identity: ${target.identity_status}.`));
+            section.append(el('h4', '', target.label || 'Resource'), el('p', 'pm-path', formatNativePath(target.path)));
+            section.append(note(`Resolved spelling: ${formatNativePath(target.resolved_path)}`), note(`Path identity: ${target.identity_status}.`));
             const protectedPath = target.runtime_overlap || target.references.some(ref => managedProjectIds.includes(ref.project_id));
             if (protectedPath) {
                 section.append(note('Excluded from generic cleanup: runtime or continuing habitat location, or an overlapping registered path. Viper manages these resources deliberately.'));
@@ -71,13 +72,13 @@ export function createResourcePreview({ project, managedProjectIds, onStorage })
             const refs = el('ul', 'pm-preview-references');
             for (const ref of target.references) {
                 const relation = { same: 'same location', contains: 'contains registered path', inside: 'inside registered path' }[ref.relation];
-                refs.append(el('li', '', `${ref.project_name} (${ref.project_id}) · ${ref.resource_id} · ${relation}${ref.identity_verified ? '' : ' — spelling only; identity unverified'} · ${ref.path}`));
+                refs.append(el('li', '', `${ref.project_name} (${ref.project_id}) · ${ref.resource_id} · ${relation}${ref.identity_verified ? '' : ' — spelling only; identity unverified'} · ${formatNativePath(ref.path)}`));
             }
             section.append(el('h4', '', 'Known registered references'), refs);
             section.append(note('Repository risks are read only when you press Inspect below. Backup, size and live/held use remain uninspected.'));
             const obs = data.project.resources.find(item => item.id === target.resource_id)?.observation
                 || (target.resource_id === 'starting_folder' ? data.project.working_dir_observation : null);
-            if (obs) section.append(note(`Location: ${obs.status}; ${obs.kind}. Git: ${obs.git.status}${obs.git.branch ? ` · branch ${obs.git.branch}` : ''}${obs.git.root ? ` · root ${obs.git.root}` : ''}. Detailed Git arrangement is read on demand below.`));
+            if (obs) section.append(note(`Location: ${obs.status}; ${obs.kind}. Git: ${obs.git.status}${obs.git.branch ? ` · branch ${obs.git.branch}` : ''}${obs.git.root ? ` · root ${formatNativePath(obs.git.root)}` : ''}. Detailed Git arrangement is read on demand below.`));
             inspectionControl(section, target.resource_id);
             body.append(section);
         }
@@ -87,7 +88,7 @@ export function createResourcePreview({ project, managedProjectIds, onStorage })
             for (const record of footprint.entries) {
                 const section = el('section', 'pm-resource');
                 const origins = { unknown: 'Earlier origin unknown', pre_existing: 'Existed when recorded — not proof it predates the project', project_created: 'Created for this project', attached: 'Attached existing location', cloned: 'Cloned for this project', genesis: 'New project workspace' };
-                section.append(el('p', 'pm-path', record.path), note(`${origins[record.origin] || record.origin} · recorded ${record.recorded_at}`));
+                section.append(el('p', 'pm-path', formatNativePath(record.path)), note(`${origins[record.origin] || record.origin} · recorded ${record.recorded_at}`));
                 section.append(note(`Source: ${record.source}${record.task_id ? ` · task ${record.task_id}` : ''}`));
                 if (record.source === 'agent_declaration') section.append(note('Agent-declared origin, not independently proved creation.'));
                 if (record.note) section.append(note(record.note));
@@ -96,12 +97,12 @@ export function createResourcePreview({ project, managedProjectIds, onStorage })
                 if (!preview.targets.some(target => target.path === record.path)) inspectionControl(section, record.id);
                 body.append(section);
             }
-            for (const path of footprint.legacy_unknown_paths) body.append(note(`Earlier origin unknown: ${path}`));
+            for (const path of footprint.legacy_unknown_paths) body.append(note(`Earlier origin unknown: ${formatNativePath(path)}`));
             if (footprint.generated) {
                 body.append(el('h4', '', 'Existing task and output records'), note(footprint.generated.coverage));
                 for (const target of footprint.generated.targets) {
                     const section = el('section', 'pm-resource');
-                    section.append(el('p', 'pm-path', target.path), note(`${target.origin} · ${target.source} · task ${target.task_id}`));
+                    section.append(el('p', 'pm-path', formatNativePath(target.path)), note(`${target.origin} · ${target.source} · task ${target.task_id}`));
                     inspectionControl(section, target.id); body.append(section);
                 }
                 for (const gap of footprint.generated.gaps) body.append(note(gap));

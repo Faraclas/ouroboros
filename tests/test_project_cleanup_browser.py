@@ -159,3 +159,65 @@ def test_retained_reason_and_cancel_saved_cleanup(cleanup_server, theme, width, 
         assert not page.get_by_text('Cleanup failed:', exact=False).count()
         page.screenshot(path=str(out / f'cleanup-cancelled-{theme}-{width}.png'))
         context.close(); browser.close()
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='POSIX native byte names')
+@pytest.mark.parametrize('theme,width', [('dark', 1360), ('light', 390)])
+def test_native_name_preview_selection_and_exact_cleanup(cleanup_server, theme, width, tmp_path):
+    if os.environ.get('OUROBOROS_RUN_UI_SMOKE') != '1': pytest.skip('UI smoke opt-in')
+    from playwright.sync_api import sync_playwright, expect
+    from tests.test_project_native_names import native_targets
+    from ouroboros.task_results import write_task_result
+    from ouroboros.utils import json_dumps
+    url, data, material = cleanup_server
+    paths = native_targets(material.parent)
+    for path in paths: f.record_workspace_creation(data, 'alpha', str(path), 'fixture-base')
+    write_task_result(data, 'old-proof', 'completed', project_id='alpha', artifacts=[{'path': str(paths[0] / 'keep')}])
+    display = lambda p: json_dumps(str(p), ensure_ascii=False)
+    errors = []
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=os.environ.get('OUROBOROS_UI_BROWSER_EXECUTABLE') or None, args=['--no-sandbox'])
+        context = browser.new_context(viewport={'width': width, 'height': 1000})
+        context.add_init_script(f"localStorage.setItem('ouroboros.theme','{theme}')")
+        def guard(route):
+            path = route.request.url.split(url)[-1]
+            if path == '/' or path.startswith('/static/') or path.startswith('/api/projects/'):
+                route.continue_()
+            else: route.fulfill(status=200, json={})
+        context.route('**/*', guard); context.route_web_socket('**/*', lambda ws: None)
+        page = context.new_page(); page.on('pageerror', lambda e: errors.append(str(e)))
+        page.goto(url); page.locator('[data-pm-row="alpha"]').click()
+        page.get_by_text('Cleanup preview — read only', exact=True).click()
+        preview = page.locator('.pm-resource-preview')
+        expect(preview.get_by_text(display(paths[0]), exact=True).first).to_be_visible()
+        page.get_by_role('button', name='Close project…', exact=True).click()
+        dialog = page.get_by_role('dialog', name='Close project', exact=True)
+        expect(dialog.get_by_text(display(paths[0]), exact=True)).to_be_visible()
+        expect(dialog.get_by_text(display(paths[3]), exact=True)).to_be_visible()
+        # Escape checks the dialog itself, not unrelated occurrences of its title.
+        page.keyboard.press('Escape'); expect(dialog).to_have_count(0)
+        page.get_by_role('button', name='Close project…', exact=True).click()
+        dialog = page.get_by_role('dialog', name='Close project', exact=True)
+        dialog.get_by_role('checkbox', name=f'Remove {material}', exact=True).wait_for()
+        # Retained generated evidence inside raw_ff protects its ancestor. Choose
+        # raw_fe instead; all Unicode/escaped-looking siblings must survive.
+        for checkbox in dialog.locator('input[type="checkbox"]').all():
+            if checkbox.is_checked() and checkbox.is_enabled(): checkbox.uncheck()
+        selected = paths[1]
+        dialog.get_by_role('checkbox', name=f'Remove {display(selected)}', exact=True).check()
+        dialog.get_by_role('checkbox', name=f'Confirm loss of local material at {display(selected)}', exact=True).check()
+        assert dialog.evaluate('(n)=>n.scrollWidth<=n.clientWidth+1')
+        out = pathlib.Path(os.environ.get('CLEANUP_SCREENSHOTS', str(tmp_path / 'screenshots'))); out.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(out / f'native-cleanup-{theme}-{width}.png'))
+        with page.expect_response(lambda response: response.url.endswith('/alpha/delete')) as response:
+            dialog.get_by_role('button', name='Close project', exact=True).click()
+        assert response.value.ok
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            project = r.get_reserved_project(data, 'alpha')
+            if project.get('cleanup_request', {}).get('status') == 'finished': break
+            time.sleep(.02)
+        assert project['cleanup_request']['status'] == 'finished', project
+        assert not selected.exists() and all((p / 'keep').exists() for p in paths if p != selected)
+        assert material.exists() and not errors
+        context.close(); browser.close()

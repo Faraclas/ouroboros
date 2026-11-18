@@ -771,13 +771,20 @@ def test_non_ascii_subject_near_cap_is_not_inflated(monkeypatch, tmp_path):
 
 def test_lone_surrogate_subject_serializes_without_exploding():
     """A validly parsed ``\\ud800`` escape in tool args must not crash the
-    UTF-8 provider send downstream: the rendered subject substitutes it."""
+    UTF-8 provider send downstream: the rendered subject escapes it reversibly."""
     from ouroboros.safety import _render_subject_json
 
     rendered = _render_subject_json({"title": "bad \ud800 surrogate"})
 
     rendered.encode("utf-8")  # must not raise
     assert "bad" in rendered
+    import json
+    assert json.loads(rendered)['title'] == 'bad \ud800 surrogate'
+    paths = ['raw_\udcff', 'raw_\udcfe', 'raw_?', r'raw_\udcff', 'raw_ÿ']
+    subject = _render_subject_json({'paths': paths})
+    subject.encode('utf-8')
+    assert json.loads(subject)['paths'] == paths
+    assert len(set(json.loads(subject)['paths'])) == len(paths)
 
 
 def test_safe_subject_whitelist_stays_llm_free_for_oversized_calls(monkeypatch, tmp_path):

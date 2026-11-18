@@ -400,7 +400,7 @@ def detach_project_resource(drive_root: Any, project_id: str, resource_id: str) 
 
 def _git_observation(path: pathlib.Path) -> dict:
     result = {"status": "unavailable", "branch": "", "head": "", "root": ""}
-    options = dict(capture_output=True, text=True, timeout=2,
+    options = dict(capture_output=True, timeout=2,
                    env={**host_git_env(), "GIT_TERMINAL_PROMPT": "0"}, **subprocess_hidden_kwargs())
     try:
         # Bounded read-only Git probes handle linked worktrees and bare repos.
@@ -408,7 +408,7 @@ def _git_observation(path: pathlib.Path) -> dict:
                                 "--is-bare-repository", "--absolute-git-dir"],
                                **options)
         if probe.returncode:
-            error = (probe.stderr or "Git probe failed").strip()
+            error = os.fsdecode(probe.stderr or b"Git probe failed").strip()
             if "not a git repository" in error.lower():
                 return {**result, "status": "not_repository"}
             return {**result, "error": error}
@@ -418,9 +418,9 @@ def _git_observation(path: pathlib.Path) -> dict:
                                 **options)
         head = subprocess.run(["git", "-C", str(path), "rev-parse", "--verify", "HEAD"],
                               **options)
-        return {"status": "repository", "root": root.stdout.strip() if root.returncode == 0 else str(path),
-                "branch": branch.stdout.strip() if branch.returncode == 0 else "",
-                "head": head.stdout.strip() if head.returncode == 0 else ""}
+        return {"status": "repository", "root": os.fsdecode(root.stdout).removesuffix('\n') if root.returncode == 0 else str(path),
+                "branch": os.fsdecode(branch.stdout).strip() if branch.returncode == 0 else "",
+                "head": os.fsdecode(head.stdout).strip() if head.returncode == 0 else ""}
     except (OSError, subprocess.SubprocessError) as exc:
         return {**result, "error": f"{type(exc).__name__}: {exc}"}
 

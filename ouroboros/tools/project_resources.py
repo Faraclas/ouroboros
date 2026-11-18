@@ -1,7 +1,7 @@
 """Thin contextual association tool; project_management owns registry effects."""
 from __future__ import annotations
 
-import json
+from ouroboros.utils import json_dumps
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
@@ -83,7 +83,7 @@ def _project_resources(ctx: ToolContext, action: str, project_id: str,
             code="TOOL_ERROR" if isinstance(exc, ProjectManagementError) else "LEGACY_UNAVAILABLE",
             text=f"{reason}: {exc}", meta={"reason": reason}))
     return _publish_tool_result(ctx, ToolResult(
-        status="ok", code="OK", text=json.dumps(result, ensure_ascii=False)))
+        status="ok", code="OK", text=json_dumps(result, ensure_ascii=False)))
 
 
 def resource_tool_entries() -> list[ToolEntry]:

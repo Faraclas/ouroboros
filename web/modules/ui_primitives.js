@@ -13,6 +13,16 @@ export function escapeHtmlAttr(value) {
         .replace(/`/g, '&#96;');
 }
 
+/** Display only: quote native escapes/control characters without changing operands.
+ * JSON also doubles literal backslashes, keeping an escaped-looking name distinct.
+ */
+export function formatNativePath(value) {
+    const path = String(value ?? '');
+    if (!/[\\\u0000-\u001f\u007f-\u009f\p{Cf}\u2028\u2029\ud800-\udfff]|^\s|\s$/u.test(path)) return path;
+    return JSON.stringify(path).replace(/[\u0080-\u009f\p{Cf}\u2028\u2029]/gu,
+        match => match.split('').map(c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')).join(''));
+}
+
 const TONES = new Set(['ok', 'danger', 'warn', 'muted', 'info']);
 const TONE_ALIASES = Object.freeze({
     error: 'danger',

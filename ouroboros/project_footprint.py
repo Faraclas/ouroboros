@@ -171,6 +171,8 @@ def generated_targets(drive_root, project_id: str) -> dict:
     import hashlib
     for target in targets:
         identity = '\0'.join(str(target.get(key, '')) for key in ('path', 'source', 'task_id'))
-        target['id'] = 'generated:' + hashlib.sha256(identity.encode('utf-8')).hexdigest()
+        # This is an identity digest, not a UTF-8 document: retain native
+        # surrogate code points without changing any existing Unicode IDs.
+        target['id'] = 'generated:' + hashlib.sha256(identity.encode('utf-8', 'surrogatepass')).hexdigest()
     return {"targets": targets, "gaps": gaps,
             "coverage": "Existing project task/artifact and private-copy records only; no target contents read. Retired copy records and undeclared shell-created environments may be absent. Task-associated paths are not creation or disposability proof."}

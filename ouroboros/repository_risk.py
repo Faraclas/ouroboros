@@ -45,7 +45,7 @@ def inspect_repository(path: str) -> dict:
                  "-C", str(target), *args], env=env, capture_output=True,
                 timeout=10, **subprocess_hidden_kwargs())
             if proc.returncode == 0:
-                return proc.stdout.decode("utf-8", "replace")
+                return os.fsdecode(proc.stdout)
             if not optional:
                 result["gaps"].append(f"{args[0]} failed (exit {proc.returncode})")
         except (OSError, subprocess.SubprocessError) as exc:
@@ -70,16 +70,18 @@ def inspect_repository(path: str) -> dict:
     bare = probe.strip() == "true"
     git_dir = git("rev-parse", "--absolute-git-dir")
     common = git("rev-parse", "--path-format=absolute", "--git-common-dir")
-    root = git("rev-parse", "--show-toplevel") if not bare else str(target.resolve())
-    inside = bool(not bare and root and pathlib.Path(root.strip()).resolve() != target.resolve())
+    root = git("rev-parse", "--show-toplevel") if not bare else None
+    # rev-parse appends one LF; strip() would also erase valid path bytes.
+    root = root.removesuffix('\n') if root is not None else str(target.resolve()) if bare else None
+    inside = bool(not bare and root and pathlib.Path(root).resolve() != target.resolve())
     result.update(status="repository", arrangement="bare" if bare else "inside_repository" if inside else
                   "linked" if git_dir and common and git_dir.strip() != common.strip() else "main")
     if inside:
         result["coverage"] = "Checkout counts cover the selected subdirectory only; references, stashes and worktree metadata describe its enclosing repository. No other checkout contents inspected."
     facts = result["facts"]
-    facts.update(root=root.strip() if root else None,
-                 git_dir=git_dir.strip() if git_dir else None,
-                 common_dir=common.strip() if common else None)
+    facts.update(root=root,
+                 git_dir=git_dir.removesuffix('\n') if git_dir else None,
+                 common_dir=common.removesuffix('\n') if common else None)
     branch = git("symbolic-ref", "--quiet", "--short", "HEAD", optional=True)
     head = git("rev-parse", "--verify", "HEAD", optional=True)
     facts.update(branch=branch.strip() if branch else None, head=head.strip() if head else None)
@@ -110,8 +112,8 @@ def inspect_repository(path: str) -> dict:
     stash = git("for-each-ref", "--format=%(refname)", "refs/stash")
     stashes = git("reflog", "show", "--format=%H", "refs/stash") if stash else ""
     facts["stashes"] = len(stashes.splitlines()) if stashes is not None and stash is not None else None
-    worktrees = git("worktree", "list", "--porcelain")
-    facts["worktrees"] = [line[9:] for line in worktrees.splitlines() if line.startswith("worktree ")] if worktrees is not None else None
+    worktrees = git("worktree", "list", "--porcelain", "-z")
+    facts["worktrees"] = [field[9:] for field in worktrees.split('\0') if field.startswith("worktree ")] if worktrees is not None else None
     facts["counts_note"] = "Untracked/ignored directories count as entries, not recursive file totals. Bare repositories have no checkout status."
     result["status"] = "partial" if result["gaps"] else "repository"
     result["warning"] = ("Before any future deletion, local changes or unknown coverage need a warning and extra confirmation. "

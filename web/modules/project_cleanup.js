@@ -1,6 +1,7 @@
 /** Explicit removal preview. Server owns the Close fence and subsequent cleanup. */
 import { fetchJson } from './api_client.js';
 import { bindDialogFocus } from './ui_interactions.js';
+import { formatNativePath } from './ui_primitives.js';
 
 const el = (tag, cls = '', text = '') => { const n = document.createElement(tag); n.className = cls; n.textContent = text; return n; };
 const readable = value => String(value || '').replaceAll('_', ' ');
@@ -63,8 +64,8 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
                 for (const target of plan.targets) {
                     const row = el('section', 'pm-resource');
                     const choice = el('label', 'pm-cleanup-check'); const check = el('input'); check.type = 'checkbox'; check.checked = !!target.default_selected; check.disabled = !!target.retain_reason;
-                    check.setAttribute('aria-label', `Remove ${target.path}`); selections.set(target.id, check.checked && !check.disabled);
-                    choice.append(check, el('span', '', `Remove ${target.kind.replaceAll('_', ' ')}`)); row.append(choice, el('p', 'pm-path', target.path));
+                    check.setAttribute('aria-label', `Remove ${formatNativePath(target.path)}`); selections.set(target.id, check.checked && !check.disabled);
+                    choice.append(check, el('span', '', `Remove ${target.kind.replaceAll('_', ' ')}`)); row.append(choice, el('p', 'pm-path', formatNativePath(target.path)));
                     if (target.retain_reason) row.append(el('p', 'pm-note', `Retained · ${retainedExplanation(target.retain_reason)}`));
                     else if (!target.exists) row.append(el('p', 'pm-note', 'Already absent · nothing to remove.'));
                     if (target.warning && !target.retain_reason) {
@@ -72,7 +73,7 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
                         const facts = target.risk?.facts || {};
                         row.append(el('p', 'pm-note', `Local inspection: ${target.risk?.status || 'unknown'} · tracked changes ${facts.uncommitted ?? 'unknown'} · untracked ${facts.untracked ?? 'unknown'} · ignored ${facts.ignored ?? 'unknown'} · stashes ${facts.stashes ?? 'unknown'} · commits absent from known remote refs ${facts.commits_not_in_remote_tracking ?? 'unknown'}.`));
                         const extra = el('label', 'pm-cleanup-check'), confirm = el('input'); confirm.type = 'checkbox'; confirm.disabled = !check.checked;
-                        confirm.setAttribute('aria-label', `Confirm loss of local material at ${target.path}`);
+                        confirm.setAttribute('aria-label', `Confirm loss of local material at ${formatNativePath(target.path)}`);
                         extra.append(confirm, el('span', '', 'I understand this local material may be unique and confirm its removal.'));
                         confirm.onchange = () => { if (confirm.checked) confirmations.add(target.id); else confirmations.delete(target.id); update(); };
                         check.onchange = () => { selections.set(target.id, check.checked); confirm.disabled = !check.checked; confirm.checked = false; confirmations.delete(target.id); update(); };
@@ -125,10 +126,10 @@ export function appendCleanupHistory(host, project) {
         if (event.phase === 'started') {
             for (const target of event.targets || []) if (target.reconstruction) {
                 const r = target.reconstruction;
-                section.append(el('p', 'pm-path', `${target.path} · reconstruction recorded ${event.at}\n${r.remote_url}\nbranch ${r.branch} · HEAD ${r.head}`));
+                section.append(el('p', 'pm-path', `${formatNativePath(target.path)} · reconstruction recorded ${event.at}\n${r.remote_url}\nbranch ${r.branch} · HEAD ${r.head}`));
             }
         } else if (event.phase === 'finished') {
-            for (const result of event.results || []) section.append(el('p', 'pm-path', `${result.path} · ${result.status === 'removed' || result.status === 'already_absent' ? 'missing (cleaned ' + event.at + ')' : readable(result.status) + ' ' + event.at}${result.reason ? ` · ${readable(result.reason)}` : ''}`));
+            for (const result of event.results || []) section.append(el('p', 'pm-path', `${formatNativePath(result.path)} · ${result.status === 'removed' || result.status === 'already_absent' ? 'missing (cleaned ' + event.at + ')' : readable(result.status) + ' ' + event.at}${result.reason ? ` · ${readable(result.reason)}` : ''}`));
         }
     }
     host.append(section);

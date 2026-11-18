@@ -44,7 +44,7 @@ def fixed_roots(drive_root, system_repo_dir):
 
 def mount_paths():
     """One kernel inventory at execution, not a recursive filesystem probe."""
-    text = pathlib.Path('/proc/self/mountinfo').read_text(encoding='utf-8')
+    text = pathlib.Path('/proc/self/mountinfo').read_text(encoding='utf-8', errors='surrogateescape')
     return [pathlib.Path(re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), line.split()[4]))
             for line in text.splitlines()]
 
@@ -103,8 +103,8 @@ def repository_dependency(path, risk, git):
                 return 'nested_repository_inventory_unknown'
             depth = len(pathlib.Path(folder).relative_to(path).parts)
             if '.git' in dirs or '.git' in files:
-                raw = git(folder, 'worktree', 'list', '--porcelain')
-                trees = [line[9:] for line in raw.splitlines() if line.startswith('worktree ')]
+                raw = git(folder, 'worktree', 'list', '--porcelain', '-z')
+                trees = [field[9:] for field in raw.split('\0') if field.startswith('worktree ')]
                 if not trees:
                     return 'git_worktree_inventory_unknown'
                 # A nested linked checkout needs its Git owner to unregister it.

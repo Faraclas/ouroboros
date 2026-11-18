@@ -11,7 +11,7 @@ import logging
 from typing import Any
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from ouroboros.gateway._helpers import UTF8JSONResponse as JSONResponse
 
 from ouroboros.gateway._helpers import json_exception, request_drive_root, request_repo_dir
 from ouroboros.project_admission import ProjectAdmissionError

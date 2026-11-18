@@ -46,7 +46,7 @@ def _git(path, *args):
                             capture_output=True, timeout=30, env=env, **subprocess_hidden_kwargs())
     if result.returncode:
         raise OSError(f'git {args[0]} failed (exit {result.returncode})')
-    return result.stdout.decode('utf-8', 'replace').strip()
+    return os.fsdecode(result.stdout).removesuffix('\n')
 
 
 def _risk(path, identity, cached=None):

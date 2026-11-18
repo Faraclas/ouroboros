@@ -24,7 +24,7 @@ from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
 from ouroboros.llm import LLMClient
 from ouroboros.loop_llm_call import classify_llm_exception, is_rate_limit_text
 from ouroboros.pricing import emit_llm_usage_event, normalize_usage_cost, infer_provider_from_model
-from ouroboros.utils import sanitize_tool_result_for_log
+from ouroboros.utils import sanitize_tool_result_for_log, json_dumps
 from ouroboros.config import runtime_setting
 from ouroboros.secret_masking import SECRET_TOKEN_PATTERNS
 
@@ -457,13 +457,10 @@ def _render_subject_json(arguments: Dict[str, Any], *, findings=None) -> str:
 def _serialize_subject_json(safe_args) -> str:
     """Render an already-projected value without masking its provenance again."""
     try:
-        rendered = json.dumps(safe_args, indent=2, default=repr, ensure_ascii=False)
+        return json_dumps(safe_args, indent=2, default=repr, ensure_ascii=False)
     except Exception:
-        rendered = repr(safe_args)
-    # A lone surrogate (a validly PARSED \ud800 escape in tool args) survives
-    # json.dumps but is unencodable UTF-8 and would explode the provider send
-    # downstream; the prompt is a rendering, so substitute rather than crash.
-    return rendered.encode("utf-8", "replace").decode("utf-8")
+        # Even fallback diagnostics must not collapse native names into '?'.
+        return repr(safe_args).encode("utf-8", "backslashreplace").decode("utf-8")
 
 
 # Mandatory evidence and decisive history must fit; omitted SAFE rows are counted.
