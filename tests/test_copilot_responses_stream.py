@@ -182,7 +182,8 @@ def test_partial_native_retention_and_primary_cause(monkeypatch, isolated, async
             received.append((copy.deepcopy(kwargs), result))
         return result
     monkeypatch.setattr(obs, "persist_call", retain)
-    prefix = event("response.output_text.delta", delta="private partial")
+    claims = {"copilot_usage": {"reported_only": 7}}
+    prefix = event("response.in_progress", response={"status": "in_progress", **claims}) + event("response.output_text.delta", delta="private partial")
     fault = {"timeout": hm.ReadTimeout("primary-timeout"), "read": hm.ReadError("primary-read"),
              "cancel": asyncio.CancelledError("primary-cancel") if asynchronous else KeyboardInterrupt("primary-cancel"),
              "invalid": None, "eof": None}[failure]
@@ -211,6 +212,7 @@ def test_partial_native_retention_and_primary_cause(monkeypatch, isolated, async
     assert body["stream"]["terminal_received"] is False
     rows = ledger_rows(isolated)
     assert len(rows) == 1 and rows[0]["state"] == "unresolved"
+    assert rows[0]["provider_usage"] == {"source": "provider_response", **claims}
     assert entry["manifest"]["attempt_id"] == rows[0]["attempt_id"]
 
 

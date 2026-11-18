@@ -34,10 +34,12 @@ def copilot_response_failure(error: BaseException) -> Optional[BaseException]:
     """Recover only our typed result from the SDK's explicit transport wrapper.
 
     Restore the protocol fact inside the physical send before accounting/retry.
-    Ordinary connection/read errors keep their SDK classification.
+    Connection/read errors keep SDK classification and received native claims.
     """
-    seen = set()
+    seen, wrapper = set(), error
     while isinstance(error, BaseException) and id(error) not in seen:
+        if isinstance(getattr(error, "provider_claims", None), dict):
+            wrapper.provider_claims = error.provider_claims
         if isinstance(error, (CopilotRejectedResponse, CopilotPendingResponse)):
             return error
         seen.add(id(error))

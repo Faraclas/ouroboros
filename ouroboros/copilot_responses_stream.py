@@ -16,6 +16,7 @@ class ResponsesStream:
         self.frames = _SSEFrames()
         self.raw = []
         self.terminal = None
+        self.pending_response = None
         self.observed_output = False
         self.text = []
         self.facts = {"terminal_received": False, "decoded_bytes_received": 0}
@@ -32,6 +33,8 @@ class ResponsesStream:
                 value = json.loads(data)
                 if not isinstance(value, dict):
                     raise CopilotPendingResponse({"stream": "event is not an object"})
+                if isinstance(value.get("response"), dict):
+                    self.pending_response = value["response"]
                 kind = value.get("type") or event
                 if not isinstance(kind, str):
                     raise CopilotPendingResponse({"stream": "event type is not a string"})
@@ -80,8 +83,12 @@ class ResponsesStream:
     def result(self):
         from ouroboros.copilot_responses import CopilotPendingResponse
         if self.terminal is None:
-            raise CopilotPendingResponse({"stream": "EOF without native terminal"})
+            raise CopilotPendingResponse(self.pending_response or {"stream": "EOF without native terminal"})
         return json.dumps(self.terminal).encode("utf-8")
+
+    def preserve_claims(self, error):
+        from ouroboros._usage_response import provider_usage_fields
+        error.provider_claims = provider_usage_fields(self.pending_response)
 
 
 def _retain(response, state):
@@ -103,6 +110,9 @@ def read_stream(response):
         if state.terminal is None:
             state.feed(b"", final=True)
         return state.result(), state.observed_output
+    except BaseException as error:
+        state.preserve_claims(error)
+        raise
     finally:
         _retain(response, state)
         close_response(response)
@@ -119,6 +129,9 @@ async def read_stream_async(response):
         if state.terminal is None:
             state.feed(b"", final=True)
         return state.result(), state.observed_output
+    except BaseException as error:
+        state.preserve_claims(error)
+        raise
     finally:
         try:
             await postresponse_off_loop(partial(_retain, response, state), retain_on_cancel=None)
