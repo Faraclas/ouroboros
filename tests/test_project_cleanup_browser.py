@@ -221,3 +221,49 @@ def test_native_name_preview_selection_and_exact_cleanup(cleanup_server, theme, 
         assert not selected.exists() and all((p / 'keep').exists() for p in paths if p != selected)
         assert material.exists() and not errors
         context.close(); browser.close()
+
+
+@pytest.mark.parametrize('theme,width', [('dark', 1360), ('light', 390)])
+def test_paged_cleanup_preserves_choices_and_never_selects_unseen(cleanup_server, theme, width, tmp_path):
+    if os.environ.get('OUROBOROS_RUN_UI_SMOKE') != '1': pytest.skip('UI smoke opt-in')
+    from playwright.sync_api import sync_playwright
+    url, data, material = cleanup_server
+    for i in range(31):
+        path = tmp_path / f'retained-{i:02}'; path.mkdir()
+        f.record_target(data, 'alpha', str(path), task_id='fixture', origin='pre_existing')
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=os.environ.get('OUROBOROS_UI_BROWSER_EXECUTABLE') or None, args=['--no-sandbox'])
+        context = browser.new_context(viewport={'width': width, 'height': 1000})
+        context.add_init_script(f"localStorage.setItem('ouroboros.theme','{theme}')")
+        page = context.new_page(); errors = []; page.on('pageerror', lambda e: errors.append(str(e)))
+        def guard(route):
+            path = route.request.url.split(url)[-1]
+            if path == '/' or path.startswith('/static/') or path.startswith('/api/projects/'):
+                route.continue_()
+            else: route.fulfill(status=200, json={})
+        context.route('**/*', guard); context.route_web_socket('**/*', lambda ws: None)
+        page.goto(url); page.locator('[data-pm-row="alpha"]').click()
+        page.get_by_role('button', name='Close project…', exact=True).click()
+        dialog = page.get_by_role('dialog'); confirm = dialog.get_by_label(f'Confirm loss of local material at {material}', exact=True)
+        confirm.wait_for(); confirm.check()
+        assert dialog.locator('.pm-resource').count() == 25
+        dialog.get_by_role('button', name='Next', exact=True).click()
+        dialog.get_by_text('26–32 of 32 matching · 32 total', exact=True).wait_for()
+        assert dialog.locator('.pm-resource').count() == 7
+        assert dialog.get_by_role('button', name='Close project', exact=True).is_enabled()
+        # A non-default existing target on page two is an explicit new selection.
+        choice = dialog.get_by_label(f'Remove {tmp_path / "retained-30"}', exact=True); choice.check()
+        dialog.get_by_label(f'Confirm loss of local material at {tmp_path / "retained-30"}', exact=True).check()
+        dialog.get_by_role('button', name='Previous', exact=True).click(); confirm.wait_for(); assert confirm.is_checked()
+        assert dialog.locator('.pm-resource').count() == 25
+        out = pathlib.Path(os.environ.get('CLEANUP_SCREENSHOTS', str(tmp_path / 'screenshots'))); out.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(out / f'cleanup-pages-{theme}-{width}.png'))
+        assert dialog.evaluate('(n)=>n.scrollWidth<=n.clientWidth+1')
+        assert dialog.evaluate('(n)=>n.contains(document.activeElement)'), 'paging must retain dialog keyboard ownership'
+        page.keyboard.press('Escape'); dialog.wait_for(state='detached')
+        assert page.get_by_role('dialog').count() == 0
+        assert page.get_by_role('button', name='Close project…', exact=True).evaluate('(n)=>n===document.activeElement')
+        assert material.exists() and (tmp_path / 'retained-30').exists()
+        assert r.get_reserved_project(data, 'alpha')['lifecycle'] == 'active'
+        assert not errors
+        browser.close()

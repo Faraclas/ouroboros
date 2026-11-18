@@ -625,6 +625,16 @@ class ProjectCleanupPlan(TypedDict):
     targets: List[Dict[str, Any]]  # recorded path, origins, default selection, protection, risk, warning
     gaps: List[str]
     coverage: str
+    total: NotRequired[int]
+    matched_total: NotRequired[int]
+    retained_total: NotRequired[int]  # structural protections only; risk retention is inspected per page
+    offset: NotRequired[int]
+    limit: NotRequired[int]
+    next_offset: NotRequired[Optional[int]]
+    query: NotRequired[str]
+    plan_sha256: NotRequired[str]
+    immutable: NotRequired[bool]
+    selection_scope: NotRequired[str]
 
 
 class ProjectCleanupResult(TypedDict):
@@ -634,7 +644,8 @@ class ProjectCleanupResult(TypedDict):
     project_id: str
     mode: str
     decided_by: Literal["human", "agent", "agent-confirmed"]
-    results: List[Dict[str, Any]]  # per-target removed/already_absent/retained/refused/failed/partially_removed
+    results: List[Dict[str, Any]]  # selected-target removed/already_absent/refused/failed/partially_removed
+    unselected_retained_count: NotRequired[int]
     error: NotRequired[str]
     ok: NotRequired[bool]
     cleanup_accepted: NotRequired[bool]

@@ -910,13 +910,19 @@ __all__ = [
 
 async def api_project_cleanup_plan(request: Request) -> JSONResponse:
     """Recorded-target inspection, not authorization or a stable filesystem lease."""
-    from ouroboros.project_cleanup import cleanup_plan
+    from ouroboros.project_cleanup import cleanup_plan_page
     from ouroboros.project_management import ProjectManagementError
     from ouroboros.gateway._helpers import run_sync_to_completion
     try:
+        offset, limit = int(request.query_params.get('offset', '0')), int(request.query_params.get('limit', '25'))
+    except ValueError:
+        return JSONResponse({'error': 'offset and limit must be integers', 'reason_code': 'invalid_cleanup'}, status_code=400)
+    try:
         result = await run_sync_to_completion(
-            cleanup_plan, request_drive_root(request), str(request.path_params['project_id']),
-            request.query_params.get('mode', 'complete'), getattr(request.app.state, 'repo_dir', None))
+            cleanup_plan_page, request_drive_root(request), str(request.path_params['project_id']),
+            request.query_params.get('mode', 'complete'), getattr(request.app.state, 'repo_dir', None),
+            offset=offset, limit=limit,
+            query=request.query_params.get('query', ''), plan_sha256=request.query_params.get('plan_sha256', ''))
         return JSONResponse(result)
     except ProjectManagementError as exc:
         return JSONResponse({'error': str(exc), 'reason_code': exc.reason}, status_code=exc.status_code)

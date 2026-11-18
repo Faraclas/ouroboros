@@ -1165,6 +1165,16 @@
  * @property {Object[]} targets
  * @property {string[]} gaps
  * @property {string} coverage
+ * @property {number=} total
+ * @property {number=} matched_total
+ * @property {number=} retained_total
+ * @property {number=} offset
+ * @property {number=} limit
+ * @property {(number|null)=} next_offset
+ * @property {string=} query
+ * @property {string=} plan_sha256
+ * @property {boolean=} immutable
+ * @property {string=} selection_scope
  */
 /** @typedef {Object} ProjectCleanupResult
  * @property {string} id
@@ -1174,6 +1184,7 @@
  * @property {string} mode
  * @property {"human"|"agent"|"agent-confirmed"} decided_by
  * @property {Object[]} results
+ * @property {number=} unselected_retained_count
  * @property {boolean=} ok
  * @property {boolean=} cleanup_accepted
  * @property {boolean=} folder_untouched

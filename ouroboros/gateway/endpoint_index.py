@@ -373,7 +373,7 @@ HTTP_SHAPES: dict[str, Shape] = {
     "GET /api/projects": Shape("200:ProjectListResponse 500:ErrorResponse"),
     "GET /api/projects/catalog": Shape("200:ProjectCatalogResponse 400,500:ErrorResponse", query="lifecycle q offset limit parent_id"),
     "GET /api/projects/{project_id}/detail": Shape("200:ProjectDetailResponse 404,500:ErrorResponse"),
-    "GET /api/projects/{project_id}/cleanup/plan": Shape("200:ProjectCleanupPlan 400,403,404,500:ErrorResponse", query="mode"),
+    "GET /api/projects/{project_id}/cleanup/plan": Shape("200:ProjectCleanupPlan 400,403,404,409,500:ErrorResponse", query="mode offset limit query plan_sha256"),
     "POST /api/projects/{project_id}/cleanup": Shape("200:ProjectCleanupResult 400,403,404,409,500:ErrorResponse", "ProjectCleanupControlRequest", note="selection fields execute cleanup; action=clear_pending cancels a saved request without removing files"),
     "POST /api/projects/{project_id}/reopen": Shape("200:ProjectDetailResponse 404,409,500,503:ErrorResponse"),
     "POST /api/projects/{project_id}/resources": Shape("200:ProjectDetailResponse 400,404,409,500:ErrorResponse", "ProjectResourceRequest"),

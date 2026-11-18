@@ -495,9 +495,15 @@ def _preview_identity(path: str) -> dict:
     return {"resolved_path": spelling, "identity_status": status, "inode": None}
 
 
-def _preview_overlap(left: dict, right: dict) -> str:
-    a = pathlib.Path(os.path.normcase(left["resolved_path"])).parts
-    b = pathlib.Path(os.path.normcase(right["resolved_path"])).parts
+def _preview_overlap(left: dict, right: dict, components=None) -> str:
+    # Callers doing many comparisons may share parsing within one observation.
+    # Physical identity and overlap semantics stay owned here, not in each view.
+    if components is None:
+        components = {}
+    for path in (left['resolved_path'], right['resolved_path']):
+        if path not in components:
+            components[path] = pathlib.Path(os.path.normcase(path)).parts
+    a, b = components[left['resolved_path']], components[right['resolved_path']]
     if a == b or (left["inode"] is not None and left["inode"] == right["inode"]):
         return "same"
     # is_relative_to also walks .parents on Python 3.14; compare the components

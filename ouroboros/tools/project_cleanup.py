@@ -22,8 +22,9 @@ def _access(ctx, operation, path):
 
 
 def _project_cleanup(ctx: ToolContext, project_id: str, action: str = 'plan', mode: str = 'complete',
-                     selections: list | None = None, confirmations: dict | None = None, paths: list | None = None) -> str:
-    from ouroboros.project_cleanup import cleanup_plan, cleanup_execute
+                     selections: list | None = None, confirmations: dict | None = None, paths: list | None = None,
+                     offset: int = 0, limit: int = 25, query: str = '', plan_sha256: str = '') -> str:
+    from ouroboros.project_cleanup import cleanup_plan, cleanup_plan_page, cleanup_execute
     from ouroboros.project_management import ProjectManagementError
     from ouroboros.tools.project_journal import _scope_authority, _resolve_project_id
     from ouroboros.tool_access_paths import canonical_data_root
@@ -38,9 +39,10 @@ def _project_cleanup(ctx: ToolContext, project_id: str, action: str = 'plan', mo
             raise ProjectManagementError('cleanup_access_blocked', error or 'project_id required', 403)
         root, system = canonical_data_root(ctx), serving_repo_dir_for(ctx)
         if action == 'plan':
-            result = cleanup_plan(root, pid, mode, system, authorize=partial(_access, ctx, 'read'))
+            result = cleanup_plan_page(root, pid, mode, system, authorize=partial(_access, ctx, 'read'),
+                                       offset=offset, limit=limit, query=query, plan_sha256=plan_sha256)
         elif action == 'execute':
-            plan = cleanup_plan(root, pid, mode, system, authorize=partial(_access, ctx, 'read'))
+            plan = cleanup_plan(root, pid, mode, system, authorize=partial(_access, ctx, 'read'), selected_ids=set(selections or []))
             selected = [t for t in plan['targets'] if t['id'] in (selections or [])]
             expected = {p for t in selected for p in (t['path'], t['identity']['resolved_path'])}
             expected.update(t['risk']['facts']['common_dir'] for t in selected if t['risk'].get('arrangement') == 'linked')
@@ -58,10 +60,14 @@ def _project_cleanup(ctx: ToolContext, project_id: str, action: str = 'plan', mo
 def cleanup_tool_entries():
     return [ToolEntry('project_cleanup', {
         'name': 'project_cleanup',
-        'description': 'Plan or execute scoped recorded-target cleanup after a Project is fully closed. Ordinary roots only. No container scan. Plan exposes recorded targets, selection_token and warnings; caller-inaccessible targets stay explicitly retained and loss-uninspected, with the physical denial explained. Protected targets are loss-uninspected, not known clean. For execute, paths MUST explicitly list every selected target path and resolved identity path plus the common_dir for linked worktrees; the handler refuses mismatches so Safety sees the actual effects before admission. selections contains recorded target ids, confirmations maps every selected id to its current selection_token (or warning.token). Unique work and unknown coverage require an explicit loss warning and extra confirmation: a human OR agent decides by judgment within authorized scope, not an absolute veto. An agent may supply the token after that judgment. Host protections and physical tool rights still apply; habitat/runtime/shared/live targets are refused. Reopen never restores deleted files; reconstructable repositories are recorded before removal. This is separate from association-only project_resources.detach and is Safety-checked.',
+        'description': 'Plan or execute scoped recorded-target cleanup after a Project is fully closed. Ordinary roots only. No container scan. Plan returns bounded current pages (default25, max100), exact total/matched/structurally-protected counts and next_offset. Use offset/query and the returned plan_sha256 to inspect every target without mixing changed facts. A page is not the whole plan; unseen targets are not selected. Plan exposes recorded targets, selection_token and warnings; caller-inaccessible targets stay explicitly retained and loss-uninspected, with the physical denial explained. Protected targets are loss-uninspected, not known clean. For execute, paths MUST explicitly list every selected target path and resolved identity path plus the common_dir for linked worktrees; the handler refuses mismatches so Safety sees the actual effects before admission. selections contains recorded target ids, confirmations maps every selected id to its current selection_token (or warning.token). Unique work and unknown coverage require an explicit loss warning and extra confirmation: a human OR agent decides by judgment within authorized scope, not an absolute veto. An agent may supply the token after that judgment. Host protections and physical tool rights still apply; habitat/runtime/shared/live targets are refused. Reopen never restores deleted files; reconstructable repositories are recorded before removal. This is separate from association-only project_resources.detach and is Safety-checked.',
         'parameters': {'type': 'object', 'properties': {
             'project_id': {'type': 'string'}, 'action': {'type': 'string', 'enum': ['plan', 'execute'], 'default': 'plan'},
             'mode': {'type': 'string', 'enum': ['complete', 'reopen_friendly'], 'default': 'complete'},
+            'offset': {'type': 'integer', 'minimum': 0, 'default': 0},
+            'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 25},
+            'query': {'type': 'string', 'description': 'Literal path filter; totals distinguish matches from complete scope.'},
+            'plan_sha256': {'type': 'string', 'description': 'Pass the prior page digest on subsequent current rereads; changed facts refuse with cleanup_plan_changed.'},
             'paths': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Execute: exact selected paths, resolved paths and linked common_dir, exposed to Safety before effects. Plan may omit.'},
             'selections': {'type': 'array', 'items': {'type': 'string'}},
             'confirmations': {'type': 'object', 'additionalProperties': {'type': 'string'}},
