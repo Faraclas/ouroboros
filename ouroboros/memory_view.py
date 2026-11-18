@@ -460,11 +460,13 @@ def _capture_story(store: ChronicleStore, root: pathlib.Path, label: Callable[..
     story = [{**entry, "told_by": told[entry["id"]]} if entry["id"] in told else entry for entry in story]
     progress = memory_inventory.legacy_progress(units)
     open_units = [unit for unit in units if not unit.folded]
-    accounts = store.accounts()
+    # The count is of stored account records; ``store.accounts()`` yields exactly one interpreted entry per
+    # stored record, so the raw reader gives the same number without interpreting every account a second time.
+    account_total = len(store.records(None, kinds=("account",)))
     status = {"folded": progress["folded"], "total": progress["periods"], **memory_inventory.story_counts(store),
               "open_records": len(open_units), "open_rows": sum(unit.rows for unit in open_units),
               "open_chars": sum(unit.retelling_chars for unit in open_units), "helper_route": "",
-              "accounts": len(accounts),  # in the common view: whole there, not told by a later account
+              "accounts": account_total,  # in the common view: whole there, not told by a later account
               "accounts_shown": sum(1 for entry in pages if entry["kind"] == "account" and not entry.get("told_by"))}
     if status["folded"] < status["total"]:
         from ouroboros.model_slots import get_light_model

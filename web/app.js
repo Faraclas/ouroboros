@@ -34,6 +34,7 @@ import { getInterfaceSize } from './modules/interface_size.js';
 import { initDashboard } from './modules/dashboard.js';
 import { initProjectsManager } from './modules/projects_manager.js';
 import { createWorkItems } from './modules/work_items.js';
+import { bindWorkItemReferences } from './modules/work_item_reference.js';
 import { appendSelection } from './modules/chat_selection.js';
 import { initStorage } from './modules/storage.js';
 import { SHELL_ICONS } from './modules/page_icons.js';
@@ -630,6 +631,10 @@ const workItems = createWorkItems({
         if (result?.state !== 'found') throw Error('The original source row is unavailable.');
         return true;
     },
+});
+const disposeWorkItemReferences = bindWorkItemReferences({
+    openItem: (id, options) => workItems.openById(id, options),
+    onError: error => showToast(`Work Item unavailable: ${error.message}`, 'error'),
 });
 mainChat = initChat(ctx);
 initFiles(ctx);
@@ -1552,6 +1557,7 @@ window.addEventListener('pagehide', (event) => {
     updateStatus.dispose();
     disposeStorage?.destroy();
     projectsManager.destroy();
+    disposeWorkItemReferences();
     workItems.destroy();
     disposeScrollFades.forEach((dispose) => dispose());
     telegramHost.dispose();

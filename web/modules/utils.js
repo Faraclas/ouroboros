@@ -1,6 +1,7 @@
 /** Shared frontend utilities. */
 
 import { apiClient } from './api_client.js';
+import { workItemHref, workItemId } from './work_item_reference.js';
 import { currentLanguage, fmt, isEnglish, tr } from './i18n.js';
 export { fetchJson } from './api_client.js';
 
@@ -625,8 +626,9 @@ export function renderMarkdown(text, { inlineHeadingBreaks = false } = {}) {
     // holds parked code is no destination, and its source stays literal text.
     html = html.replace(MARKDOWN_LINK, function(source, image, text, url, title = '') {
         if (code.holds(url + title)) return source;
-        const safe = safeExternalUrl(decodeHtmlEntities(url));
-        return '<a href="' + escapeHtmlAttr(safe) + '" target="_blank" rel="noopener noreferrer" class="md-link'
+        const address = decodeHtmlEntities(url), item = workItemId(address);
+        const safe = item ? workItemHref(item) : safeExternalUrl(address);
+        return '<a href="' + escapeHtmlAttr(safe) + '"' + (item ? '' : ' target="_blank" rel="noopener noreferrer"') + ' class="md-link'
             + (image ? ' md-image-ref">Image: ' : '">') + text + '</a>';
     });
     html = html.replace(/((?:^\|.+\|$\n?)+)/gm, function(block) {
