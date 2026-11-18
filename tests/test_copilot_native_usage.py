@@ -50,7 +50,11 @@ def native_wire(monkeypatch, tmp_path):
         sent.append(payload)
         body = copy.deepcopy(state['body'])
         if payload.get('stream'):
-            # Native Claude uses Chat SSE; GPT Responses is buffered by the existing codec.
+            if request.url.path.endswith('/responses'):
+                # Native Responses lifecycle, including unterminated in-progress bodies.
+                chunk = {'type': 'response.' + body['status'], 'response': body}
+                return hm.Response(200, content=('data: ' + json.dumps(chunk) + '\n\n').encode(),
+                                   headers={'content-type': 'text/event-stream'})
             chunk = {**body, 'object': 'chat.completion.chunk', 'choices': [
                 {'index': 0, 'delta': body['choices'][0]['message'], 'finish_reason': 'stop'}]}
             return hm.Response(200, content=('data: ' + json.dumps(chunk) + '\n\ndata: [DONE]\n\n').encode(),

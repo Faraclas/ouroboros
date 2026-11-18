@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from tests.test_room_model_browser import model_server  # noqa: F401
+from tests.test_room_model_browser import model_server, launch_model_browser  # noqa: F401
 
 pytestmark = pytest.mark.ui_browser
 
@@ -31,10 +31,9 @@ def navigation_ui(model_server):
                   'revision': 1, 'disposition': 'idea', 'archived': False,
                   'references': [], 'prerequisites': []} for key in ('alpha', 'beta')}
     h = {'items': items, 'comments': {'alpha': [], 'beta': []}, 'writes': [],
-         'receipts': {}, 'held': [], 'hold': '', 'lost': '', 'errors': [], 'frames': []}
+         'receipts': {}, 'held': [], 'hold': '', 'lost': '', 'errors': [], 'frames': [], 'reads': []}
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(executable_path=os.environ.get('OUROBOROS_UI_BROWSER_EXECUTABLE') or None,
-                                    args=['--no-sandbox'])
+        browser = launch_model_browser(pw)
         context = browser.new_context(viewport={'width': 1700, 'height': 1100})
         context.add_init_script("localStorage.setItem('ouroboros.theme','dark')")
         def socket(ws):
@@ -44,8 +43,12 @@ def navigation_ui(model_server):
         def respond(route):
             req = route.request
             parsed = urlparse(req.url); path = parsed.path; q = parse_qs(parsed.query)
+            if req.method == 'GET': h['reads'].append(req.url)
             if parsed.netloc != urlparse(url).netloc:
                 route.abort(); return
+            if path == '/' and 'work_item' in q:
+                # The shared model fixture normally serves a reduced page without normal=1.
+                route.fulfill(content_type='text/html', body=(Path(__file__).parents[1] / 'web/index.html').read_text()); return
             if path == '/' or path.startswith('/static/'):
                 route.continue_(); return
             if path == '/api/state':
@@ -60,7 +63,7 @@ def navigation_ui(model_server):
                 if h['hold'] == 'history':
                     h['held'].append(route); return
                 chat = int(q.get('chat_id', ['1'])[0])
-                route.fulfill(json={'messages': [{'role': 'assistant', 'text': 'Old unrelated reply target',
+                route.fulfill(json={'messages': [{'role': 'assistant', 'text': h.get('history_text', 'Old unrelated reply target'),
                     'row_address': f'row:{chat}@2026-11-10T00:00:00Z#123456789abc',
                     'ts': '2026-11-10T00:00:00Z'}], 'has_more': False,
                     'window': {'complete': True}, 'coverage': {'complete': True}}); return
@@ -76,6 +79,8 @@ def navigation_ui(model_server):
                             'total': len(population), 'offset': 0, 'limit': 100, 'has_more': False}); return
                     if kind == 'item':
                         key = q['item_id'][0]
+                        if key not in items:
+                            route.fulfill(status=404, json={'ok': False, 'error': {'code': 'not_found', 'message': 'Work Item not found.'}}); return
                         route.fulfill(json={'ok': True, 'item': items[key], 'comments': h['comments'][key], 'needed_by': []}); return
                 payload = req.post_data_json; h['writes'].append((kind, copy.deepcopy(payload)))
                 if h['hold'] == kind:

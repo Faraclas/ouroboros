@@ -68,6 +68,12 @@ test('legacy renderMarkdown routes links through safeExternalUrl', () => {
     );
 });
 
+test('compact Work Item references keep the explicit destination and authored label, never code', () => {
+    const href = '/?work_item=36c87df8-8b24-4767-80a9-507c1b7e9f68';
+    assert.equal(renderMarkdown(`[Read the outcome](${href})`), `<a href="${href}" class="md-link">Read the outcome</a>`);
+    assert.doesNotMatch(renderMarkdown('`[literal](' + href + ')`'), /<a /);
+});
+
 test('legacy renderMarkdown pins emphasis, inline code, and fake headings', () => {
     assert.equal(
         renderMarkdown('# One\n## Two\n### Three\n**bold** *italic* ~~strike~~ `code`'),

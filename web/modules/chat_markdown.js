@@ -1,6 +1,7 @@
 /** Rich, sanitized markdown rendering for assistant and system chat messages. */
 
 import { safeExternalUrl } from './utils.js';
+import { workItemHref, workItemId } from './work_item_reference.js';
 import { tr } from './i18n.js';
 import { applyChartTheme, onThemeChange } from './theme_palette.js';
 
@@ -237,10 +238,12 @@ function validDownloadPath(path) {
     return segments.every((segment) => segment && segment !== '.' && segment !== '..');
 }
 
-/** Chat-only URL policy: external links plus the exact relative file-download route. */
+/** Chat-only URL policy: external links, explicit Work Items, and the exact file-download route. */
 export function chatMarkdownUrl(value) {
     const text = String(value ?? '').trim();
     if (!text) return '';
+    const item = workItemId(text);
+    if (item) return workItemHref(item);
     if (text.startsWith('/')) {
         try {
             const parsed = new URL(text, 'https://chat.invalid');
@@ -362,8 +365,8 @@ function transformRenderedMarkdown(fragment, literal) {
         const safe = chatMarkdownUrl(link.getAttribute('href') || '');
         if (safe) link.setAttribute('href', safe); else link.removeAttribute('href');
         link.classList.add('md-link');
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
+        if (workItemId(safe)) { link.removeAttribute('target'); link.removeAttribute('rel'); }
+        else { link.target = '_blank'; link.rel = 'noopener noreferrer'; }
     });
     fragment.querySelectorAll('code:not(pre code)').forEach((code) => {
         code.textContent = literal(code.textContent);

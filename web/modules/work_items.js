@@ -1,11 +1,12 @@
 /** Project notebook: authored dispositions are never execution state. No scheduler or chat sends. */
 import { fetchJson, fetchTaskDetailStrict } from './api_client.js';
 import { createWorkItemCapture } from './work_item_capture.js';
+import { workItemHref } from './work_item_reference.js';
 
 export const DISPOSITIONS = Object.freeze({ planned: 'Planned', idea: 'Ideas', done: 'Done', set_aside: 'Set aside' });
 export const boardRoute = (name, args = {}) => `/api/extensions/project-boards/${name}` + (Object.keys(args).length ? '?' + new URLSearchParams(args) : '');
 export const authorLabel = author => author?.label || (author?.surface === 'agent' ? 'Ouroboros' : 'via Interface/API');
-export const itemSource = (item, comment = null) => `Project: ${item.project_id}\nWork Item: ${item.id}${comment ? '\nComment: ' + comment.id : ''}\nSource: ${boardRoute('item', { item_id: item.id })}`;
+export const itemSource = (item, comment = null) => `Project: ${item.project_id}\nWork Item: ${item.id}${comment ? '\nComment: ' + comment.id : ''}\nSource: ${boardRoute('item', { item_id: item.id })}${workItemHref(item.id) ? '\nLink: ' + workItemHref(item.id) : ''}`;
 export const itemText = (item, selected = '', comment = null) => [selected || (comment ? comment.text : [item.title, item.description, item.outcome && `Outcome\n${item.outcome}`].filter(Boolean).join('\n\n')), itemSource(item, comment)].join('\n\n');
 export function containedSelection(host, doc = host.ownerDocument) { const selection = doc.getSelection(); return selection?.rangeCount === 1 && !selection.isCollapsed && host.contains(selection.anchorNode) && host.contains(selection.focusNode) ? selection.toString() : ''; }
 export function safeReference(value) {
@@ -38,7 +39,7 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
     doc.body.append(root);
     const q = sel => root.querySelector(sel), boards = new Map(), drafts = new Map(), attachments = new Map();
     const lifetime = new AbortController(), mutations = new Set();
-    let returnFocus = null, board = null, dead = false, followDashboard = false, listSequence = 0, detailSequence = 0, listController = null, detailController = null, detailItem = null;
+    let returnFocus = null, board = null, dead = false, followDashboard = false, listSequence = 0, detailSequence = 0, listController = null, detailController = null, detailItem = null, referenceController = null;
     const live = () => !dead && !root.hidden;
     const currentItem = (b, id) => live() && board === b && b.selected === id;
     function button(text, fn, cls = 'btn btn-default') { const n = el(doc, 'button', cls, text); n.type = 'button'; n.onclick = fn; return n; }
@@ -55,7 +56,7 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
         if (!d.editing && !d.operation && !d.moveOp) { d.base = structuredClone(item); d.fields = fieldsOf(item); }
         return d;
     }
-    function cancelReads() { ++listSequence; ++detailSequence; listController?.abort(); detailController?.abort(); }
+    function cancelReads() { ++listSequence; ++detailSequence; listController?.abort(); detailController?.abort(); referenceController?.abort(); }
     function close({ restoreFocus = true } = {}) { root.hidden = true; cancelReads(); if (restoreFocus && returnFocus?.isConnected && !dead) returnFocus.focus({ preventScroll: true }); }
     async function request(name, args, controller) {
         const data = await read(boardRoute(name, args), { cache: 'no-store', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]) }, { rejectOkFalse: true });
@@ -318,6 +319,10 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
         commentShortcut.disabled = !!(d.commentOp || d.moveOp);
         const actions = el(doc, 'div', 'wi-actions'); actions.append(commentShortcut, transferButton('Discuss in project chat', text => bring(b, text, feedback)), transferButton('Copy item', async text => { try { await navigator.clipboard.writeText(text); note(feedback, 'Item copied.'); } catch { note(feedback, 'Copy is unavailable. Select the item text to copy.', true); } })); host.append(actions, feedback); moveChooser(b, d, host);
         const identityRow = el(doc, 'p', 'wi-meta wi-item-identity', `Item ID: ${item.id}`); identityRow.append(button('Copy item ID', async () => { try { await navigator.clipboard.writeText(item.id); note(feedback, 'Item ID copied.'); } catch { note(feedback, 'Copy is unavailable. Select the item ID.', true); } })); host.append(identityRow);
+        if (workItemHref(item.id)) identityRow.append(button('Copy link', async () => {
+            try { await navigator.clipboard.writeText(new URL(workItemHref(item.id), doc.baseURI).href); note(feedback, 'Work Item link copied.'); }
+            catch { note(feedback, `Copy is unavailable. Link: ${workItemHref(item.id)}`, true); }
+        }));
         if (d.editing) {
             const form = el(doc, 'form', 'wi-edit');
             for (const [key, label] of [['title', 'Title'], ['description', 'Description'], ['outcome', 'Outcome']]) {
@@ -387,7 +392,7 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
             const b = stateFor(boards.get(link.project_id)?.project || { id: link.project_id, name: link.project_id }); board = b; syncBoard(); void loadList();
         } await openItem(link.item_id);
     }
-    async function openItem(id) {
+    async function openItem(id, loaded = null) {
         if (!live() || !board) return;
         const b = board; b.selected = id; detailController?.abort(); detailController = new AbortController(); const sequence = ++detailSequence;
         if (detailItem?.item.id !== id || detailItem?.item.project_id !== b.project.id) {
@@ -395,7 +400,7 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
         }
         root.classList.add('wi-has-detail'); q('.wi-detail').setAttribute('aria-busy', 'true');
         try {
-            const data = await request('item', { item_id: id }, detailController);
+            const data = loaded || await request('item', { item_id: id }, detailController);
             if (!currentItem(b, id) || sequence !== detailSequence) return;
             if (data.item?.id !== id || typeof data.item.project_id !== 'string' || !Array.isArray(data.comments) || !Array.isArray(data.needed_by)) throw Error('Work Item response is incomplete.');
             if (data.item.project_id !== b.project.id) {
@@ -421,7 +426,7 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
         if (b && board === b && live()) void loadList();
         onCaptured?.(project, item);
     } });
-    function open(project, itemId = '', { listOnly = false, dashboard = false, focus = true } = {}) {
+    function open(project, itemId = '', { listOnly = false, dashboard = false, focus = true, loaded = null } = {}) {
         if (dead || !project?.id) return;
         if (!live()) returnFocus = doc.activeElement;
         followDashboard = dashboard;
@@ -430,7 +435,7 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
         q('.wi-detail').replaceChildren(el(doc, 'p', 'wi-empty', 'Choose an item to read or discuss.'));
         if (listOnly) board.selected = '';
         root.hidden = false; syncBoard();
-        if (itemId || board.selected) void openItem(itemId || board.selected);
+        if (itemId || board.selected) void openItem(itemId || board.selected, loaded);
         else q('.wi-detail').replaceChildren(el(doc, 'p', 'wi-empty', 'Choose an item to read or discuss.'));
         void loadList(); if (focus) q('.wi-add input').focus();
     }
@@ -448,6 +453,24 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
     q('[data-wi-prev]').addEventListener('click', () => { board.offset = Math.max(0, board.offset - board.limit); void loadList(); }, { signal: lifetime.signal });
     q('[data-wi-next]').addEventListener('click', () => { board.offset += board.limit; void loadList(); }, { signal: lifetime.signal });
     return { root, open, close, openCapture: project => quickCapture.open(project),
+        async openById(id, { signal } = {}) {
+            if (dead || !workItemHref(id) || signal?.aborted) return false;
+            id = id.toLowerCase();
+            referenceController?.abort();
+            const own = referenceController = new AbortController();
+            const controller = { signal: AbortSignal.any([own.signal, lifetime.signal, ...(signal ? [signal] : [])]) };
+            try {
+                const data = await request('item', { item_id: id }, controller);
+                if (controller.signal.aborted || referenceController !== own || dead) return false;
+                if (data.item?.id !== id || !data.item.project_id || !Array.isArray(data.comments) || !Array.isArray(data.needed_by)) throw Error('Work Item response is incomplete.');
+                const project = boards.get(data.item.project_id)?.project || { id: data.item.project_id, name: data.item.project_id };
+                // The exact read determines today's home, even after Move or archive. No chat navigation or mutation.
+                open(project, id, { focus: false, loaded: data });
+                const detail = q('.wi-detail'); detail.tabIndex = -1; detail.focus({ preventScroll: true });
+                return true;
+            } catch (error) { if (controller.signal.aborted) return false; throw error; }
+            finally { if (referenceController === own) referenceController = null; }
+        },
         followProject(project) {
             if (!live() || !followDashboard || !project?.id) return;
             if (board.project.id !== project.id) open(project, '', { dashboard: true, focus: false });

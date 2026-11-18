@@ -251,7 +251,8 @@ def http_projection(request: Any) -> dict:
     }
 
 
-def retain_http_observation(kind: str, request: Any, *, response: Any = None, body: bytes | None = None) -> dict:
+def retain_http_observation(kind: str, request: Any, *, response: Any = None, body: bytes | None = None,
+                            stream_facts: dict | None = None) -> dict:
     """Keep a header-free HTTP boundary observation in existing private CAS.
 
     This is distinct from the sealed pre-SDK candidate. A hook observes outgoing
@@ -280,6 +281,13 @@ def retain_http_observation(kind: str, request: Any, *, response: Any = None, bo
         else:
             facts.update(status_code=response.status_code, decoded_body=body.decode("utf-8", "replace"),
                          decoded_body_sha256=hashlib.sha256(body).hexdigest())
+        if stream_facts is not None:
+            facts["stream"] = dict(stream_facts)
+            try:
+                body.decode("utf-8")
+            except UnicodeError:
+                import base64
+                facts["decoded_body_base64"] = base64.b64encode(body).decode("ascii")
         identity = hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
         return persist_call(root, task_id=scope.task_id if scope else "llm",
                             call_id=f"physical_{capture.attempt_id}_http_{kind}_{identity[:16]}",
