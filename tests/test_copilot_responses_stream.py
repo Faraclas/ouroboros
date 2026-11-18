@@ -27,7 +27,8 @@ def terminal(body):
 
 
 def exchange(monkeypatch, root, chunks, *, asynchronous=False, stream=True, fault=None,
-             close_fault=False, compressed=False, again=False, media="text/event-stream", status=200):
+             close_fault=False, compressed=False, again=False, media="text/event-stream", status=200,
+             observer=None, on_read=None, model=MODEL, base_url=HOST):
     hm = nt._openai_httpx_module()
     sent, closed, reads = [], [], []
     async_fault = isinstance(fault, asyncio.CancelledError)
@@ -35,7 +36,9 @@ def exchange(monkeypatch, root, chunks, *, asynchronous=False, stream=True, faul
     parts = [data[:5], data[5:]] if compressed else chunks
 
     def generate():
-        for chunk in parts:
+        for index, chunk in enumerate(parts):
+            if on_read:
+                on_read(index)
             reads.append(len(chunk))
             yield chunk
         if fault is not None and not async_fault:
@@ -66,10 +69,10 @@ def exchange(monkeypatch, root, chunks, *, asynchronous=False, stream=True, faul
             headers["content-encoding"] = "gzip"
         return hm.Response(status, stream=Async() if asynchronous else Sync(), headers=headers)
     monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "offline-fixture")
-    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", HOST)
+    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", base_url)
     http = (hm.AsyncClient if asynchronous else hm.Client)(transport=hm.MockTransport(respond))
     sdk = (openai.AsyncOpenAI if asynchronous else openai.OpenAI)(
-        api_key="offline-fixture", base_url=HOST, max_retries=0, http_client=http)
+        api_key="offline-fixture", base_url=base_url, max_retries=0, http_client=http)
     from ouroboros.response_cleanup import protect_httpx_client
     protect_httpx_client(http, asynchronous=asynchronous)  # Production attach_remote_client order.
     nt.attach_copilot_client(sdk)
@@ -78,7 +81,8 @@ def exchange(monkeypatch, root, chunks, *, asynchronous=False, stream=True, faul
     history = [{"role": "user", "content": "fixture"}]
     async def arun():
         try:
-            result = await client.chat_async(messages=history, model=MODEL, stream=stream, max_tokens=1024)
+            result = await client.chat_async(messages=history, model=model, stream=stream, max_tokens=1024,
+                model_operation_observer=observer)
             if again:
                 history.extend([result[0], {"role": "tool", "tool_call_id": "call_native", "content": "INERT"}])
                 await client.chat_async(messages=history, model=MODEL, max_tokens=1024)
@@ -90,7 +94,8 @@ def exchange(monkeypatch, root, chunks, *, asynchronous=False, stream=True, faul
             result = asyncio.run(arun())
         else:
             try:
-                result = client.chat(messages=history, model=MODEL, stream=stream, max_tokens=1024)
+                result = client.chat(messages=history, model=model, stream=stream, max_tokens=1024,
+                model_operation_observer=observer)
                 if again:
                     history.extend([result[0], {"role": "tool", "tool_call_id": "call_native", "content": "INERT"}])
                     client.chat(messages=history, model=MODEL, max_tokens=1024)

@@ -322,17 +322,20 @@ def reset_for_tests() -> None:
 def limit_physical_send(route: dict, send: Callable) -> Callable:
     """Wrap the actual sender, preserving accounting's late-sender ownership."""
     from ouroboros.llm_attempt import require_physical_dispatch_window
+    from ouroboros.llm_observability import observe_model_phase
 
     model = str(route.get("usage_model") or route.get("resolved_model") or "")
 
     def dispatch():
         with model_call_slot(model, route=route, check=require_physical_dispatch_window):
             require_physical_dispatch_window()
+            observe_model_phase("awaiting_response")
             return send()
 
     async def dispatch_async():
         async with model_call_slot_async(model, route=route, check=require_physical_dispatch_window):
             require_physical_dispatch_window()
+            observe_model_phase("awaiting_response")
             return await send()
 
     return dispatch_async if inspect.iscoroutinefunction(send) else dispatch

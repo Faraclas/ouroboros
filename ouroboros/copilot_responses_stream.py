@@ -9,10 +9,34 @@ import json
 from functools import partial
 
 from ouroboros.llm_stream import _SSEFrames
+from ouroboros.llm_observability import native_output_reader, observe_model_output
+
+
+def _receiving_output(kind, value):
+    """Typed non-blank output only; keep the independent custody extent unchanged."""
+    def text(value):
+        return isinstance(value, str) and bool(value.strip())
+    if kind in {"response.output_text.delta", "response.reasoning_text.delta",
+                "response.reasoning_summary_text.delta", "response.function_call_arguments.delta",
+                "response.custom_tool_call_input.delta"}:
+        return text(value.get("delta"))
+    item = value.get("item")
+    if kind not in {"response.output_item.added", "response.output_item.done"} or not isinstance(item, dict):
+        return False
+    if item.get("type") in {"function_call", "custom_tool_call"}:
+        return text(item.get("arguments")) or text(item.get("input"))
+    if item.get("type") == "reasoning":
+        return text(item.get("encrypted_content")) or any(isinstance(row, dict) and text(row.get("text"))
+            for row in (item.get("summary") if isinstance(item.get("summary"), list) else []))
+    return item.get("type") == "message" and any(isinstance(row, dict)
+        and row.get("type") in {"text", "output_text", "refusal"}
+        and (text(row.get("text")) or text(row.get("refusal")))
+        for row in (item.get("content") if isinstance(item.get("content"), list) else []))
 
 
 class ResponsesStream:
     def __init__(self):
+        native_output_reader()
         self.frames = _SSEFrames()
         self.raw = []
         self.terminal = None
@@ -76,6 +100,7 @@ class ResponsesStream:
                         elif item.get("type") == "message" and isinstance(item.get("content"), list):
                             self.observed_output |= any(isinstance(c, dict) and c.get("type") in ("text", "output_text")
                                 and isinstance(c.get("text"), str) and bool(c["text"]) for c in item["content"])
+                observe_model_output(_receiving_output(kind, value), native=True)
         except (ValueError, UnicodeError) as error:
             raise CopilotPendingResponse({"stream": "malformed SSE before terminal"}) from error
         return False

@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ouroboros.model_wait import dispatch_deadline_remaining_sec, model_waitable
 from ouroboros.deadline_utils import caller_deadline_scoped
+from ouroboros.llm_observability import model_activity_scoped
 
 from ouroboros.anthropic_native_custody import (  # noqa: F401  (prior import surface)
     anthropic_replay_scoped,
@@ -171,6 +172,7 @@ class LLMClient(
         self._async_remote_clients: Dict[Tuple[str, str, str, Tuple[Tuple[str, str], ...]], Any] = {}
         self._gigachat_clients: Dict[Tuple[str, str, str, str, str, bool], Any] = {}
 
+    @model_activity_scoped
     @caller_deadline_scoped
     @model_waitable
     def chat(
@@ -257,6 +259,7 @@ class LLMClient(
             return message, usage
 
     @request_wire_scoped
+    @model_activity_scoped
     @caller_deadline_scoped
     @model_waitable
     async def chat_async(

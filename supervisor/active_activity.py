@@ -45,9 +45,9 @@ TURN_PHASES = ("accepted", "admitted", "started", "context_building", "context_b
 CALL_PHASES = ("requested", "dispatched")
 _LOG_FACTS = {"context_building_started": "context_building", "context_building_finished": "context_built"}
 _SENDING = ("dispatching", "awaiting_response")  # a model operation's request going out (the cards' Sending)
-# How a turn's first dispatch was observed: a send seen going out; the start of a call whose route
-# observes nothing, once it finished; none before the turn ended.
-DISPATCH_BASES = ("observed_send", "unobserved_call_start", "not_observed")
+# First dispatch evidence: a send seen going out; typed output seen arriving (not a provider
+# start time); an unobserved route's call start once finished; none before the turn ended.
+DISPATCH_BASES = ("observed_send", "observed_output", "unobserved_call_start", "not_observed")
 DIRECT_TURNS_KEPT = 100  # the receipt ring's length: a memory bound, never a judgment
 _DIRECT_TURNS: Deque[Dict[str, Any]] = deque(maxlen=DIRECT_TURNS_KEPT)
 _RING_LOCK = threading.Lock()
@@ -249,6 +249,8 @@ class TurnExecution:
             activity = data.get("model_activity")
             if isinstance(activity, dict) and activity.get("phase") in _SENDING:
                 self._dispatched("observed_send", data)
+            elif isinstance(activity, dict) and activity.get("phase") == "receiving":
+                self._dispatched("observed_output", data)
         elif phase == "finished" and not self.call[2]:
             self._dispatched("unobserved_call_start", data, at=self.call[1])
 

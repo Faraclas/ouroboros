@@ -45,7 +45,8 @@ def _journal(root) -> list:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
 
 
-def test_the_receipt_rides_the_first_dispatch_frame_and_the_consumer_records_it_once(tmp_path):
+@pytest.mark.parametrize("operation,basis", [("dispatching", "observed_send"), ("receiving", "observed_output")])
+def test_the_receipt_rides_the_first_dispatch_frame_and_the_consumer_records_it_once(tmp_path, operation, basis):
     execution = TurnExecution(chat_id=1, task_id="owner", owner_turn=True, client_message_id="m-1")
     execution.accepted_at = _iso(execution.entered_at - 2.0)  # the canonical acceptance, two seconds before this thread
     execution.meter = {"current.read": 3, "current.read.sec": 0.012, "chronicle.locked": 1}
@@ -56,10 +57,10 @@ def test_the_receipt_rides_the_first_dispatch_frame_and_the_consumer_records_it_
     turn = TurnEventQueue(frames, "owner", 1, on_frame=execution.observe)
     turn.put(_frame("started"))
     assert "direct_turn" not in frames.get_nowait()  # a call's start is no dispatch
-    turn.put(_frame("observed", model_activity={"phase": "dispatching"}))
+    turn.put(_frame("observed", model_activity={"phase": operation}))
     sent = frames.get_nowait()
     receipt = sent["direct_turn"]
-    assert receipt["type"] == "direct_turn" and receipt["dispatch"] == "observed_send"
+    assert receipt["type"] == "direct_turn" and receipt["dispatch"] == basis
     assert list(receipt["phases"]) == ["accepted", "admitted", "started", "context_building", "context_built", "requested"]
     assert receipt["slowest_phase"] in receipt["phases"] and receipt["slowest_phase_sec"] == max(receipt["phases"].values())
     assert receipt["accepted_at"] == execution.accepted_at and 1.9 <= receipt["wait_before_entry_sec"] <= 2.5
@@ -76,7 +77,7 @@ def test_the_receipt_rides_the_first_dispatch_frame_and_the_consumer_records_it_
     assert len(rows) == 1 and rows[0]["execution_id"] == execution.execution_id and rows[0]["ts"]
     assert rows[0]["census"] == {"direct_turns_at_entry": 1, "running_when_handled": 1, "pending_when_handled": 2}
     kept = direct_turns()
-    assert len(kept) == 1 and kept[0]["journal"] == "written" and kept[0]["dispatch"] == "observed_send"
+    assert len(kept) == 1 and kept[0]["journal"] == "written" and kept[0]["dispatch"] == basis
     # The frame handled again, a repeated send and a later round record nothing more.
     events._handle_main_llm_call_state(sent, ctx)
     turn.put(_frame("observed", model_activity={"phase": "awaiting_response"}))
