@@ -15,7 +15,7 @@ fi
 
 if ! command -v uv >/dev/null 2>&1; then
     echo "ERROR: uv is required for locked dependency installation."
-    echo "Install uv 0.12.1: curl -LsSf https://astral.sh/uv/0.12.1/install.sh | sh"
+    echo "Install uv 0.13.4: curl -LsSf https://astral.sh/uv/0.13.4/install.sh | sh"
     exit 1
 fi
 

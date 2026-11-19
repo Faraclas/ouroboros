@@ -1,6 +1,6 @@
 """Saved literal headers reach real loopback MCP servers over HTTP and SSE.
 
-A synthetic FastMCP server per transport refuses any request without the exact
+A synthetic MCPServer server per transport refuses any request without the exact
 headers. The configuration goes through the real Settings POST/GET handlers
 (repeated masked saves included), the saved document configures the process
 MCPManager, and the real SDK transports initialize, list and call a tool.
@@ -28,12 +28,12 @@ CUSTOM = "synthetic-loopback-key-0002"
 
 
 class _Synthetic:
-    """One FastMCP app behind a guard that records and checks request headers."""
+    """One MCPServer app behind a guard that records and checks request headers."""
 
     def __init__(self, transport, required):
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server import MCPServer
 
-        server = FastMCP("synthetic", host="127.0.0.1", log_level="WARNING")
+        server = MCPServer("synthetic", log_level="WARNING")
 
         @server.tool()
         def echo(text: str) -> str:
@@ -149,9 +149,9 @@ class _Ordinary(_Synthetic):
     """A server whose ordinary text and data contain the same characters as the configured header values."""
 
     def __init__(self, transport, required):
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server import MCPServer
 
-        server = FastMCP("ordinary", host="127.0.0.1", log_level="WARNING")
+        server = MCPServer("ordinary", log_level="WARNING")
 
         @server.tool(description=DESCRIPTION)
         def search(query: Annotated[str, Field(description="Words; open the 7th result.")], window: _Window) -> dict:
@@ -322,7 +322,7 @@ def test_sdk_session_warnings_on_the_root_logger_never_carry_a_saved_token(loopb
         root.removeHandler(handler)
     session, _, after = stream.getvalue().partition("WARNING root after the connection")
     assert outcome["ok"] is False and CUSTOM not in outcome["error"]
-    assert "WARNING root Failed to validate notification" in session, session
+    assert "WARNING client Failed to validate notification" in session, session
     assert after.strip() == ": " + CUSTOM  # outside the connection the root logger is not projected
     if redacted:
         assert CUSTOM not in session and "<redacted:mcp-auth-token>" in session, session
@@ -345,12 +345,14 @@ def test_effective_wire_precedence_of_protocol_headers_is_transport_specific(loo
     """Literal means sent as written unless the transport sets that name itself.
 
     Streamable HTTP sets Accept and Content-Type on every request, and
-    Mcp-Protocol-Version once negotiated. The SSE helper sets Accept and
+    Mcp-Protocol-Version once negotiated. The configured initial version is a
+    valid legacy protocol: SDK2 servers reject unknown versions before handshake.
+    The SSE helper sets Accept and
     Cache-Control on its stream request; SSE message POSTs send a configured
     Accept or Content-Type as written, and an MCP server may refuse the latter.
     Every other configured header arrives exactly as written.
     """
-    configured = {"Accept": "text/plain", "Cache-Control": "max-age=7", "Mcp-Protocol-Version": "1999-01-01",
+    configured = {"Accept": "text/plain", "Cache-Control": "max-age=7", "Mcp-Protocol-Version": "2024-11-05",
                   "Authorization": "Bearer  two-spaces", "X-Api-Key": CUSTOM}
     recorders = []
 
@@ -367,7 +369,8 @@ def test_effective_wire_precedence_of_protocol_headers_is_transport_specific(loo
         {"id": "h", "enabled": True, "url": http_url, "headers": {**configured, "Content-Type": "text/plain"}},
         {"id": "s", "enabled": True, "transport": "sse", "url": sse_url, "headers": configured},
         {"id": "t", "enabled": True, "transport": "sse", "url": typed_url, "headers": {"Content-Type": "text/plain"}}]})
-    assert manager.refresh_server("h")["ok"] and manager.refresh_server("s")["ok"]
+    http_outcome, sse_outcome = manager.refresh_server("h"), manager.refresh_server("s")
+    assert http_outcome["ok"] and sse_outcome["ok"], (http_outcome, sse_outcome)
     assert manager.refresh_server("t")["ok"] is False  # the server refused the literal Content-Type
 
     def values(rec, method):
@@ -381,8 +384,8 @@ def test_effective_wire_precedence_of_protocol_headers_is_transport_specific(loo
         assert request["content-type"] == "application/json"
         assert request["cache-control"] == "max-age=7"
         assert request["authorization"] == "Bearer  two-spaces" and request["x-api-key"] == CUSTOM
-    assert posts[0]["mcp-protocol-version"] == "1999-01-01"  # before negotiation, the configured value
-    assert all(request["mcp-protocol-version"] != "1999-01-01" for request in posts[1:])  # then the SDK's
+    assert posts[0]["mcp-protocol-version"] == "2024-11-05"  # configured, before negotiation
+    assert all(request["mcp-protocol-version"] != "2024-11-05" for request in posts[1:])  # then the SDK's
     for request in values(sse_rec, "GET"):
         assert request["accept"] == "text/event-stream" and request["cache-control"] == "no-store"
         assert request["authorization"] == "Bearer  two-spaces" and request["x-api-key"] == CUSTOM

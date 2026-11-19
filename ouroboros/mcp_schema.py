@@ -113,10 +113,10 @@ def wrap_schema_text(value: Any, redact: Callable[[str], str], *, label_annotati
 def tool_metadata(tool: Any) -> dict[str, Any]:
     """Keep optional SDK metadata as JSON values, without inferring capabilities."""
     result = {}
-    for key in ("title", "annotations", "outputSchema"):
-        value = getattr(tool, key, None)
+    for key, attr in (("title", "title"), ("annotations", "annotations"), ("outputSchema", "output_schema")):
+        value = getattr(tool, attr, None)
         if value is not None:
-            result[key] = value.model_dump(mode="json", exclude_none=True) if hasattr(value, "model_dump") else deepcopy(value)
+            result[key] = value.model_dump(mode="json", by_alias=True, exclude_none=True) if hasattr(value, "model_dump") else deepcopy(value)
     return result
 
 

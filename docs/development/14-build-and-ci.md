@@ -4,7 +4,7 @@ Rules for dependency locks, pytest lanes, CI and commit-gate tests, and Actions 
 
 ### Python dependency locks
 
-`pyproject.toml` + `uv.lock` own dependencies; `requirements-runtime.lock` and `requirements.txt` are generated (ARCHITECTURE §8 "Build scripts"). After metadata edits, run pinned `uv lock` and README's exact runtime export; CI requires a clean diff. `tool.uv.required-version` and digest-pinned `setup-uv` make resolver changes deliberate. Checkout-free `uv tool install` docs may name a full commit SHA, never claim locked dependencies, release-artifact installation or a development environment.
+`pyproject.toml` + `uv.lock` own dependencies; `requirements-runtime.lock` and `requirements.txt` are generated (ARCHITECTURE §8 "Build scripts"). After metadata edits, run `uv lock` and README's exact runtime export; CI requires a clean diff. `tool.uv.required-version` and digest-pinned `setup-uv` make resolver changes deliberate. Checkout-free `uv tool install` docs may name a full commit SHA, never claim locked dependencies, release-artifact installation or a development environment.
 
 ### Pytest marker lanes
 

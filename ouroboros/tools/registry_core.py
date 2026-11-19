@@ -1423,6 +1423,7 @@ class ToolRegistry:
             python_resolution=interpreter_resolution,
             resolved_binding=resolved_binding,
             declared_policy=entry.safety_policy,
+            tool_description=entry.schema.get("description", ""),
         )
         if not is_safe:
             return ToolResult(status="blocked", code="SAFETY_VIOLATION", text=safety_msg)

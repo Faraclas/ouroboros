@@ -28,7 +28,7 @@ New-Item -ItemType Directory -Force -Path $env:PYTHONPYCACHEPREFIX | Out-Null
 Write-Host "=== Building Ouroboros for Windows (v${Version}) ==="
 
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-    throw 'uv 0.12.1 is required. Install it with: powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/0.12.1/install.ps1 | iex"'
+    throw 'uv 0.13.4 is required. Install it with: powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/0.13.4/install.ps1 | iex"'
 }
 
 if (-not (Test-Path "python-standalone\python.exe")) {

@@ -240,23 +240,23 @@ Clone the repository only when you plan to contribute, modify Ouroboros, run rep
 #### Requirements
 
 - Python 3.10+
-- uv 0.12.1 (the exact resolver version pinned by this checkout)
+- uv 0.13.4 or newer (CI/build recipes use 0.13.4)
 - macOS, Linux, or Windows
 - Git
 - [GitHub CLI (`gh`)](https://cli.github.com/), optional unless you use GitHub integration
 
 #### Setup
 
-Install the pinned resolver version:
+Install the CI/build resolver version (newer system versions are accepted):
 
 ```bash
-curl -LsSf https://astral.sh/uv/0.12.1/install.sh | sh
+curl -LsSf https://astral.sh/uv/0.13.4/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/0.12.1/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/0.13.4/install.ps1 | iex"
 ```
 
 ```bash

@@ -425,7 +425,7 @@ def test_invalid_config_diagnostics_keep_their_own_text_and_never_repeat_a_heade
     assert CUSTOM not in caplog.text
 
 
-@pytest.mark.parametrize("transport, sdk_name", [("streamable_http", "streamablehttp_client"), ("sse", "sse_client")])
+@pytest.mark.parametrize("transport, sdk_name", [("streamable_http", "streamable_http_client"), ("sse", "sse_client")])
 def test_both_transport_factories_use_the_same_literal_wire_map_and_origin_guard(monkeypatch, transport, sdk_name):
     import asyncio
     import contextlib
@@ -447,9 +447,17 @@ def test_both_transport_factories_use_the_same_literal_wire_map_and_origin_guard
 
     assert asyncio.run(enter()) == ("read", "write")
     [(url, kwargs)] = seen
-    assert url == cfg.url and kwargs["headers"] == {"Authorization": BASIC, "X-Key": CUSTOM}
-    factory = kwargs["httpx_client_factory"]
-    assert isinstance(factory.__self__, mcp_client._CredentialOriginGuard) and factory.__self__.cfg is cfg
+    assert url == cfg.url
+    if transport == "sse":
+        assert kwargs["headers"] == {"Authorization": BASIC, "X-Key": CUSTOM}
+        factory = kwargs["httpx_client_factory"]
+        assert isinstance(factory.__self__, mcp_client._CredentialOriginGuard) and factory.__self__.cfg is cfg
+    else:
+        client = kwargs["http_client"]
+        assert client.headers["Authorization"] == BASIC and client.headers["X-Key"] == CUSTOM
+        assert "X-Clear" not in client.headers
+        assert client.is_closed  # provided clients are caller-owned in SDK2
+        assert len(client.event_hooks["request"]) == 1
 
 
 def test_renamed_test_candidate_cannot_inherit_the_selected_servers_legacy_token(test_endpoint):
