@@ -139,7 +139,8 @@ from tests.test_git_review_preflight_gate import candidate  # noqa: F401
 @pytest.mark.parametrize("enforcement", ["advisory", "blocking"])
 @pytest.mark.parametrize("explicit_paths", [False, True])
 @pytest.mark.parametrize("peer_release", [False, True])
-def test_review_handback_preserves_second_parent(candidate, monkeypatch, enforcement, explicit_paths, peer_release):  # noqa: F811
+@pytest.mark.parametrize("converged", [False, True])
+def test_review_handback_preserves_second_parent(candidate, monkeypatch, enforcement, explicit_paths, peer_release, converged):  # noqa: F811
     """Run the real reviewed-commit cycle through feedback, not just raw git commit."""
     import json
     from ouroboros.mutation_attribution import capture_mutation_baseline
@@ -155,6 +156,9 @@ def test_review_handback_preserves_second_parent(candidate, monkeypatch, enforce
     git(repo, "add", "VERSION")
     git(repo, "commit", "-m", "base version")
     (repo / "change.py").write_bytes(b"value = 4\n")
+    if converged:
+        (repo / "converged.txt").write_bytes(b"same independent contribution\n")
+        git(repo, "add", "converged.txt")
     git(repo, "add", "change.py")
     git(repo, "commit", "-m", "author work")
     authored = git(repo, "rev-parse", "HEAD")
@@ -162,6 +166,8 @@ def test_review_handback_preserves_second_parent(candidate, monkeypatch, enforce
     git(repo, "checkout", "-b", "accepted-peer", base)
     if peer_release:
         (repo / "VERSION").write_bytes(b"2.0.0\n")
+    if converged:
+        (repo / "converged.txt").write_bytes(b"same independent contribution\n")
     accepted = peer(repo, "peer.txt", "accepted\n")
     if peer_release:
         git(repo, "tag", "-a", "v2.0.0", "-m", "peer release", accepted)
@@ -201,6 +207,11 @@ def test_review_handback_preserves_second_parent(candidate, monkeypatch, enforce
         assert "GIT_PARTIAL_MERGE_BLOCKED" in refused
         assert not reviews
         assert git(repo, "rev-parse", "MERGE_HEAD") == accepted
+        # A worktree reversal must not hide an incoming change still in index.
+        (repo / "peer.txt").unlink()
+        refused = owner._repo_commit_push(ctx, "Finish merge", paths=["change.py"], skip_advisory_review=True)
+        assert "GIT_PARTIAL_MERGE_BLOCKED" in refused
+        (repo / "peer.txt").write_bytes(b"accepted\n")
     first = owner._repo_commit_push(ctx, "Finish merge", paths=paths, skip_advisory_review=True)
     assert git(repo, "rev-parse", "HEAD") == authored, first
     assert git(repo, "rev-parse", "MERGE_HEAD") == accepted, first
@@ -211,12 +222,18 @@ def test_review_handback_preserves_second_parent(candidate, monkeypatch, enforce
         return
     assert first.startswith("Review outcome returned before commit"), first
     reference = json.loads(first.split("\n", 1)[1])["review_reference"]
+    if explicit_paths:
+        refused = owner._repo_commit_push(ctx, "Finish merge", paths=["change.py"], skip_advisory_review=True)
+        assert "GIT_PARTIAL_MERGE_BLOCKED" in refused
+        assert git(repo, "rev-parse", "MERGE_HEAD") == accepted
     second = owner._repo_commit_push(ctx, "Finish merge", paths=paths, review_reference=reference,
         author_disposition={"disposition": "accepted", "rationale": "Fixture feedback inspected."})
     merged = git(repo, "rev-parse", "HEAD")
     assert merged != authored, second
     assert git(repo, "rev-list", "--parents", "-n", "1", merged).split() == [merged, authored, accepted], second
     assert git(repo, "show", "HEAD:peer.txt") == "accepted"
+    if converged:
+        assert git(repo, "show", "HEAD:converged.txt") == "same independent contribution"
     if explicit_paths:
         assert git(repo, "show", "HEAD:change.py") == "value = 3"
         assert (repo / "draft.txt").read_bytes() == b"unfinished\n"
@@ -266,7 +283,7 @@ def test_advanced_merge_preserves_authored_protected_boundary(candidate, monkeyp
     assert git(repo, "rev-parse", "MERGE_HEAD") == accepted
 
 
-@pytest.mark.parametrize("action", ["add", "status", "staged-status", "staged-names"])
+@pytest.mark.parametrize("action", ["add", "status", "staged-status", "staged-names", "staged-deletions"])
 @pytest.mark.parametrize("resuming", [False, True])
 def test_staging_git_failure_keeps_publication_and_original_error(candidate, monkeypatch, action, resuming):  # noqa: F811
     import time
@@ -282,6 +299,10 @@ def test_staging_git_failure_keeps_publication_and_original_error(candidate, mon
     def command(argv, **kw):
         if argv[1] == "rev-parse":
             return str(ctx.repo_dir / ".git" / "MERGE_HEAD")
+        if "--diff-filter=D" in argv:
+            if action == "staged-deletions":
+                raise RuntimeError("primary")
+            return ""
         if argv[1] == "add" and action == "add":
             raise RuntimeError("primary")
         if argv[1] == "status":
@@ -300,9 +321,57 @@ def test_staging_git_failure_keeps_publication_and_original_error(candidate, mon
     paths, snapshot, error = owner._stage_candidate_for_review(
         ctx, "fixture", time.time(), paths=["change.py"], came_from_detached_checkout=False,
     )
-    if resuming and action == "add":
+    if resuming and action in {"add", "staged-deletions"}:
         assert error is None and paths == ["change.py"] and not observed
     else:
         assert paths == [] and snapshot is None and error["status"] == "failed"
         assert error["message"] == f"⚠️ GIT_ERROR ({action}): primary"
         assert observed == (["publish"] if resuming else ["publish", "record"])
+
+
+@pytest.mark.parametrize("kind", ["delete", "rename", "mode", "restore"])
+def test_merge_path_selection_keeps_noncontent_changes_and_foreign_dirt(candidate, monkeypatch, kind):  # noqa: F811
+    import time
+    from ouroboros.mutation_attribution import capture_mutation_baseline
+    from ouroboros.task_results import write_task_result
+    from ouroboros.tools import git as owner
+
+    ctx, repo = candidate, candidate.repo_dir
+    branch = git(repo, "branch", "--show-current")
+    git(repo, "commit", "-m", "author")
+    git(repo, "checkout", "-b", "incoming")
+    if kind in {"delete", "restore"}:
+        git(repo, "rm", "change.py")
+    elif kind == "rename":
+        git(repo, "mv", "change.py", "renamed.py")
+    else:
+        git(repo, "config", "core.filemode", "false")
+        git(repo, "update-index", "--chmod=+x", "change.py")
+    git(repo, "commit", "-m", "incoming shape")
+    incoming = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", branch)
+    authored = candidate_commit(repo, files={"mine.txt": "mine\n"})
+    (repo / "foreign.txt").write_bytes(b"preexisting work\n")
+    write_task_result(ctx.drive_root, ctx.task_id, "running")
+    capture_mutation_baseline(ctx.drive_root, ctx.task_id,
+                              [{"surface_type": "system_repo", "host_root": str(repo)}])
+    git(repo, "merge", "--no-ff", "--no-commit", incoming)
+    git(repo, "add", "foreign.txt")
+    paths, evidence, error, _ = owner._task_attributed_commit_paths(ctx, None)
+    expected = {"change.py", "renamed.py"} if kind == "rename" else {"change.py"}
+    assert not error and set(paths) == expected
+    assert evidence["excluded_preexisting_dirty"] == ["foreign.txt"]
+    index = git(repo, "write-tree")
+    assert "GIT_ATTRIBUTION_BLOCKED" in owner._task_attributed_commit_paths(ctx, paths + ["foreign.txt"])[2]
+    assert git(repo, "write-tree") == index
+    _, _, refused = owner._stage_candidate_for_review(
+        ctx, "shape", time.time(), paths=["mine.txt"], came_from_detached_checkout=False)
+    assert "GIT_PARTIAL_MERGE_BLOCKED" in refused["message"]
+    if kind == "restore":
+        (repo / "change.py").write_bytes(b"restored = True\n")
+    classified, _, error = owner._stage_candidate_for_review(
+        ctx, "shape", time.time(), paths=paths, came_from_detached_checkout=False)
+    assert error is None and expected <= set(classified)
+    assert git(repo, "rev-parse", "HEAD") == authored
+    assert git(repo, "rev-parse", "MERGE_HEAD") == incoming
+    assert git(repo, "show", ":foreign.txt") == "preexisting work"

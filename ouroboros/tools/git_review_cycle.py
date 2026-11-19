@@ -428,6 +428,21 @@ def _stage_candidate_for_review(
                         ["git", "diff", "--no-renames", "--name-only", "-z", f"HEAD...{parent}"],
                         cwd=ctx.repo_dir,
                     ).split("\0"))
+                # An incoming path already identical to HEAD has no change to
+                # stage. Require only incoming paths still changed in the merged
+                # index/worktree, including deletions and mode-only changes.
+                if required - {""}:
+                    changed = set()
+                    for target in ([], ["--cached"]):
+                        changed.update(_git().run_cmd(
+                            ["git", "diff", *target, "--no-renames", "--name-only", "-z", "HEAD"], cwd=ctx.repo_dir,
+                        ).split("\0"))
+                    # Review handback unstages incoming additions into untracked
+                    # files; those still belong to the merge's required set.
+                    changed.update(_git().run_cmd(
+                        ["git", "ls-files", "--others", "-z", "--", *sorted(required - {""})], cwd=ctx.repo_dir,
+                    ).split("\0"))
+                    required.intersection_update(changed)
                 missing = required - {""} - set(safe_paths)
                 if missing:
                     return [], None, _git()._review_cycle_infra_failure(
@@ -440,12 +455,22 @@ def _stage_candidate_for_review(
                     ctx, commit_message, commit_start, f"⚠️ PATH_ERROR: {_sanitize_git_error(str(exc))}"
                 )
                 return [], None, error
-            add_cmd = ["git", "add"] + safe_paths
+            # A staged deletion is already absent from the index's pathspec
+            # universe. Keep its tree change without asking Git to add it again.
+            try:
+                deleted = set(_git().run_cmd(
+                    ["git", "diff", "--cached", "--no-renames", "--diff-filter=D", "--name-only", "-z"], cwd=ctx.repo_dir,
+                ).split("\0"))
+            except Exception as exc:
+                return git_failure("staged-deletions", exc)
+            add_cmd = ["git", "add"] + [path for path in safe_paths if path not in deleted
+                or (pathlib.Path(ctx.repo_dir) / path).exists() or (pathlib.Path(ctx.repo_dir) / path).is_symlink()]
         else:
             _git()._ensure_gitignore(ctx.repo_dir)
             add_cmd = ["git", "add", "-A"]
         try:
-            _git().run_cmd(add_cmd, cwd=ctx.repo_dir)
+            if add_cmd != ["git", "add"]:
+                _git().run_cmd(add_cmd, cwd=ctx.repo_dir)
         except Exception as exc:
             return git_failure("add", exc)
         if not paths and not _git()._authorized_managed_update_resolver(ctx):
