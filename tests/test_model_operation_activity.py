@@ -111,10 +111,25 @@ def test_old_engine_queue_does_not_invent_a_wait_reason():
 
 
 @pytest.mark.serial
+@pytest.mark.parametrize("direct_http", [False, True], ids=["owned-engine", "direct-http"])
 @pytest.mark.parametrize("kind,chat_id", [("direct_chat", 1), ("direct_chat", 7), ("managed_task", 7)])
-def test_main_forwarder_reaches_current_census_without_quota_clock(setup, monkeypatch, kind, chat_id):
+def test_main_forwarder_reaches_current_census_without_quota_clock(setup, monkeypatch, kind, chat_id, direct_http):
     root, gateway, client = setup
     _sequence(gateway)
+    sends = []
+    if direct_http:
+        from ouroboros import pricing, request_wire_contract as wire, usage_accounting as ua
+        from tests.test_transport_b_stream_deadlines import target, WireResponse, sse, chunk, completion
+        monkeypatch.setattr(wire, "canonical_wire_evidence_root", lambda: root)
+        monkeypatch.setattr(pricing, "estimate_cost_optional", lambda *a, **k: None)
+        monkeypatch.setattr(ua, "_reservation_cost", lambda request: 1.0)
+        monkeypatch.setattr(client, "_get_supported_parameters", lambda *a, **k: None)
+        monkeypatch.setattr(client, "_resolve_remote_target", lambda model: target())
+        def create(**kwargs):
+            sends.append(deepcopy(kwargs))
+            return SimpleNamespace(response=WireResponse(sse(chunk({"content": "done"}, "stop", usage=completion()["usage"]))))
+        sdk = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        monkeypatch.setattr(client, "_get_remote_client", lambda *a, **k: sdk)
     task = {"id": "task-one", "chat_id": chat_id, "root_task_id": "task-one"}
     if kind == "managed_task":
         task["_attempt"] = 3
@@ -149,9 +164,13 @@ def test_main_forwarder_reaches_current_census_without_quota_clock(setup, monkey
                 assert registry.snapshot()[0]["phase"] == "preparing"
             answer, _ = call_llm_with_retry(client, [], MODEL, None, "medium", 1, root / "logs",
                 task["id"], 1, event_queue, {}, task_attempt=task.get("_attempt"), initial_messages=[])
-            assert answer == result()["message"]
-            assert [rows[0]["model_activity"]["phase"] for rows in snapshots] == [
-                "preparing", "queued", "dispatching", "awaiting_response", "response_ready", "response_received"]
+            if direct_http:
+                assert answer["content"] == "done"
+            else:
+                assert answer == result()["message"]
+            expected = (["preparing", "awaiting_response", "receiving", "response_received"] if direct_http else
+                        ["preparing", "queued", "dispatching", "awaiting_response", "response_ready", "response_received"])
+            assert [rows[0]["model_activity"]["phase"] for rows in snapshots] == expected
             assert all(rows[0]["kind"] == kind and rows[0]["chat_id"] == chat_id for rows in snapshots)
             assert all(rows[0]["task_attempt"] == owner.attempt for rows in snapshots)
             assert len({rows[0]["model_activity"]["llm_call_id"] for rows in snapshots}) == 1
@@ -162,12 +181,15 @@ def test_main_forwarder_reaches_current_census_without_quota_clock(setup, monkey
             # A delayed observation of a settled call cannot reconstruct it.
             event_queue.put(recorded[-2])
             assert "model_activity" not in gateway_state._chat_activities_snapshot_safe(root)[0]
-            assert len(gateway.creates) == 1
+            assert (len(sends) if direct_http else len(gateway.creates)) == 1
+            if direct_http:
+                assert sends[0]["stream"] is True
+                assert all("model_operation_observer" not in sent for sent in sends)
     finally:
         registry.clear()
 
 
-@pytest.mark.parametrize("phase", ["queued", "awaiting_response", "response_received"])
+@pytest.mark.parametrize("phase", ["queued", "awaiting_response", "receiving", "response_received"])
 def test_pooled_old_call_or_attempt_cannot_overwrite_successor(phase):
     meta = {"task": {"id": "t", "_attempt": 2}, "attempt": 2}
     ctx = SimpleNamespace(RUNNING={"t": meta})

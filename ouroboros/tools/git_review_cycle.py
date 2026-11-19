@@ -417,7 +417,7 @@ def _stage_candidate_for_review(
         )
         if paths is not None and synced:
             paths = sorted(set(paths) | set(synced))
-        if paths:
+        if paths is not None:
             try:
                 safe_paths = [_git().safe_relpath(path) for path in paths if str(path).strip()]
                 required = set()
@@ -467,7 +467,7 @@ def _stage_candidate_for_review(
         status = _git().run_cmd(["git", "status", "--porcelain"], cwd=ctx.repo_dir)
     except Exception as exc:
         return git_failure("status", exc)
-    if not status.strip():
+    if not status.strip() and not _merge_heads(pathlib.Path(ctx.repo_dir)):
         if came_from_detached_checkout:
             message = (
                 "⚠️ GIT_LOST_WORKTREE_ON_DETACHED_CHECKOUT_FAILED: working tree is clean "

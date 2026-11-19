@@ -28,7 +28,7 @@ export const OUTCOME_TONES = { done: 'done', warn: 'done', cancelled: 'stopped',
     lifecycle_error: 'failed' };
 const IDLE_ROOM = Object.freeze({ activity: 'idle', transition: 'none', call: '', turn: [], amber: false, mark: 'none',
     confirmed: true, works: [] });
-const CALL_WORDS = { preparing: 'preparing', sending: 'sending', thinking: 'thinking' };
+const CALL_WORDS = { preparing: 'preparing', sending: 'sending', receiving: 'receiving', thinking: 'thinking' };
 const list = (value) => (Array.isArray(value) ? value : []);
 const asked = (state) => list(state?.turn).some((item) => item?.kind === 'question');
 

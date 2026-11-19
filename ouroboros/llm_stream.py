@@ -26,6 +26,8 @@ import json
 import re
 from typing import Any, Callable
 
+from ouroboros.llm_observability import observe_model_output
+
 
 class IncompleteProviderStream(RuntimeError):
     """The wire ended before its terminal framing: the provider outcome is unknown."""
@@ -627,6 +629,7 @@ class _StreamAssembly:
                             ChatAccumulator(expected_choices, self.observe_generation,
                                             snapshot_fields=chat_snapshot_fields))
         self.frames = _SSEFrames()
+        self.output_reported = False
         self.raw: list[bytes] = []
         headers = getattr(response, "headers", {})
         self.observe_generation(headers.get("x-generation-id"))
@@ -685,6 +688,19 @@ class _StreamAssembly:
         if usage:
             error.stream_usage = usage
 
+    def observe_output(self) -> None:
+        if self.output_reported:
+            return
+        acc = self.accumulator
+        # UI receipt also recognizes Copilot's typed readable/opaque snapshot fields.
+        # Do not broaden the independent custody/retry predicate or count turn ids.
+        snapshots = isinstance(acc, ChatAccumulator) and any(
+            _has_text(choice["message"].get(key)) for choice in acc.choices.values()
+            for key in ({"reasoning_text", "cot_summary"} | (acc.snapshot_fields - {"cot_id"})))
+        if acc.output_received() or snapshots:
+            self.output_reported = True
+            observe_model_output(True)
+
     def feed(self, chunk: bytes) -> bool:
         self.raw.append(chunk)
         # The socket's per-phase bound was narrowed at dispatch. A late physical
@@ -692,6 +708,7 @@ class _StreamAssembly:
         # watchdog abandons an in-flight stream to return its wrapper sooner.
         for event, data in self.frames.feed(chunk):
             self.accumulator.accept(event, data)
+            self.observe_output()
         return self.accumulator.done
 
     def retain(self, *, complete: bool, error: BaseException | None = None) -> dict:
@@ -745,6 +762,7 @@ class _StreamAssembly:
     def result(self) -> dict:
         for event, data in self.frames.feed(b"", final=True):
             self.accumulator.accept(event, data)
+            self.observe_output()
         return self.accumulator.result()
 
 

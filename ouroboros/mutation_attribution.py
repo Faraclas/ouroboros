@@ -729,6 +729,11 @@ def resolve_attributed_git_paths(
                 "⚠️ GIT_ATTRIBUTION_BLOCKED: explicit paths must be a subset of "
                 f"the task-attributed candidates. Outside set: {', '.join(outside)}"
             )
+    if not selected and not candidates and not evidence.get("excluded_preexisting_dirty"):
+        # A merge may carry unique history without a file delta. It stages no paths.
+        merge = pathlib.Path(repo_root) / _run_git(pathlib.Path(repo_root), "rev-parse", "--git-path", "MERGE_HEAD").strip()
+        if merge.is_file():
+            return [], evidence, ""
     if not selected:
         return [], evidence, (
             "⚠️ GIT_NO_ATTRIBUTED_CHANGES: no clean-at-baseline task-owned paths "

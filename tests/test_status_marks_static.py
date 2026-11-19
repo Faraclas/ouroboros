@@ -130,6 +130,8 @@ system | web/consciousness.css | .place-convo-row.is-system .place-convo-who | c
 system | web/consciousness.css | .place-sheet-section p.place-silent-card | background, color
 # Data categories, not statuses: the Logs task category, code highlighting, the Storage temporary segment, the
 # fourth default chart series.
+# Elias's Nov18 Work Item category colours: authored Idea, not warning/owner action.
+data | web/work_items.css | .wi-disposition[data-disposition="idea"] | color
 data | web/style.css | .log-type.tasks | color
 data | web/style.css | .md-code-block .hljs-class .hljs-title | color
 data | web/style.css | .md-code-block .hljs-type | color

@@ -164,6 +164,93 @@ def chat_observed(
     return msg, usage
 
 
+_MODEL_OBSERVER = contextvars.ContextVar("model_operation_observer", default=None)
+_PHYSICAL_ACTIVITY = contextvars.ContextVar("physical_model_activity", default=None)
+
+
+def _scoped_activity(scope):
+    """Keep sync/async entry points on the same context lifetime (including offloads)."""
+    import functools
+    import inspect
+
+    def decorate(function):
+        signature = inspect.signature(function)
+        @functools.wraps(function)
+        def sync(*args, **kwargs):
+            with scope(signature.bind_partial(*args, **kwargs).arguments):
+                return function(*args, **kwargs)
+        @functools.wraps(function)
+        async def asynchronous(*args, **kwargs):
+            with scope(signature.bind_partial(*args, **kwargs).arguments):
+                return await function(*args, **kwargs)
+        return asynchronous if inspect.iscoroutinefunction(function) else sync
+    return decorate
+
+
+@contextlib.contextmanager
+def _model_observer_scope(arguments):
+    # A mutable lifetime token also closes copies inherited by late sender threads.
+    owner = {"callback": arguments.get("model_operation_observer"), "open": True}
+    token = _MODEL_OBSERVER.set(owner)
+    try:
+        yield
+    finally:
+        owner["open"] = False
+        _MODEL_OBSERVER.reset(token)
+
+
+model_activity_scoped = _scoped_activity(_model_observer_scope)
+
+
+def observe_model_phase(phase: str) -> None:
+    """Best-effort host phase only; never output, account, model or request bytes."""
+    owner, attempt = _MODEL_OBSERVER.get(), _PHYSICAL_ACTIVITY.get()
+    if not owner or not owner["open"] or not callable(owner["callback"]):
+        return
+    if attempt is not None:
+        if not attempt["open"] or attempt.get("phase") == phase:
+            return
+        attempt["phase"] = phase
+    try:
+        owner["callback"]({"model_activity": {"phase": phase}})
+    except Exception:
+        log_observation_gap("Model activity observer failed", exc_info=True)
+
+
+@contextlib.contextmanager
+def _physical_activity_scope(_arguments):
+    attempt = {"open": True, "native_reader": False}
+    token = _PHYSICAL_ACTIVITY.set(attempt)
+    try:
+        observe_model_phase("preparing")
+        yield
+    except BaseException:
+        observe_model_phase("unknown")
+        raise
+    else:
+        observe_model_phase("response_received")
+    finally:
+        attempt["open"] = False
+        _PHYSICAL_ACTIVITY.reset(token)
+
+
+physical_activity_scoped = _scoped_activity(_physical_activity_scope)
+
+
+def native_output_reader() -> None:
+    """Native Responses owns receipt; its completed synthetic Chat stream does not."""
+    attempt = _PHYSICAL_ACTIVITY.get()
+    if attempt is not None:
+        attempt["native_reader"] = True
+
+
+def observe_model_output(received: bool, *, native: bool = False) -> None:
+    attempt = _PHYSICAL_ACTIVITY.get()
+    if (received and attempt is not None and attempt.get("phase") != "receiving"
+            and (native or not attempt["native_reader"])):
+        observe_model_phase("receiving")
+
+
 _HTTP_OBSERVATIONS = contextvars.ContextVar("http_observations", default=None)
 _HTTP_OBSERVATION_TOKEN = object()
 

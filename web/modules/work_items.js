@@ -25,6 +25,7 @@ export function workFact(data) {
     return [`Lifecycle: ${task.status || 'unknown'}`, 'Objective: unavailable', task.error || ''].filter(x => typeof x === 'string' && x).join(' · ');
 }
 const el = (doc, tag, cls = '', text = '') => { const node = doc.createElement(tag); node.className = cls; node.textContent = text; return node; };
+const dispositionLabel = key => key === 'idea' ? 'Idea' : DISPOSITIONS[key] || 'Status unavailable';
 const when = value => { const date = new Date(value); return Number.isNaN(date.valueOf()) ? 'Time unavailable' : date.toLocaleString(); };
 
 export function createWorkItems({ sendToChat, openReference, onCaptured, read = fetchJson, taskRead = fetchTaskDetailStrict, doc = document } = {}) {
@@ -122,7 +123,8 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
         const items = b.items.filter(item => !b.filter || item.disposition === b.filter);
         for (const item of items) {
             const row = button('', () => openItem(item.id), 'wi-row'); row.dataset.wiItem = item.id; row.setAttribute('aria-pressed', String(b.selected === item.id));
-            row.append(el(doc, 'strong', '', item.title), el(doc, 'span', 'wi-preview', item.preview || item.description || ''));
+            const status = el(doc, 'span', 'wi-disposition', dispositionLabel(item.disposition)); status.dataset.disposition = item.disposition;
+            row.append(el(doc, 'strong', '', item.title), status, el(doc, 'span', 'wi-preview', item.preview || item.description || ''));
             const prerequisites = item.prerequisites || [];
             row.append(el(doc, 'span', 'wi-meta', `${item.comment_count || 0} comments · ${when(item.updated_at)}${prerequisites.length ? ` · ${prerequisites.length} prerequisite${prerequisites.length === 1 ? '' : 's'}` : ''}${item.references?.length ? ` · ${item.references.length} work/reference links` : ''}`));
             host.append(row);
@@ -178,20 +180,22 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
         links.append(referenceRows, button('Add work/reference link', () => { d.fields.references.push({ kind: 'task', value: '', label: '' }); redraw(); }), prerequisiteRows,
             button('Add prerequisite', () => { d.fields.prerequisites.push({ item_id: '', needs: '' }); redraw(); })); redraw(); form.append(links);
     }
-    async function save(b, d, againstCurrent = false) {
-        if (d.moveOp) return;
+    async function save(b, d, againstCurrent = false, status = '') {
+        if (d.moveOp || (status && (d.editing || d.operation || d.commentOp))) return;
+        if (status) d.statusDraft = status;
         if (d.operation?.state === 'sending') return;
-        if (!d.operation) d.operation = freshOperation('update', { item_id: d.base.id, expected_revision: againstCurrent ? d.conflict.revision : d.base.revision, changes: d.fields });
+        if (!d.operation) d.operation = freshOperation('update', { item_id: d.base.id, expected_revision: againstCurrent ? d.conflict.revision : d.base.revision, changes: d.statusDraft ? { disposition: d.statusDraft } : d.fields });
         d.notice = 'Saving…'; paintDetail(b, d);
         try {
             const data = await mutate(d.operation); if (dead) return;
-            d.operation = null; d.conflict = null; d.base = data.item; d.fields = fieldsOf(data.item); d.editing = false; d.notice = 'Saved.';
-            if (currentItem(b, d.base.id)) { await openItem(d.base.id); void loadList(); }
+            d.operation = null; d.conflict = null; d.statusDraft = ''; d.base = data.item; d.fields = fieldsOf(data.item); d.editing = false; d.notice = 'Saved.';
+            if (currentItem(b, d.base.id)) await openItem(d.base.id);
+            if (live() && board === b) void loadList();
         } catch (error) {
             if (dead) return;
             const rejected = d.operation.state === 'rejected';
             d.notice = rejected ? error.message : 'Save not confirmed. Your draft and exact request are kept. Check current saved text or retry the same request.';
-            if (rejected) { d.operation = null; if (error.status === 409 && error.body?.current?.id === d.base.id) d.conflict = error.body.current; }
+            if (rejected) { d.operation = null; if (error.status === 409 && error.body?.current?.id === d.base.id) d.conflict = error.body.current; else d.statusDraft = ''; }
             if (currentItem(b, d.base.id)) paintDetail(b, d);
         }
     }
@@ -297,12 +301,25 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
         if (d.moveOp?.state === 'unknown') { section.open = true; section.append(button('Check current item', () => openItem(d.base.id)), button('Retry same move', () => moveItem(b, d))); }
         host.append(section);
     }
+    function statusSelect(value, change) {
+        const select = el(doc, 'select', 'ui-control wi-disposition'); select.name = 'disposition';
+        for (const key of Object.keys(DISPOSITIONS)) { const option = el(doc, 'option', '', dispositionLabel(key)); option.value = key; select.append(option); }
+        select.value = value; select.dataset.disposition = value;
+        select.onchange = () => { change(select.value); }; return select;
+    }
     function paintDetail(b, d) {
         if (!currentItem(b, d.base.id)) return;
         const host = q('.wi-detail'), item = detailItem?.item?.id === d.base.id ? detailItem.item : d.base;
         host.replaceChildren();
-        const top = el(doc, 'div', 'wi-detail-top'), identity = el(doc, 'div'); identity.append(el(doc, 'p', 'wi-meta', `${b.project.name || b.project.id} · ${item.disposition.replace('_', ' ')}`), el(doc, 'h3', '', item.title));
-        top.append(identity, button(d.editing ? 'Cancel editing' : 'Edit item', () => { if (d.operation || d.moveOp) return; d.editing = !d.editing; if (!d.editing) { d.fields = fieldsOf(d.base); d.conflict = null; d.notice = ''; } paintDetail(b, d); })); host.append(top);
+        const top = el(doc, 'div', 'wi-detail-top'), identity = el(doc, 'div'); identity.append(el(doc, 'p', 'wi-meta', b.project.name || b.project.id), el(doc, 'h3', '', item.title));
+        top.append(identity, button(d.editing ? 'Cancel editing' : 'Edit item', () => { if (d.operation || d.moveOp || d.statusDraft) return; d.editing = !d.editing; if (!d.editing) { d.fields = fieldsOf(d.base); d.conflict = null; d.notice = ''; } paintDetail(b, d); })); host.append(top);
+        const statusRow = el(doc, 'div', 'wi-status-row'), statusField = el(doc, 'label', 'wi-field', 'Status');
+        const statusControl = statusSelect(item.disposition, value => { if (value !== item.disposition) void save(b, d, false, value); });
+        statusControl.dataset.wiStatus = ''; statusControl.disabled = !!(d.editing || d.operation || d.moveOp || d.commentOp || d.statusDraft);
+        statusField.append(statusControl); statusRow.append(statusField);
+        if (d.editing) statusRow.append(el(doc, 'p', 'wi-meta', 'Change status in the open editor, or cancel editing to change it here.'));
+        else if (d.statusDraft) statusRow.append(el(doc, 'p', 'wi-meta', `Requested status: ${dispositionLabel(d.statusDraft)} · not yet confirmed.`));
+        host.append(statusRow);
         const feedback = el(doc, 'p', 'wi-feedback'); feedback.setAttribute('role', 'status');
         function transferButton(label, action, comment = null, selectionHost = host) {
             const selectionText = () => { const selection = doc.getSelection(), thread = host.querySelector('.wi-thread'); return !comment && selection?.rangeCount && thread && selection.getRangeAt(0).intersectsNode(thread) ? '' : containedSelection(selectionHost, doc); };
@@ -318,8 +335,9 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
         commentShortcut.dataset.wiAddComment = '';
         commentShortcut.disabled = !!(d.commentOp || d.moveOp);
         const actions = el(doc, 'div', 'wi-actions'); actions.append(commentShortcut, transferButton('Discuss in project chat', text => bring(b, text, feedback)), transferButton('Copy item', async text => { try { await navigator.clipboard.writeText(text); note(feedback, 'Item copied.'); } catch { note(feedback, 'Copy is unavailable. Select the item text to copy.', true); } })); host.append(actions, feedback); moveChooser(b, d, host);
-        const identityRow = el(doc, 'p', 'wi-meta wi-item-identity', `Item ID: ${item.id}`); identityRow.append(button('Copy item ID', async () => { try { await navigator.clipboard.writeText(item.id); note(feedback, 'Item ID copied.'); } catch { note(feedback, 'Copy is unavailable. Select the item ID.', true); } })); host.append(identityRow);
-        if (workItemHref(item.id)) identityRow.append(button('Copy link', async () => {
+        const identityRow = el(doc, 'div', 'wi-item-identity'), copyActions = el(doc, 'div', 'wi-actions');
+        identityRow.append(el(doc, 'span', 'wi-meta', `Item ID: ${item.id}`), copyActions); copyActions.append(button('Copy item ID', async () => { try { await navigator.clipboard.writeText(item.id); note(feedback, 'Item ID copied.'); } catch { note(feedback, 'Copy is unavailable. Select the item ID.', true); } })); host.append(identityRow);
+        if (workItemHref(item.id)) copyActions.append(button('Copy link', async () => {
             try { await navigator.clipboard.writeText(new URL(workItemHref(item.id), doc.baseURI).href); note(feedback, 'Work Item link copied.'); }
             catch { note(feedback, `Copy is unavailable. Link: ${workItemHref(item.id)}`, true); }
         }));
@@ -329,8 +347,8 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
                 const f = field(label, d.fields[key], key, key !== 'title'); if (key === 'title') f.input.required = true;
                 f.input.disabled = !!d.operation; f.input.oninput = () => { d.fields[key] = f.input.value; }; form.append(f.wrap);
             }
-            const state = el(doc, 'label', 'wi-field', 'Disposition'), select = el(doc, 'select', 'ui-control'); select.name = 'disposition';
-            for (const [key, label] of Object.entries(DISPOSITIONS)) { const option = el(doc, 'option', '', label === 'Ideas' ? 'Idea' : label); option.value = key; select.append(option); } select.value = d.fields.disposition; select.disabled = !!d.operation; select.onchange = () => { d.fields.disposition = select.value; }; state.append(select); form.append(state);
+            const state = el(doc, 'label', 'wi-field', 'Status'), select = statusSelect(d.fields.disposition, value => { d.fields.disposition = value; select.dataset.disposition = value; });
+            select.disabled = !!d.operation; state.append(select); form.append(state);
             const archived = el(doc, 'label', 'wi-archive'), checkbox = el(doc, 'input'); checkbox.type = 'checkbox'; checkbox.checked = d.fields.archived; checkbox.disabled = !!d.operation; checkbox.onchange = () => { d.fields.archived = checkbox.checked; }; archived.append(checkbox, doc.createTextNode(' Archived')); form.append(archived);
             linkEditor(d, form);
             if (d.operation || d.moveOp) form.querySelectorAll('input,textarea,select,button').forEach(n => { n.disabled = true; });
@@ -340,8 +358,13 @@ export function createWorkItems({ sendToChat, openReference, onCaptured, read = 
         const notice = el(doc, 'div', 'wi-save-status'); notice.setAttribute('role', 'status'); notice.append(el(doc, 'p', '', d.notice));
         if (d.operation?.state === 'unknown') notice.append(button('Check current saved text', () => openItem(item.id)), button('Retry same request', () => save(b, d)));
         if (d.conflict) {
-            const compare = el(doc, 'section', 'wi-conflict'); compare.append(el(doc, 'h4', '', 'Saved elsewhere · your draft is kept'), multiline('Current title', d.conflict.title), multiline('Current description', d.conflict.description), multiline('Current outcome', d.conflict.outcome), el(doc, 'p', 'wi-meta', `Current disposition: ${d.conflict.disposition}. Saving replaces the complete editable item, including links, with your draft.`),
-                button('Save draft against this revision', () => save(b, d, true)), button('Use current saved item', () => { d.base = d.conflict; d.fields = fieldsOf(d.conflict); d.conflict = null; d.editing = false; d.notice = ''; void openItem(item.id); })); notice.append(compare);
+            const compare = el(doc, 'section', 'wi-conflict');
+            if (d.statusDraft) compare.append(el(doc, 'h4', '', 'Item changed elsewhere'), el(doc, 'p', 'wi-meta', `Current status: ${dispositionLabel(d.conflict.disposition)}. Your requested status is ${dispositionLabel(d.statusDraft)}. Only the status will change.`),
+                button('Apply status to current revision', () => save(b, d, true)), button('Keep current status', () => { d.statusDraft = ''; d.conflict = null; d.notice = ''; void openItem(item.id); }));
+            else compare.append(el(doc, 'h4', '', 'Saved elsewhere · your draft is kept'), multiline('Current title', d.conflict.title), multiline('Current description', d.conflict.description), multiline('Current outcome', d.conflict.outcome), el(doc, 'p', 'wi-meta', `Current disposition: ${d.conflict.disposition}. Saving replaces the complete editable item, including links, with your draft.`),
+                button('Save draft against this revision', () => save(b, d, true)), button('Use current saved item', () => { d.base = d.conflict; d.fields = fieldsOf(d.conflict); d.conflict = null; d.editing = false; d.notice = ''; void openItem(item.id); }));
+            // A conflict choice cannot discard or reinterpret an unresolved request.
+            compare.querySelectorAll('button').forEach(n => { n.disabled = !!d.operation; }); notice.append(compare);
         } host.append(notice);
         const linked = el(doc, 'section', 'wi-section'); linked.append(el(doc, 'h4', '', 'Linked work and references'));
         for (const ref of item.references || []) {

@@ -38,6 +38,15 @@
 .wi-detail-top h3 { font-size:var(--type-section); margin:6px 0 16px; line-height:var(--line-title); overflow-wrap:anywhere; }
 .wi-detail-top p { margin:0; }
 .wi-detail-top>.btn { flex:none; }
+.wi-status-row { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-3); margin-bottom:var(--space-3); }
+.wi-status-row>.wi-field { min-width:0; max-width:100%; }
+.wi-status-row p { margin:0; }
+.wi-disposition { font-size:var(--type-meta); font-weight:600; color:var(--text-primary); }
+.wi-disposition[data-disposition="idea"] { color:var(--status-warn-fg); }
+.wi-disposition[data-disposition="planned"] { color:var(--assistant-sender); }
+.wi-disposition[data-disposition="done"] { color:var(--status-ok-fg); }
+.wi-disposition option { color:var(--text-primary); background:var(--surface-control); }
+.wi-item-identity { display:flex; flex-direction:column; gap:var(--space-2); margin:var(--space-3) 0; }
 .wi-section,.wi-thread,.wi-link-editor { margin:24px 0 0; }
 .wi-section h4,.wi-thread h4,.wi-conflict h4 { font-size:var(--type-body); margin:0 0 8px; font-weight:600; }
 .wi-text { white-space:pre-wrap; overflow-wrap:anywhere; line-height:var(--line-body); margin:6px 0; }

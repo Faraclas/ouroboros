@@ -26,6 +26,7 @@ from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Set
 
 from ouroboros.anthropic_native_custody import is_replayed_native_content
+from ouroboros.llm_observability import physical_activity_scoped
 from ouroboros.context_budget import (
     CONTEXT_OVERFLOW_CODES, HOST_CONTEXT_KIND_KEY, HOST_TEXT_SHA_KEY, context_overflow_message,
 )
@@ -776,6 +777,7 @@ def _candidate_before_dispatch(candidate: Dict[str, Any], request: AttemptReques
     return _persist
 
 
+@physical_activity_scoped
 def _execute_candidate(request: AttemptRequest, send: Any, before_dispatch: Any) -> Any:
     """Keep existing two-argument injected executors usable."""
     adopt_physical_attempt_capture(None)
@@ -789,6 +791,7 @@ def _execute_candidate(request: AttemptRequest, send: Any, before_dispatch: Any)
     return _retain_received_candidate(request, response)
 
 
+@physical_activity_scoped
 async def _execute_candidate_async(request: AttemptRequest, send: Any, before_dispatch: Any) -> Any:
     adopt_physical_attempt_capture(None)
     from ouroboros._usage_wait import presend_off_loop, retry_presend

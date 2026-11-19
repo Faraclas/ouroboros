@@ -438,6 +438,31 @@ def prepare(ctx: Any, *, resume: str = "") -> Dict[str, Any]:
         return _prepare_locked(ctx, resume)
 
 
+def merge_source_commit(ctx: Any, selector: str) -> Dict[str, str]:
+    """Resolve an immutable history import, NOT checkout ownership or review authority.
+
+    Registered aliases select their branch; after retirement use an exact candidate
+    branch or preservation pin. Pins contain filesystem snapshots, not index restoration.
+    Donor liveness is irrelevant: no donor ref, checkout or ownership is changed.
+    """
+    selector = str(selector or "").strip()
+    row = _select(selector)
+    ref = "refs/heads/" + str(row.get("branch") or "") if row else selector
+    if ref.startswith(BRANCH_PREFIX):
+        ref = "refs/heads/" + ref
+    serving = serving_repo_dir_for(ctx)
+    if not ref.startswith(("refs/heads/" + BRANCH_PREFIX, PIN_PREFIX)) or _git(
+            serving, "check-ref-format", ref, check=False).returncode:
+        raise CandidateRefused("CANDIDATE_MERGE_SOURCE_INVALID",
+                               "select a registered candidate or an exact candidate branch/preservation ref.")
+    if ref == "refs/heads/" + str(descriptor(ctx).get("branch") or ""):
+        raise CandidateRefused("CANDIDATE_MERGE_SOURCE_INVALID", "a candidate cannot merge its current branch.")
+    found = _git(serving, "rev-parse", "--verify", "-q", f"{ref}^{{commit}}", check=False)
+    if found.returncode:
+        raise CandidateRefused("CANDIDATE_MISSING", f"no retained commit at {ref} exists.")
+    return {"ref": ref, "sha": found.stdout.strip()}
+
+
 def _forget_missing(row: Dict[str, Any]) -> None:
     """Drop the row of a checkout that is gone; its branch keeps whatever it committed."""
     path = str(row.get("path") or "")
@@ -450,7 +475,7 @@ def _forget_missing(row: Dict[str, Any]) -> None:
 
 
 def _prepare_locked(ctx: Any, resume: str) -> Dict[str, Any]:
-    if is_bound(ctx) and not resume:
+    if is_bound(ctx) and not resume and pathlib.Path(descriptor(ctx)["path"]).is_dir():
         reattribute(ctx)  # restore() may have bound before the host baseline existed
         return {**descriptor(ctx), "state": "bound"}
     refusal = _refusal_before_prepare(ctx)
@@ -482,7 +507,7 @@ def _prepare_locked(ctx: Any, resume: str) -> Dict[str, Any]:
                 if exc.code != "CANDIDATE_MISSING":
                     raise
                 # GC won the decision lock after find: continue in a fresh checkout.
-        lost_branch = ""
+        lost_branch = str(descriptor(ctx).get("branch") or "") if is_bound(ctx) else ""
         if row is not None and not pathlib.Path(str(row.get("path") or "")).is_dir():
             # Nothing on disk to lose: start again; the old branch keeps its commits.
             lost_branch = str(row.get("branch") or "")

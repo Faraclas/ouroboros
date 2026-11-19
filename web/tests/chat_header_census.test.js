@@ -192,11 +192,12 @@ for (const chatId of [1, 7]) {
                 ['queued', 'Queued', 'Request accepted · waiting for admission', 'working'],
                 ['dispatching', 'Sending', 'Preparing request dispatch', 'sending'],
                 ['awaiting_response', 'Sending', 'Sending request / waiting for response', 'sending'],
+                ['receiving', 'Receiving', 'Model output arriving', 'receiving'],
                 ['rejoining', 'Rejoining', 'Rejoining the same model operation', 'working'],
                 ['response_received', 'Working', 'Response received · processing', 'working'],
             ]) {
                 show(phase, call);
-                assert.equal(fx.status(), call === 'sending' ? 'Sending' : 'Working');
+                assert.equal(fx.status(), call === 'sending' ? 'Sending' : call === 'receiving' ? 'Receiving' : 'Working');
                 assert.equal(fx.card(row.activity_id).querySelector('[data-live-phase]').textContent, expected);
                 // The exact phase waits in the card's details, the same card the chip names.
                 assert.equal(fx.card(row.activity_id).querySelector('[data-live-phase-detail]').textContent, `Model call: ${exact}`);
@@ -206,9 +207,9 @@ for (const chatId of [1, 7]) {
             assert.equal(fx.status(), 'Reconnecting…');
             fx.handlers.get('chat')({ task_id: row.activity_id, chat_id: chatId, role: 'assistant',
                 content: 'Done', system_type: 'task_summary', task_terminal_status: 'completed', ts: '2026-10-11T00:00:01Z' });
-            show('queued');
+            show('receiving', 'receiving');
             assert.equal(fx.card(row.activity_id).querySelector('[data-live-phase]').textContent, 'Done');
-            assert.notEqual(fx.status(), 'Queued');
+            assert.notEqual(fx.status(), 'Receiving');
         } finally { fx.instance.destroy(); restoreDom(fx.prior); }
     });
 }

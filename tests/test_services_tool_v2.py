@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 
 import pytest
 from types import SimpleNamespace
@@ -862,6 +863,35 @@ def test_service_outputs_register_artifacts_on_stop(tmp_path, monkeypatch):
     assert "ARTIFACT_OUTPUTS" in stopped["artifact_outputs"]
     artifact_path = drive / "task_results" / "artifacts" / "task-service-output" / "service.html"
     assert artifact_path.read_text(encoding="utf-8") == "<h1>ok</h1>"
+
+
+def test_service_directory_output_with_native_non_utf8_filename_exports(tmp_path, monkeypatch):
+    _force_light_runtime(monkeypatch)
+    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
+    repo = tmp_path / "repo"
+    drive = tmp_path / "data"
+    repo.mkdir()
+    registry = ToolRegistry(repo_dir=repo, drive_root=drive)
+    registry._ctx.task_id = "task-native-name"
+    task_drive = drive / "task_drives" / "task-native-name"
+    task_drive.mkdir(parents=True)
+    script = ("import os; os.mkdir('ev'); open(os.fsencode('ev')+b'/bad\\xff.txt','wb').write(b'native'); "
+              "open('ev/plain.txt','w').write('plain'); print('READY', flush=True)")
+    registry.execute("start_service", {
+        "name": "native_names", "cmd": [sys.executable, "-c", script], "cwd": str(task_drive),
+        "outputs": ["ev"], "readiness": {"timeout_sec": 1},
+    })
+    _wait_for_service_log(drive, "task-native-name", "native_names.log", lambda b: b"READY" in b)
+
+    stopped = json.loads(registry.execute("stop_service", {"name": "native_names"}))
+
+    assert stopped.get("artifact_output_failed") is not True, stopped
+    assert "ARTIFACT_OUTPUTS" in stopped["artifact_outputs"], stopped
+    artifact_dir = drive / "task_results" / "artifacts" / "task-native-name"
+    manifest = json.loads(next(artifact_dir.glob("*.manifest.json")).read_text(encoding="utf-8"))
+    assert {row["path"] for row in manifest["files"]} == {"bad\udcff.txt", "plain.txt"}
+    with zipfile.ZipFile(next(artifact_dir.glob("*.zip"))) as archive:
+        assert archive.read("bad%ff.txt") == b"native"
 
 
 def test_stop_task_services_preserves_output_finalization_failure(tmp_path, monkeypatch):

@@ -120,6 +120,16 @@ def test_model_phase_card_header_reconnect_and_terminal(project_chat, chat_id, t
     show("awaiting_response", "Sending", "Sending request / waiting for response", room="Sending")
     assert "Thinking" not in badge.inner_text()
     page.screenshot(path=str(_evidence_dir(tmp_path) / f"phase-awaiting-{suffix}.png"), animations="disabled")
+    # Scripted upstream receipt, not generated prose; the existing mark and short word suffice.
+    show("receiving", "Receiving", "Model output arriving", room="Receiving")
+    expect(chip.locator(":scope > .status-mark")).to_have_attribute("data-shape", "moving")
+    expect(chip).to_have_attribute("data-chip-tone", "live")
+    page.screenshot(path=str(_evidence_dir(tmp_path) / f"phase-receiving-{suffix}.png"), animations="disabled")
+    page.evaluate("window.connection(false)")
+    expect(badge).to_have_text("Reconnecting…")
+    page.reload()
+    expect(badge).to_have_text("Receiving")
+    expect(chip).to_have_text("Receiving")
     # The owner's 2026-10-12 view: title primary beside a short chip, at the native window
     # width, a phone and a narrower phone; details opened show the exact phase and cost reason.
     for width in (1100, 390, 320):
@@ -131,16 +141,19 @@ def test_model_phase_card_header_reconnect_and_terminal(project_chat, chat_id, t
         assert card.evaluate("el => el.scrollWidth <= el.clientWidth + 1")
         page.screenshot(path=str(_evidence_dir(tmp_path) / f"phase-short-{suffix}-{width}.png"), animations="disabled")
         disclosure.click()
-        expect(phase_detail).to_have_text("Model call: Sending request / waiting for response")
+        expect(phase_detail).to_have_text("Model call: Model output arriving")
         expect(cost_detail).to_be_visible()
         assert card.evaluate("el => el.scrollWidth <= el.clientWidth + 1")
         page.screenshot(path=str(_evidence_dir(tmp_path) / f"phase-details-{suffix}-{width}.png"), animations="disabled")
         disclosure.click()
     set_viewport(page, ui["width"], 850)
+    show("preparing", "Preparing", "Preparing request", room="Preparing")
+    show("awaiting_response", "Sending", room="Sending")
     show("rejoining", "Rejoining", "Rejoining the same model operation")
     expect(chip.locator(":scope > .status-mark")).to_have_attribute("data-shape", "still")
     show("response_ready", "Working", "Response available")
     show("response_received", "Working", "Response received · processing")
+    show("receiving", "Receiving", room="Receiving")
     stale = deepcopy(ui["state"])
     plain("working", "Working")
     page.evaluate("chatId => window.emit('chat', {chat_id: chatId, task_id: 'phase-task', role: 'assistant',"
@@ -151,4 +164,20 @@ def test_model_phase_card_header_reconnect_and_terminal(project_chat, chat_id, t
     assert phase_detail.text_content() == "", "a stale model observation never survives the terminal"
     expect(chip.locator(":scope > .status-mark")).to_have_attribute("data-shape", "dot")
     expect(chip).to_have_attribute("data-chip-tone", "ok")
+    assert page.evaluate("window.sentFrames") == [], "phase observations send no message/notification/ack"
+    assert len(ui["rows"]) == 1, "phase changes append no history rows"
+    assert "PRIVATE-INERT-DELTA" not in page.content()
+    # Persist the scripted final as history and settle the census, then cold-reopen it.
+    # The deliberately stale census above proves no Receiving on the finished card;
+    # current complete absence also retires its room status and any transient typing row.
+    ui["rows"].append({"task_id": "phase-task", "chat_id": chat_id, "role": "assistant",
+        "text": "Finished the requested work.", "system_type": "task_summary",
+        "task_terminal_status": "completed", "ts": "2026-10-11T00:00:01Z", "history_id": "final:phase-task"})
+    ui["state"]["active_chat_activities"].clear()
+    page.evaluate("state => window.chat.hydrateStateSnapshot(state)", with_work_fields(ui["state"]))
+    expect(badge).to_have_text("Online")
+    page.reload()
+    expect(badge).to_have_text("Online")
+    expect(chip).to_have_text("Done")
+    assert "Receiving" not in page.locator("#content").inner_text()
     page.screenshot(path=str(_evidence_dir(tmp_path) / f"phase-terminal-{suffix}.png"), animations="disabled")

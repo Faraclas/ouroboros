@@ -18,9 +18,10 @@ def row(task_id, phase="working", **extra):
 
 # ---- one member ---------------------------------------------------------------------------------------
 
-def test_working_member_names_its_exact_call():
-    state = ws.classify_member(row("t", model_activity={"phase": "awaiting_response"}))
-    assert (state["activity"], state["call"], state["release"]) == ("working", "sending", "self")
+@pytest.mark.parametrize("phase,call", [("awaiting_response", "sending"), ("receiving", "receiving")])
+def test_working_member_names_its_exact_call(phase, call):
+    state = ws.classify_member(row("t", model_activity={"phase": phase}))
+    assert (state["activity"], state["call"], state["release"]) == ("working", call, "self")
     assert ws.classify_member(row("t", "thinking"))["call"] == "thinking"
     assert ws.classify_member(row("t", "preparing", kind="direct_chat"))["call"] == "preparing"
 

@@ -15,6 +15,15 @@ from ouroboros.artifact_storage import temporary_sibling
 from ouroboros.utils import atomic_write_json
 
 
+def archive_member_name(rel: str) -> str:
+    """The ZIP entry name for a member: ``rel`` itself unless it carries filesystem surrogateescape
+    bytes, which a ZIP header cannot encode. Those are spelled ``%NN`` (and ``%`` as ``%25``) in the entry only; the manifest
+    keeps the exact native name (JSON-escaped, reversible) beside the entry name."""
+    if not any("\udc80" <= ch <= "\udcff" for ch in rel):
+        return rel
+    return "".join(f"%{ord(ch) - 0xdc00:02x}" if "\udc80" <= ch <= "\udcff" else "%25" if ch == "%" else ch for ch in rel)
+
+
 def iter_artifact_tree(root: pathlib.Path) -> Iterable[pathlib.Path]:
     """Enumerate the full tree without following directory links or hiding I/O failures."""
     def failed(exc: OSError) -> None:
@@ -103,12 +112,18 @@ def copy_directory_to_task_artifacts(
                 or os.name == "nt" and "\\" in rel):
             raise OSError(f"invalid or duplicate directory member name: {rel}")
         seen.add(rel)
+    archive_names: set[str] = set()
+    for rel, _path in entries:
+        name = archive_member_name(rel)
+        if name in archive_names or name != rel and name in seen:
+            raise OSError(f"directory member archive name collides with another member: {name}")
+        archive_names.add(name)
     from ouroboros.store import is_wal_index  # shared memory no raw reader opens; a copy rebuilds its own
 
     excluded = [{"path": rel, "reason": "SQLite WAL index"} for rel, p in entries if is_wal_index(p)]
     entries = [(rel, p) for rel, p in entries if not is_wal_index(p)]
     file_records: List[Dict[str, Any]] = []
-    tree_hasher = sha256(str(source).encode("utf-8", errors="replace") + b"\0")
+    tree_hasher = sha256(str(source).encode("utf-8", errors="surrogateescape") + b"\0")
     tmp_zip_path = temporary_sibling(artifact_dir / "directory.zip")
     tmp_ledger_path = temporary_sibling(artifact_dir / "directory.json")
     try:
@@ -117,11 +132,11 @@ def copy_directory_to_task_artifacts(
                 if (path.is_symlink() or not path.is_file()
                         or member_sources is not None and path.resolve(strict=True) != path.absolute()):
                     raise OSError(f"directory member is unavailable: {path}")
-                with archive.open(rel, "w", force_zip64=True) as member:
+                with archive.open(archive_member_name(rel), "w", force_zip64=True) as member:
                     measured = stream_artifact_file(path, member)
-                tree_hasher.update(rel.encode("utf-8", errors="replace") + b"\0")
+                tree_hasher.update(rel.encode("utf-8", errors="surrogateescape") + b"\0")
                 tree_hasher.update(measured["sha256"].encode("ascii") + b"\0")
-                file_records.append({"path": rel, **measured})
+                file_records.append({"path": rel, **({"archive_name": archive_member_name(rel)} if archive_member_name(rel) != rel else {}), **measured})
         safe_stem = source.name.replace("/", "_").replace("\\", "_") or "directory"
         tree_digest = tree_hasher.hexdigest()[:8]
         ledger_path = artifact_dir / f"{safe_stem}.{tree_digest}.manifest.json"

@@ -156,6 +156,8 @@ def _call(row: Mapping[str, Any]) -> str:
     operation = activity.get("phase")
     if operation in {"dispatching", "awaiting_response"}:
         return "sending"
+    if operation == "receiving":
+        return "receiving"
     if operation == "preparing":
         return "preparing"
     if phase == "thinking":

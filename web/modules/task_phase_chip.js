@@ -27,6 +27,7 @@ const CHIP = {
     working: () => tr('task.chip.working', 'Working'),
     preparing: () => tr('task.chip.preparing', 'Preparing'),
     sending: () => tr('task.chip.sending', 'Sending'),
+    receiving: () => tr('task.chip.receiving', 'Receiving'),
     rejoining: () => tr('task.chip.rejoining', 'Rejoining'),
     thinking: () => tr('task.chip.thinking', 'Thinking'),
     queued: () => tr('task.chip.queued', 'Queued'),
@@ -115,6 +116,7 @@ export function modelActivityPresentation(activity) {
         preparing: [CHIP.preparing, 'Preparing request'], queued: [CHIP.queued, 'Request accepted · waiting for admission'],
         dispatching: [CHIP.sending, 'Preparing request dispatch'],
         awaiting_response: [CHIP.sending, 'Sending request / waiting for response'],
+        receiving: [CHIP.receiving, 'Model output arriving'],
         response_ready: [CHIP.working, 'Response available'], response_received: [CHIP.working, 'Response received · processing'],
         rejoining: [CHIP.rejoining, 'Rejoining the same model operation'], unknown: [CHIP.unconfirmed, 'Model operation unconfirmed'],
     };

@@ -649,7 +649,7 @@ def _register_process_outputs(
                     kind="process_output_directory",
                     **({"member_sources": dir_members} if resolved else {"member_paths": dir_members}),
                 )
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 notes.append(f"failed directory output copy {text}: {type(exc).__name__}: {exc}")
                 failed = True
                 continue

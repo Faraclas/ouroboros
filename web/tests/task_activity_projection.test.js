@@ -82,6 +82,7 @@ for (const [phase, text, mark, detail] of [
     ['queued', 'Queued', 'still/ink', 'Request accepted · waiting for admission'],
     ['dispatching', 'Sending', 'moving/ink', 'Preparing request dispatch'],
     ['awaiting_response', 'Sending', 'moving/ink', 'Sending request / waiting for response'],
+    ['receiving', 'Receiving', 'moving/ink', 'Model output arriving'],
     ['response_ready', 'Working', 'moving/ink', 'Response available'],
     ['response_received', 'Working', 'moving/ink', 'Response received · processing'],
     ['rejoining', 'Rejoining', 'still/ink', 'Rejoining the same model operation'],
