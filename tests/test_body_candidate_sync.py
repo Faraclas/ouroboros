@@ -375,3 +375,49 @@ def test_merge_path_selection_keeps_noncontent_changes_and_foreign_dirt(candidat
     assert git(repo, "rev-parse", "HEAD") == authored
     assert git(repo, "rev-parse", "MERGE_HEAD") == incoming
     assert git(repo, "show", ":foreign.txt") == "preexisting work"
+
+
+@pytest.mark.parametrize("filename", ["peer.txt", "peer[1].txt"])
+def test_ignored_incoming_addition_stays_required_after_handback(candidate, filename):  # noqa: F811
+    import time
+    from ouroboros.tools import git as owner
+
+    ctx, repo = candidate, candidate.repo_dir
+    branch = git(repo, "branch", "--show-current")
+    (repo / ".gitignore").write_bytes(b"peer*\n")
+    git(repo, "add", ".gitignore")
+    git(repo, "commit", "-m", "base with ignored name")
+    git(repo, "checkout", "-b", "ignored-peer")
+    (repo / filename).write_bytes(b"tracked incoming data\n")
+    git(repo, "add", "-f", f":(literal){filename}")
+    git(repo, "commit", "-m", "tracked ignored addition")
+    incoming = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", branch)
+    candidate_commit(repo, files={"mine.txt": "mine\n"})
+    git(repo, "merge", "--no-ff", "--no-commit", incoming)
+    git(repo, "reset", "HEAD", "--", ":/")  # ordinary review handback
+    assert filename not in git(repo, "status", "--porcelain")
+    _, _, error = owner._stage_candidate_for_review(
+        ctx, "incomplete ignored merge", time.time(), paths=["mine.txt"], came_from_detached_checkout=False)
+    assert "GIT_PARTIAL_MERGE_BLOCKED" in error["message"]
+    assert git(repo, "rev-parse", "MERGE_HEAD") == incoming
+    assert (repo / filename).read_bytes() == b"tracked incoming data\n"
+
+
+@pytest.mark.parametrize("status_fails", [False, True])
+def test_empty_staged_status_reads_fallback_names_once(candidate, monkeypatch, status_fails):  # noqa: F811
+    import time
+    from ouroboros.tools import git as owner
+
+    calls = []
+    def command(argv, **kwargs):
+        calls.append(argv)
+        if "--name-status" in argv and status_fails:
+            raise RuntimeError("primary status failure")
+        return "?? draft.txt\n" if argv[1] == "status" else ""
+    monkeypatch.setattr(owner, "run_cmd", command)
+    candidate._review_resume_pending = True
+    assert owner._stage_candidate_for_review(
+        candidate, "empty stage", time.time(), paths=["draft.txt"], came_from_detached_checkout=False,
+    ) == ([], None, None)
+    assert sum("--name-only" in argv for argv in calls) == 1
