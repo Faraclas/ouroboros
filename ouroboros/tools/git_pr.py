@@ -25,11 +25,11 @@ BODY_WORKTREE_TOOLS = frozenset({
 
 
 def _g(args: List[str], cwd: pathlib.Path,
-       env: Optional[dict] = None, timeout: int = 60) -> subprocess.CompletedProcess:
+       env: Optional[dict] = None, timeout: int = 60, *, text: bool = True) -> subprocess.CompletedProcess:
     from ouroboros.git_observation import host_git_env
     return subprocess.run(
         ["git"] + args, cwd=str(cwd),
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=text, timeout=timeout,
         env=host_git_env(env),
     )
 
@@ -614,8 +614,8 @@ def _stage_pr_merge(
     )
 
 
-def _candidate_merge(ctx: ToolContext, action: str = "stage") -> str:
-    """Stage accepted serving history without moving HEAD or rewriting commits.
+def _candidate_merge(ctx: ToolContext, action: str = "stage", source: str = "") -> str:
+    """Stage serving history or an explicit candidate snapshot without rewriting commits.
 
     Git owns conflicts and overwrite refusals. No automatic reset or stash hides
     a conflict. Abort has Git's ordinary limitation for post-start edits; the
@@ -657,22 +657,48 @@ def _candidate_merge(ctx: ToolContext, action: str = "stage") -> str:
             path = pathlib.Path(location.stdout.strip())
             if (path if path.is_absolute() else repo / path).exists():
                 return "⚠️ CANDIDATE_MERGE_IN_PROGRESS_BLOCKED: finish or explicitly abort the existing Git operation first."
-        target = _g(["rev-parse", "--verify", "HEAD^{commit}"], body_candidate.serving_repo_dir_for(ctx))
-        if target.returncode:
-            return "⚠️ CANDIDATE_MERGE_FAILED: serving HEAD is unavailable.\n" + _sanitize_git_error(target.stderr)
-        sha = target.stdout.strip()
+        recovered = ""
+        if str(source or "").strip():
+            try:
+                found = body_candidate.merge_source_commit(ctx, source)
+            except body_candidate.CandidateRefused as exc:
+                return f"⚠️ {exc.code}: {exc}"
+            sha = found["sha"]
+            from ouroboros.config import get_runtime_mode
+            from ouroboros.consciousness_authority import effective_runtime_mode
+            from ouroboros.runtime_mode_policy import mode_allows_protected_write, protected_paths_in, protected_write_block_message
+
+            mode = effective_runtime_mode(get_runtime_mode(), ctx.task_metadata)
+            if not mode_allows_protected_write(mode):
+                # Only donor changes that differ from our tree can write here.
+                observed = [_g(["diff", "--no-renames", "--name-only", "-z", span], repo, text=False)
+                            for span in (f"HEAD...{sha}", f"HEAD..{sha}")]
+                if any(result.returncode for result in observed):
+                    return "⚠️ CANDIDATE_MERGE_FAILED: source paths unavailable; nothing was staged."
+                incoming, different = [set(os.fsdecode(path) for path in result.stdout.split(b"\0") if path)
+                                       for result in observed]
+                if protected := protected_paths_in(sorted(incoming & different)):
+                    return protected_write_block_message(path=protected[0].path, runtime_mode=mode, action="import")
+            recovered = f"candidate snapshot {found['ref']} (unreviewed import; no ownership transfer)"
+        else:
+            target = _g(["rev-parse", "--verify", "HEAD^{commit}"], body_candidate.serving_repo_dir_for(ctx))
+            if target.returncode:
+                return "⚠️ CANDIDATE_MERGE_FAILED: serving HEAD is unavailable.\n" + _sanitize_git_error(target.stderr)
+            sha = target.stdout.strip()
         result = _g(["-c", "merge.autostash=false", "merge", "--no-ff", "--no-commit", sha], repo)
         if result.returncode:
             return ("⚠️ CANDIDATE_MERGE_FAILED: merge not completed; inspect vcs_read status/diff. "
                     "Conflicts remain for resolution or candidate_merge(action='abort'); no automatic reset.\n"
                     + _sanitize_git_error(result.stdout + result.stderr))
         if _g(["rev-parse", "-q", "--verify", "MERGE_HEAD"], repo).returncode:
-            return f"Candidate already contains accepted serving HEAD {sha}; no merge or tests performed."
-        return (f"Staged accepted serving HEAD {sha} into {bound['branch']} (NOT committed). "
+            return f"Candidate already contains {recovered or 'accepted serving HEAD'} {sha}; no merge or tests performed."
+        return (f"Staged {recovered or 'accepted serving HEAD'} {sha} into {bound['branch']} (NOT committed). "
                 "Original HEAD and commit SHAs remain; serving files are untouched. "
                 "Continue here, check interactions proportionately and finish the combined candidate through "
                 "commit_reviewed. Synchronization ran no tests, review, fetch or adoption. "
-                "Preserve post-start edits before aborting.")
+                "Preserve post-start edits before aborting. Branch sources contain committed history only; "
+                "preserved filesystem snapshots require an explicit refs/ouroboros/candidates/<id> source; "
+                "neither restores a staged/unstaged split.")
     finally:
         _release_git_lock(lock)
 
@@ -684,9 +710,10 @@ def get_tools() -> List[ToolEntry]:
             "description": (
                 "Merge accepted serving HEAD into your owned candidate, same task. stage: --no-ff --no-commit; "
                 "no tests/review/fetch/adoption. Disjoint unstaged edits survive; Git refuses overwrites, keeps conflicts. "
-                "abort: native merge --abort, preserve post-start edits first. Serving stays untouched. Finish with commit_reviewed."),
+                "abort: native merge --abort, preserve post-start edits first. Serving stays untouched. Finish with commit_reviewed. source: registered candidate id/task or exact candidate/* branch / refs/ouroboros/candidates/<id> pin. Import its resolved commit, even from a live donor; no donor ref, checkout or ownership changes. Branches contain committed history only; explicit pins contain preserved filesystem snapshots, not index restoration. Imported changes still need review/qualification."),
             "parameters": {"type": "object", "properties": {
                 "action": {"type": "string", "enum": ["stage", "abort"], "default": "stage"},
+                "source": {"type": "string", "default": ""},
             }},
         }, _candidate_merge, is_code_tool=True, mutates_worktree=True, safety_policy="check"),
         ToolEntry("fetch_pr_ref", {

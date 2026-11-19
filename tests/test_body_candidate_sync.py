@@ -138,9 +138,9 @@ from tests.test_git_review_preflight_gate import candidate  # noqa: F401
 
 @pytest.mark.parametrize("enforcement", ["advisory", "blocking"])
 @pytest.mark.parametrize("explicit_paths", [False, True])
-@pytest.mark.parametrize("peer_release", [False, True])
+@pytest.mark.parametrize(("peer_release", "recovery", "history_only"), [(False, False, False), (True, False, False), (False, True, False), (False, True, True)])
 @pytest.mark.parametrize("converged", [False, True])
-def test_review_handback_preserves_second_parent(candidate, monkeypatch, enforcement, explicit_paths, peer_release, converged):  # noqa: F811
+def test_review_handback_preserves_second_parent(candidate, monkeypatch, enforcement, explicit_paths, peer_release, converged, recovery, history_only):  # noqa: F811
     """Run the real reviewed-commit cycle through feedback, not just raw git commit."""
     import json
     from ouroboros.mutation_attribution import capture_mutation_baseline
@@ -156,6 +156,9 @@ def test_review_handback_preserves_second_parent(candidate, monkeypatch, enforce
     git(repo, "add", "VERSION")
     git(repo, "commit", "-m", "base version")
     (repo / "change.py").write_bytes(b"value = 4\n")
+    if history_only:
+        (repo / "peer.txt").write_bytes(b"accepted\n")
+        git(repo, "add", "peer.txt")
     if converged:
         (repo / "converged.txt").write_bytes(b"same independent contribution\n")
         git(repo, "add", "converged.txt")
@@ -163,24 +166,30 @@ def test_review_handback_preserves_second_parent(candidate, monkeypatch, enforce
     git(repo, "commit", "-m", "author work")
     authored = git(repo, "rev-parse", "HEAD")
     base = git(repo, "rev-parse", "HEAD~1")
-    git(repo, "checkout", "-b", "accepted-peer", base)
+    git(repo, "checkout", "-b", "candidate/recovered-peer" if recovery else "accepted-peer", base)
     if peer_release:
         (repo / "VERSION").write_bytes(b"2.0.0\n")
     if converged:
         (repo / "converged.txt").write_bytes(b"same independent contribution\n")
     accepted = peer(repo, "peer.txt", "accepted\n")
-    if peer_release:
-        git(repo, "tag", "-a", "v2.0.0", "-m", "peer release", accepted)
+    if peer_release or recovery:
+        if peer_release:
+            git(repo, "tag", "-a", "v2.0.0", "-m", "peer release", accepted)
         serving = repo.parent / "serving"
-        git(repo, "worktree", "add", "--detach", str(serving), accepted)
+        git(repo, "worktree", "add", "--detach", str(serving), base if recovery else accepted)
         ctx.serving_repo_dir = serving
-        ctx.task_metadata = {"body_candidate": {"id": "fixture", "path": str(repo)}}
+        ctx.task_metadata = {"body_candidate": {"id": "fixture", "path": str(repo), "branch": branch}}
     git(repo, "checkout", branch)
     write_task_result(ctx.drive_root, ctx.task_id, "running")
     capture_mutation_baseline(ctx.drive_root, ctx.task_id,
                               [{"surface_type": "system_repo", "host_root": str(repo)}])
-    git(repo, "merge", "--no-ff", "--no-commit", accepted)
-    if explicit_paths:
+    if recovery:
+        assert "NOT committed" in _candidate_merge(ctx, source="candidate/recovered-peer")
+        from ouroboros.tools.git_review_cycle import _accepted_merge_refs
+        assert _accepted_merge_refs(ctx) == []
+    else:
+        git(repo, "merge", "--no-ff", "--no-commit", accepted)
+    if explicit_paths and not history_only:
         (repo / "change.py").write_bytes(b"value = 3\n")
         (repo / "draft.txt").write_bytes(b"unfinished\n")
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", enforcement)
@@ -199,10 +208,10 @@ def test_review_handback_preserves_second_parent(candidate, monkeypatch, enforce
         return "fixture feedback", CouplingOutcome(verdict="PASS", status="responded"), "critical_findings", []
 
     monkeypatch.setattr(owner, "_run_parallel_review", reviewer)
-    paths = ["change.py", "peer.txt"] if explicit_paths else None
+    paths = [] if history_only else (["change.py", "peer.txt"] if explicit_paths else None)
     if paths and peer_release:
         paths.append("VERSION")
-    if explicit_paths:
+    if explicit_paths and not history_only:
         refused = owner._repo_commit_push(ctx, "Finish merge", paths=["change.py"], skip_advisory_review=True)
         assert "GIT_PARTIAL_MERGE_BLOCKED" in refused
         assert not reviews
@@ -222,7 +231,7 @@ def test_review_handback_preserves_second_parent(candidate, monkeypatch, enforce
         return
     assert first.startswith("Review outcome returned before commit"), first
     reference = json.loads(first.split("\n", 1)[1])["review_reference"]
-    if explicit_paths:
+    if explicit_paths and not history_only:
         refused = owner._repo_commit_push(ctx, "Finish merge", paths=["change.py"], skip_advisory_review=True)
         assert "GIT_PARTIAL_MERGE_BLOCKED" in refused
         assert git(repo, "rev-parse", "MERGE_HEAD") == accepted
@@ -234,7 +243,7 @@ def test_review_handback_preserves_second_parent(candidate, monkeypatch, enforce
     assert git(repo, "show", "HEAD:peer.txt") == "accepted"
     if converged:
         assert git(repo, "show", "HEAD:converged.txt") == "same independent contribution"
-    if explicit_paths:
+    if explicit_paths and not history_only:
         assert git(repo, "show", "HEAD:change.py") == "value = 3"
         assert (repo / "draft.txt").read_bytes() == b"unfinished\n"
         assert "?? draft.txt" in git(repo, "status", "--porcelain")
@@ -329,6 +338,44 @@ def test_staging_git_failure_keeps_publication_and_original_error(candidate, mon
         assert observed == (["publish"] if resuming else ["publish", "record"])
 
 
+def _retire_checkout_and_row(candidate_row):
+    import shutil
+
+    shutil.rmtree(candidate_row["path"])
+    body_candidate._forget_missing(candidate_row)
+
+
+def test_missing_checkout_branch_is_recovered_by_a_real_two_parent_merge(history):
+    from tests.test_body_candidate import _terminal
+
+    serving, data, ctx, candidate = history
+    old_ctx = make_ctx(serving, data, "old-author")
+    old_row = body_candidate.prepare(old_ctx)
+    old_tip = candidate_commit(pathlib.Path(old_row["path"]), "old work", files={"old_work.txt": "kept\n"})
+    old_branch = old_row["branch"]
+
+    # Import reads one committed snapshot; taking that live checkout still refuses.
+    with pytest.raises(body_candidate.CandidateRefused, match="belongs to task"):
+        body_candidate.prepare(make_ctx(serving, data, "transfer-attempt"), resume="old-author")
+    assert "NOT committed" in _candidate_merge(ctx, source="old-author")
+    assert body_candidate.find("old-author")["task_id"] == "old-author"
+    assert "aborted" in _candidate_merge(ctx, "abort")
+    _terminal(data, "old-author")
+    _retire_checkout_and_row(body_candidate.find("old-author"))
+    assert body_candidate.find("old-author") is None
+    own_tip = git(candidate, "rev-parse", "HEAD")
+
+    for bad in ("no-such", "main", ctx.task_id):
+        assert "⚠️" in _candidate_merge(ctx, source=bad)
+    result = _candidate_merge(ctx, source=old_branch)
+    assert "NOT committed" in result and old_branch in result
+    assert git(candidate, "rev-parse", "HEAD") == own_tip
+    assert git(candidate, "rev-parse", "MERGE_HEAD") == old_tip
+    assert (candidate / "old_work.txt").read_text() == "kept\n"
+    assert git(serving, "rev-parse", old_branch) == old_tip  # donor branch intact
+    assert "aborted" in _candidate_merge(ctx, "abort")
+
+
 @pytest.mark.parametrize("kind", ["delete", "rename", "mode", "restore"])
 def test_merge_path_selection_keeps_noncontent_changes_and_foreign_dirt(candidate, monkeypatch, kind):  # noqa: F811
     import time
@@ -421,3 +468,265 @@ def test_empty_staged_status_reads_fallback_names_once(candidate, monkeypatch, s
         candidate, "empty stage", time.time(), paths=["draft.txt"], came_from_detached_checkout=False,
     ) == ([], None, None)
     assert sum("--name-only" in argv for argv in calls) == 1
+
+
+@pytest.mark.parametrize("generation", [1, 2])
+def test_same_live_owner_recovers_exact_previous_branch_without_guessing(history, generation):
+    serving, data, ctx, candidate = history
+    tip = candidate_commit(candidate, files={"recovered.txt": "generation one\n"})
+    for number in range(generation):
+        previous = body_candidate.find(ctx.task_id)
+        old_branch = previous["branch"]
+        _retire_checkout_and_row(previous)
+        # A fresh worker has no stale binding; prepare creates the next free branch.
+        ctx = make_ctx(serving, data, ctx.task_id)
+        new = body_candidate.prepare(ctx)
+        candidate = pathlib.Path(new["path"])
+        if number + 1 < generation:
+            tip = candidate_commit(candidate, files={"recovered.txt": "generation two\n"})
+    from tests.test_body_candidate import _registry
+    registry = _registry(serving, data, ctx)
+    result = registry.execute_result("candidate_merge", {"source": old_branch})
+    assert result.status == "ok" and "NOT committed" in result.text, result.text
+    assert git(candidate, "rev-parse", "MERGE_HEAD") == tip
+    assert git(serving, "rev-parse", old_branch) == tip
+    assert "generation" in (candidate / "recovered.txt").read_text()
+    assert "aborted" in registry.execute("candidate_merge", {"action": "abort"})
+    assert not (candidate / "recovered.txt").exists()
+
+
+def test_transferred_live_donor_import_is_not_checkout_transfer(history, monkeypatch):
+    from tests.test_body_candidate import _terminal, _registry
+    serving, data, ctx, candidate = history
+    donor = make_ctx(serving, data, "original")
+    row = body_candidate.prepare(donor)
+    tip = candidate_commit(pathlib.Path(row["path"]), files={"donor.txt": "committed\n"})
+    _terminal(data, "original")
+    successor = make_ctx(serving, data, "successor")
+    body_candidate.prepare(successor, resume="original")
+    before = body_candidate.find("successor")
+    registry = _registry(serving, data, ctx)
+    assert "NOT committed" in registry.execute("candidate_merge", {"source": "successor"})
+    assert body_candidate.find("successor") == before
+    assert git(candidate, "rev-parse", "MERGE_HEAD") == tip
+    assert "aborted" in registry.execute("candidate_merge", {"action": "abort"})
+    other = make_ctx(serving, data, "other")
+    with pytest.raises(body_candidate.CandidateRefused) as refused:
+        body_candidate.prepare(other, resume="successor")
+    assert refused.value.code == "CANDIDATE_OWNER_LIVE"
+    _terminal(data, "successor")
+    monkeypatch.setattr(body_candidate, "live_lineage_processes", lambda *a: [123])
+    with pytest.raises(body_candidate.CandidateRefused) as refused:
+        body_candidate.prepare(other, resume="successor")
+    assert refused.value.code == "CANDIDATE_OWNER_PROCESSES_LIVE"
+    # Even unsettled donor processes grant no transfer, but cannot change a resolved import.
+    assert "NOT committed" in registry.execute("candidate_merge", {"source": before["branch"]})
+    later = candidate_commit(pathlib.Path(before["path"]), files={"donor.txt": "later\n"})
+    assert later != tip and git(candidate, "rev-parse", "MERGE_HEAD") == tip
+    assert (candidate / "donor.txt").read_text() == "committed\n"
+    assert body_candidate.find("successor")["task_id"] == "successor"
+
+
+def test_explicit_preservation_pin_recovers_files_not_staged_split(history):
+    from tests.test_body_candidate import _registry
+    serving, data, ctx, candidate = history
+    old = make_ctx(serving, data, "preserved")
+    row = body_candidate.prepare(old)
+    path = pathlib.Path(row["path"])
+    tip = candidate_commit(path, files={"notes.txt": "committed\n"})
+    (path / "notes.txt").write_text("staged\n")
+    git(path, "add", "notes.txt")
+    (path / "notes.txt").write_text("filesystem\n")
+    (path / "local-notes").mkdir()
+    (path / "local-notes/private.txt").write_text("retained ignored file\n")
+    pin = body_candidate._preserve(row, body_candidate.unique_work(row))
+    assert pin == body_candidate.PIN_PREFIX + row["candidate_id"]
+    snapshot = git(serving, "rev-parse", pin)
+    assert git(serving, "show", pin + "^:notes.txt") == "staged"
+    assert git(serving, "rev-parse", pin + "^^") == tip
+    _retire_checkout_and_row(row)
+    registry = _registry(serving, data, ctx)
+    text = registry.execute("candidate_merge", {"source": row["branch"]})
+    assert "committed history only" in text
+    assert (candidate / "notes.txt").read_text() == "committed\n"
+    assert not (candidate / "local-notes/private.txt").exists()
+    assert "aborted" in registry.execute("candidate_merge", {"action": "abort"})
+    text = registry.execute("candidate_merge", {"source": pin})
+    assert "NOT committed" in text and pin in text
+    assert git(candidate, "rev-parse", "MERGE_HEAD") == snapshot
+    assert (candidate / "notes.txt").read_text() == "filesystem\n"
+    assert git(candidate, "show", ":notes.txt") == "filesystem"
+    assert (candidate / "local-notes/private.txt").read_text() == "retained ignored file\n"
+    assert git(serving, "rev-parse", pin) == snapshot
+    assert git(serving, "rev-parse", row["branch"]) == tip
+
+
+@pytest.mark.parametrize("source", ["main", "unknown-task", "candidate/missing", "candidate/x~1", "candidate/x^{commit}",
+                                    "refs/heads/ouroboros", "refs/ouroboros/candidates/nope^", "candidate/../ouroboros"])
+def test_recovery_sources_are_exact_candidate_refs_not_revision_expressions(history, source):
+    serving, data, ctx, candidate = history
+    before = git(candidate, "write-tree")
+    assert "⚠️" in _candidate_merge(ctx, source=source)
+    assert git(candidate, "write-tree") == before
+    assert git(candidate, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False) == ""
+
+
+def test_recovered_protected_change_keeps_authored_review_boundary(history, monkeypatch):
+    import time
+    from ouroboros.tools import git as owner
+    from ouroboros.tools.git_review_cycle import _accepted_merge_refs, _fingerprint_staged_diff
+    serving, data, ctx, candidate = history
+    donor = make_ctx(serving, data, "protected-donor")
+    row = body_candidate.prepare(donor)
+    tip = candidate_commit(pathlib.Path(row["path"]), files={"BIBLE.md": "unaccepted change\n"})
+    assert "NOT committed" in _candidate_merge(ctx, source=row["branch"])
+    assert _accepted_merge_refs(ctx) == []
+    fingerprint = _fingerprint_staged_diff(candidate)
+    assert fingerprint["binding"]["parents"] == [git(candidate, "rev-parse", "HEAD"), tip]
+    monkeypatch.setattr(owner, "_current_runtime_mode", lambda: "advanced")
+    outcome = owner._run_reviewed_stage_cycle(ctx, "Import", time.time(), paths=["BIBLE.md"])
+    assert outcome["block_reason"] == "core_protection_blocked", outcome
+    assert git(candidate, "rev-parse", "MERGE_HEAD") == tip
+
+
+def test_recovery_merge_adoption_requires_review_of_the_importing_commit(history):
+    from ouroboros import body_adoption
+    serving, data, ctx, candidate = history
+    donor = make_ctx(serving, data, "raw-history")
+    row = body_candidate.prepare(donor)
+    tip = candidate_commit(pathlib.Path(row["path"]), files={"recovered.txt": "unreviewed donor\n"})
+    assert "NOT committed" in _candidate_merge(ctx, source=row["branch"])
+    git(candidate, "commit", "-m", "imported merge fixture")
+    merged = git(candidate, "rev-parse", "HEAD")
+    assert git(candidate, "rev-list", "--parents", "-n", "1", merged).split() == [merged, row["base_sha"], tip]
+    with pytest.raises(body_adoption.AdoptionRefused) as refused:
+        body_adoption.authorize(ctx, merged, reason="fixture")
+    assert refused.value.code == "ADOPTION_UNREVIEWED"
+    # The reviewed importing merge covers second-parent content; no false donor PASS.
+    body_candidate.record_reviewed_commit(ctx, merged)
+    handoff = body_adoption.authorize(ctx, merged, reason="fixture")
+    assert handoff["cand"] == merged and handoff["unreviewed_commits"] == []
+    assert git(serving, "rev-parse", "HEAD") == row["base_sha"]
+    body_adoption.abandon(data, "fixture ended before switch")
+
+
+@pytest.mark.parametrize("keep_row", [False, True])
+def test_bound_prepare_recovers_missing_checkout_and_reports_previous_branch(history, keep_row):
+    import shutil
+    from tests.test_body_candidate import _registry
+    serving, data, ctx, candidate = history
+    tip = candidate_commit(candidate, files={"lost.txt": "preserved history\n"})
+    previous = body_candidate.descriptor(ctx)["branch"]
+    shutil.rmtree(candidate)  # Same bound context, with and without its registry row.
+    if not keep_row:
+        body_candidate._forget_missing(body_candidate.find(ctx.task_id))
+    registry = _registry(serving, data, ctx)
+    result = registry.execute("prepare_self_change", {})
+    assert pathlib.Path(ctx.repo_dir).is_dir(), result
+    assert previous in result and body_candidate.descriptor(ctx)["branch"] != previous
+    assert "NOT committed" in registry.execute("candidate_merge", {"source": previous})
+    assert git(ctx.repo_dir, "rev-parse", "MERGE_HEAD") == tip
+    assert (pathlib.Path(ctx.repo_dir) / "lost.txt").read_text() == "preserved history\n"
+
+
+@pytest.mark.parametrize("foreign_staged", [False, True])
+def test_history_only_merge_has_no_attributed_file_but_keeps_its_parent(history, foreign_staged):
+    from ouroboros.mutation_attribution import capture_mutation_baseline
+    from ouroboros.tools.git import _task_attributed_commit_paths
+    serving, data, ctx, candidate = history
+    row = body_candidate.prepare(make_ctx(serving, data, "equal-tree"))
+    tip = candidate_commit(pathlib.Path(row["path"]), files={"same.txt": "same\n"})
+    candidate_commit(candidate, "independent identical content", files={"same.txt": "same\n"})
+    if foreign_staged:
+        (candidate / "foreign.txt").write_text("not mine\n")
+    capture_mutation_baseline(data, ctx.task_id, [{"surface_type": "system_repo", "host_root": str(candidate)}])
+    assert "NOT committed" in _candidate_merge(ctx, source=row["branch"])
+    if foreign_staged:
+        git(candidate, "add", "foreign.txt")
+    index = git(candidate, "write-tree")
+    paths, evidence, error, _ = _task_attributed_commit_paths(ctx, None)
+    assert paths == [] and evidence["candidates"] == []
+    if foreign_staged:
+        assert "GIT_NO_ATTRIBUTED_CHANGES" in error
+        assert evidence["excluded_preexisting_dirty"] == ["foreign.txt"]
+    else:
+        assert error == "", error
+        assert git(candidate, "status", "--porcelain") == ""
+    assert git(candidate, "write-tree") == index
+    assert git(candidate, "rev-parse", "MERGE_HEAD") == tip
+
+
+@pytest.mark.parametrize("mode", ["advanced", "pro"])
+@pytest.mark.parametrize("kind", ["branch", "pin"])
+@pytest.mark.parametrize("path", ["BIBLE.md", "ouroboros/tools/registry_core.py", "ouroboros/contracts/example.py", "recovered.txt"])
+def test_public_recovery_protection_runs_before_staging(history, monkeypatch, mode, kind, path):
+    from tests.test_body_candidate import _registry
+    serving, data, ctx, candidate = history
+    donor = make_ctx(serving, data, "public-protected-donor")
+    row = body_candidate.prepare(donor)
+    donor_path = pathlib.Path(row["path"])
+    tip = candidate_commit(donor_path, files={path: "source = 'unaccepted'\n"})
+    source = row["branch"]
+    if kind == "pin":
+        source = body_candidate._preserve(row, body_candidate.unique_work(row))
+        tip = git(serving, "rev-parse", source)
+    head, index = git(candidate, "rev-parse", "HEAD"), git(candidate, "write-tree")
+    before = (candidate / path).read_bytes() if (candidate / path).exists() else None
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", mode)  # BEFORE public dispatch, not only commit.
+    result = _registry(serving, data, ctx).execute_result("candidate_merge", {"source": source})
+    if mode == "advanced" and path != "recovered.txt":
+        assert result.status == "blocked" and result.code == "CORE_PROTECTION_BLOCKED", result
+        assert git(candidate, "write-tree") == index
+        assert git(candidate, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False) == ""
+        assert ((candidate / path).read_bytes() if (candidate / path).exists() else None) == before
+    else:
+        assert result.status == "ok" and "NOT committed" in result.text, result
+        assert git(candidate, "rev-parse", "MERGE_HEAD") == tip
+        assert (candidate / path).read_text() == "source = 'unaccepted'\n"
+    assert git(candidate, "rev-parse", "HEAD") == head
+    assert git(serving, "rev-parse", source) == tip
+
+
+def test_advanced_default_serving_sync_keeps_accepted_protected_source(history, monkeypatch):
+    from tests.test_body_candidate import _registry
+    serving, data, ctx, candidate = history
+    accepted = peer(serving, "BIBLE.md", "accepted protected source\n")
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+    result = _registry(serving, data, ctx).execute_result("candidate_merge", {})
+    assert result.status == "ok" and "NOT committed" in result.text, result
+    assert git(candidate, "rev-parse", "MERGE_HEAD") == accepted
+    assert (candidate / "BIBLE.md").read_text() == "accepted protected source\n"
+
+
+def test_advanced_import_keeps_converged_protected_and_recipient_only_changes(history, monkeypatch):
+    from tests.test_body_candidate import _registry
+    serving, data, ctx, candidate = history
+    row = body_candidate.prepare(make_ctx(serving, data, "converged-protected"))
+    candidate_commit(pathlib.Path(row["path"]), files={"BIBLE.md": "identical\n", "incoming.txt": "new\n"})
+    candidate_commit(candidate, files={"BIBLE.md": "identical\n", "ouroboros/tools/registry_core.py": "recipient_only = True\n"})
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+    result = _registry(serving, data, ctx).execute_result("candidate_merge", {"source": row["branch"]})
+    assert result.status == "ok" and "NOT committed" in result.text, result
+    assert (candidate / "BIBLE.md").read_text() == "identical\n"
+    assert (candidate / "ouroboros/tools/registry_core.py").read_text() == "recipient_only = True\n"
+    assert (candidate / "incoming.txt").read_text() == "new\n"
+
+
+def test_import_path_observation_failure_precedes_git_effect(history, monkeypatch):
+    import subprocess
+    from ouroboros.tools import git_pr
+    from tests.test_body_candidate import _registry
+    serving, data, ctx, candidate = history
+    row = body_candidate.prepare(make_ctx(serving, data, "unreadable-delta"))
+    candidate_commit(pathlib.Path(row["path"]), files={"incoming.txt": "new\n"})
+    original = git_pr._g
+    def observe(args, cwd, **kwargs):
+        return subprocess.CompletedProcess(args, 1, b"", b"unreadable") if args[0] == "diff" else original(args, cwd, **kwargs)
+    monkeypatch.setattr(git_pr, "_g", observe)
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+    before = git(candidate, "write-tree")
+    result = _registry(serving, data, ctx).execute_result("candidate_merge", {"source": row["branch"]})
+    assert "source paths unavailable" in result.text
+    assert git(candidate, "write-tree") == before
+    assert git(candidate, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False) == ""
+    assert not (candidate / "incoming.txt").exists()
