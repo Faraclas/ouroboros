@@ -267,3 +267,79 @@ def test_paged_cleanup_preserves_choices_and_never_selects_unseen(cleanup_server
         assert r.get_reserved_project(data, 'alpha')['lifecycle'] == 'active'
         assert not errors
         browser.close()
+
+
+@pytest.mark.parametrize('theme,width', [('dark', 1360), ('light', 390)])
+def test_existing_task_workspace_cleanup_and_unavailable_page(cleanup_server, theme, width, tmp_path):
+    if os.environ.get('OUROBOROS_RUN_UI_SMOKE') != '1': pytest.skip('UI smoke opt-in')
+    from playwright.sync_api import sync_playwright, expect
+    from ouroboros.task_results import write_task_result
+    url, data, original = cleanup_server
+    external = tmp_path / 'attached-external'; external.mkdir()
+    (external / 'unique').write_text('deliberately selected disposable work')
+    sibling = tmp_path / 'keep-sibling'; sibling.mkdir(); (sibling / 'keep').write_text('keep')
+    r.create_project(data, 'beta', name='Existing external workspace', working_dir=str(external))
+    retained = [data / f'retained-{i:02}' for i in range(27)]
+    for path in retained: path.mkdir(); (path / 'evidence').write_text('durable')
+    write_task_result(data, 'terminal-work', 'completed', project_id='beta', workspace_root=str(external),
+                      artifacts=[{'path': str(p)} for p in retained])
+    r.begin_project_deletion(data, 'beta'); r.complete_project_deletion(data, 'beta')
+    out = pathlib.Path(os.environ.get('CLEANUP_SCREENSHOTS', str(tmp_path / 'screenshots'))); out.mkdir(parents=True, exist_ok=True)
+    errors = []
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=os.environ.get('OUROBOROS_UI_BROWSER_EXECUTABLE') or None, args=['--no-sandbox'])
+        context = browser.new_context(viewport={'width': width, 'height': 1000})
+        context.add_init_script(f"localStorage.setItem('ouroboros.theme','{theme}')")
+        def guard(route):
+            path = route.request.url.split(url)[-1]
+            if path == '/' or path.startswith('/static/') or path.startswith('/api/projects/'):
+                route.continue_()
+            else: route.fulfill(status=200, json={})
+        context.route('**/*', guard); context.route_web_socket('**/*', lambda ws: None)
+        page = context.new_page(); page.on('pageerror', lambda e: errors.append(str(e))); page.goto(url)
+        page.evaluate("window.manager.select('beta')")
+        entry = page.get_by_role('button', name='Clean up local material…', exact=True); entry.click()
+        dialog = page.get_by_role('dialog', name='Clean up project', exact=True)
+        remove = dialog.get_by_label(f'Remove {external}', exact=True)
+        expect(remove).to_be_enabled(); expect(remove).not_to_be_checked()
+        submit = dialog.get_by_role('button', name='Clean selected files', exact=True)
+        expect(submit).to_be_disabled()
+        search = dialog.get_by_label('Filter recorded paths')
+        search.fill('retained-'); dialog.get_by_role('button', name='Find path', exact=True).click()
+        expect(dialog.get_by_text('1–25 of 27 matching · 28 total', exact=True)).to_be_visible()
+        expect(dialog.get_by_role('status')).to_contain_text('This page: 0 selectable, 25 retained.')
+        expect(dialog.get_by_role('status')).to_contain_text('Nothing selectable on this page.')
+        expect(submit).to_be_disabled()
+        assert all(not c.is_enabled() for c in dialog.get_by_role('checkbox').all())
+        page.screenshot(path=str(out / f'cleanup-unavailable-page-{theme}-{width}.png'))
+        search.fill('no-matching-target'); dialog.get_by_role('button', name='Find path', exact=True).click()
+        expect(dialog.get_by_role('status')).to_contain_text('No recorded paths match this filter.')
+        expect(submit).to_be_disabled()
+        dialog.get_by_label('Cleanup choice').select_option('none')
+        expect(dialog.get_by_role('status')).to_contain_text('No cleanup will run.')
+        expect(submit).to_be_disabled()
+        dialog.get_by_label('Cleanup choice').select_option('complete')
+        expect(remove).to_be_enabled()
+        remove.check(); expect(submit).to_be_disabled()
+        dialog.get_by_label(f'Confirm loss of local material at {external}', exact=True).check()
+        expect(submit).to_be_enabled()
+        assert dialog.evaluate('(n)=>n.scrollWidth<=n.clientWidth+1')
+        page.screenshot(path=str(out / f'cleanup-existing-workspace-{theme}-{width}.png'))
+        with page.expect_response(lambda response: response.url.endswith('/beta/cleanup') and response.request.method == 'POST') as response:
+            submit.click()
+        assert response.value.ok and response.value.json()['results'][0]['status'] == 'removed'
+        assert not external.exists() and (sibling / 'keep').read_text() == 'keep'
+        assert all((p / 'evidence').read_text() == 'durable' for p in retained)
+        assert original.exists() and not errors
+        # A zero-selection Close is still useful, but must not queue no-op cleanup.
+        page.evaluate("window.manager.select('alpha')")
+        page.get_by_role('button', name='Close project…', exact=True).click()
+        close_dialog = page.get_by_role('dialog', name='Close project', exact=True)
+        original_choice = close_dialog.get_by_label(f'Remove {original}', exact=True)
+        expect(original_choice).to_be_checked(); original_choice.uncheck()
+        expect(close_dialog.get_by_role('status')).to_contain_text('closing will keep all local material')
+        with page.expect_response(lambda response: response.url.endswith('/alpha/delete')) as closed:
+            close_dialog.get_by_role('button', name='Close project', exact=True).click()
+        assert closed.value.ok and 'cleanup' not in closed.value.request.post_data_json
+        assert original.exists() and not r.get_reserved_project(data, 'alpha').get('cleanup_request')
+        browser.close()

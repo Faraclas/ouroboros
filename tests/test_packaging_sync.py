@@ -147,8 +147,8 @@ def test_readme_documents_packaged_cli_installer_and_locked_source_env():
     assert "./Ouroboros/bin/install-ouroboros-cli" in readme
     assert r"Ouroboros\bin\install-ouroboros-cli.cmd" in readme
     assert "uv sync --locked --extra browser --group dev" in readme
-    assert "https://astral.sh/uv/0.12.1/install.sh" in readme
-    assert "https://astral.sh/uv/0.12.1/install.ps1" in readme
+    assert "https://astral.sh/uv/0.13.4/install.sh" in readme
+    assert "https://astral.sh/uv/0.13.4/install.ps1" in readme
     assert "ouroboros run --start \"2+2?\"" in readme
 
 

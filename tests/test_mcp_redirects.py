@@ -166,11 +166,12 @@ def test_same_origin_redirects_keep_working_with_saved_headers(loopback, transpo
     assert app.seen and all(headers.get("x-api-key") == KEY for headers in app.seen)
 
 
-def test_a_server_without_saved_credentials_keeps_following_cross_origin_redirects(loopback):  # noqa: F811
+def test_a_server_without_saved_credentials_keeps_sdk2_cross_origin_refusal(loopback):  # noqa: F811
     _final, final_url = loopback("http", {})
     _app, url = loopback("http", {}, wrap=lambda app: Redirect(app, lambda scope: final_url))
     outcome, _ = _refresh({"id": "open", "enabled": True, "url": url})
-    assert outcome["ok"] and [tool["name"] for tool in outcome["tools"]] == ["echo"], outcome
+    assert not outcome["ok"] and "not followed" in outcome["error"], outcome
+    assert _final.seen == []  # SDK2 refuses foreign origins even without saved credentials
 
 
 def test_the_guard_is_per_connection_and_leaves_no_hook_behind(loopback):  # noqa: F811
@@ -198,3 +199,17 @@ def test_the_guard_is_per_connection_and_leaves_no_hook_behind(loopback):  # noq
 def _private_mcp_catalog_root(tmp_path, monkeypatch):
     from ouroboros import config
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+
+
+@pytest.mark.parametrize("method", ["GET", "DELETE"])
+def test_optional_http_stream_or_cleanup_redirect_cannot_erase_completed_work(loopback, recorder, method):
+    """SDK2 can decline optional GET/DELETE; only message POSTs decide the reply."""
+    target = recorder()
+    _app, url = loopback("http", {}, wrap=lambda app: Redirect(
+        app, lambda scope: target.url("/optional"), method=method))
+    outcome, _ = _refresh({"id": "optional", "enabled": True, "url": url, "headers": {"X-Api-Key": KEY}})
+    assert outcome["ok"] and [row["name"] for row in outcome["tools"]] == ["echo"], outcome
+    manager = mcp_client.get_manager()
+    result = manager._call_tool_result("mcp_optional__echo", {"text": "completed"})
+    assert result.status == "ok" and "echo:completed" in result.text
+    assert target.connections == []

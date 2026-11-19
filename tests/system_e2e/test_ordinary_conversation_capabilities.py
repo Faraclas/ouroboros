@@ -26,9 +26,9 @@ from tests.system_e2e.test_system_scenarios_w6 import _WsFrames, _direct_activit
 
 
 MCP_SOURCE = '''from pathlib import Path
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
-server = FastMCP("ordinary-fixture")
+server = MCPServer("ordinary-fixture")
 
 @server.tool()
 def read_note(name: str) -> str:

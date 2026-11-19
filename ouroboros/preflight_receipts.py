@@ -142,8 +142,9 @@ def _source_status() -> tuple[str, str]:
 
 # The SELECTED test interpreter under the exact scrubbed child environment and import
 # order (no -I/-E), from the gate's own temp root rather than the candidate tree.
-# Metadata hashes catch same-version reinstalls; site-packages bytes are not rehashed,
-# so a manual in-place edit absent from metadata stays a local-trust limit.
+# RECORD metadata binds normal installs. When an installer omits RECORD, hash its
+# installed root's files instead: METADATA alone cannot distinguish same-version
+# rebuilds. In-place edits outside those fallback roots remain a local-trust limit.
 _INSTALLATION_PROBE = r"""
 import hashlib, json, os, platform, site, sys, sysconfig
 from importlib import metadata
@@ -156,10 +157,32 @@ def text_digest(text):
 def file_digest(path):
     try:
         with open(path, "rb") as stream:
-            return hashlib.sha256(stream.read()).hexdigest()
+            digest = hashlib.sha256()
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+            return digest.hexdigest()
     except OSError:
         return None
-dists, unidentified = [], []
+def tree_digest(root):
+    digest, seen = hashlib.sha256(), set()
+    def fail(error):
+        raise error
+    for directory, subdirs, names in os.walk(root, followlinks=True, onerror=fail):
+        stat = os.stat(directory)
+        identity = (stat.st_dev, stat.st_ino)
+        if identity in seen:
+            subdirs[:] = []
+            continue
+        seen.add(identity)
+        subdirs[:] = sorted(name for name in subdirs if name != "__pycache__")
+        for name in sorted(names):
+            path = os.path.join(directory, name)
+            content = file_digest(path)
+            if content is None:
+                raise OSError("installed file could not be read: " + path)
+            digest.update(os.fsencode(os.path.relpath(path, root)) + b"\0" + content.encode() + b"\0")
+    return digest.hexdigest()
+dists, unidentified, fallback_roots = [], [], set()
 for dist in metadata.distributions():
     where = local(getattr(dist, "_path", "") or dist.locate_file(""))
     meta, record, direct = (dist.read_text(name) for name in ("METADATA", "RECORD", "direct_url.json"))
@@ -167,8 +190,14 @@ for dist in metadata.distributions():
         editable = bool((json.loads(direct) if direct else {}).get("dir_info", {}).get("editable"))
     except (ValueError, AttributeError):
         editable = True
-    if editable or meta is None or record is None:
+    if editable or meta is None:
         unidentified.append(where)
+    elif record is None:
+        root = str(dist.locate_file(""))
+        if not os.path.isdir(root):
+            unidentified.append(where)
+        else:
+            fallback_roots.add(root)
     dists.append([where, text_digest(meta), text_digest(record), text_digest(direct)])
 sites = [p for p in site.getsitepackages() + ([site.getusersitepackages()] if site.ENABLE_USER_SITE else [])
          if os.path.isdir(p)]
@@ -181,6 +210,7 @@ print(json.dumps({
     "pyvenv_cfg": file_digest(os.path.join(sys.prefix, "pyvenv.cfg")),
     "path": [local(p) for p in sys.path[1:]],
     "distributions": dists, "site_hooks": hooks, "unidentified": unidentified,
+    "installed_files": [[local(root), tree_digest(root)] for root in sorted(fallback_roots)],
 }))
 """
 

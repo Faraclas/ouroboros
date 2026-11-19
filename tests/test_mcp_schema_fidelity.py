@@ -95,7 +95,7 @@ def test_sdk_metadata_is_json_and_independent():
     assert result["annotations"]["readOnlyHint"] is True
     assert result["title"] == "title"
     result["outputSchema"]["type"] = "array"
-    assert tool.outputSchema["type"] == "object"
+    assert tool.output_schema["type"] == "object"
     assert tool_metadata(SimpleNamespace(name="old")) == {}
 
 
@@ -171,7 +171,7 @@ def test_real_sdk_to_registered_schema_preserves_complete_contract(tmp_path, mon
     import json
     from typing import Annotated
 
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server import MCPServer
     from mcp.types import ToolAnnotations
     from pydantic import Field
 
@@ -182,7 +182,7 @@ def test_real_sdk_to_registered_schema_preserves_complete_contract(tmp_path, mon
     token = "synthetic-mcp-fidelity-secret-93"
     description = "  " + "Complete operation contract. " * 100 + "\n" + token
     argument = "  " + "Complete argument contract. " * 80 + "\n"
-    server = FastMCP("fidelity", host="127.0.0.1", log_level="WARNING")
+    server = MCPServer("fidelity", log_level="WARNING")
 
     def echo(text: str) -> dict[str, str]:
         return {"echo": text}

@@ -54,10 +54,15 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
         signal?.addEventListener('abort', abort, { once: true });
         disposeFocus = bindDialogFocus(dialog, { initialFocus: mode, onEscape: abort, preventScroll: true });
         function update() {
-            if (mode.value === 'none') { submit.disabled = false; summary.textContent = 'All local files and resources will be retained.'; return; }
+            if (mode.value === 'none') { submit.disabled = !closing; summary.textContent = 'All local files and resources will be retained. No cleanup will run.'; return; }
             const selected = [...selections.values()];
-            submit.disabled = !plan || selected.some(t => t.warning && !confirmations.has(t.id));
-            summary.textContent = `${selected.length} selected for removal · ${(plan?.total ?? plan?.targets.length ?? 0) - selected.length} retained. Only inspected selections are submitted; unseen targets are not selected. ${selected.some(t => t.warning && !confirmations.has(t.id)) ? 'Extra confirmation is still required.' : ''}`;
+            const unconfirmed = selected.some(t => t.warning && !confirmations.has(t.id));
+            submit.disabled = !plan || (!closing && !selected.length) || unconfirmed;
+            const page = plan?.targets || [];
+            const unavailable = page.filter(t => t.retain_reason).length;
+            const scope = `${selected.length} selected for removal across inspected pages. This page: ${page.length - unavailable} selectable, ${unavailable} retained. Unseen targets are not selected; their loss inspection is not complete.`;
+            const guidance = !selected.length ? (closing ? ' Nothing selected: closing will keep all local material.' : (page.length && unavailable === page.length ? ' Nothing selectable on this page. Read the retention reasons; try another page or path filter.' : (page.length ? ' Select material to clean up.' : ' No recorded paths match this filter.'))) : '';
+            summary.textContent = scope + guidance + (unconfirmed ? ' Extra confirmation is still required.' : '');
         }
         async function load(reset = true) {
             const ownedFocus = dialog.contains(document.activeElement);
@@ -120,6 +125,7 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
             if (submit.disabled) return;
             if (mode.value === 'none') { finish({}); return; }
             const selected = [...selections.values()];
+            if (!selected.length) { if (closing) finish({}); return; }
             finish({ cleanup: { mode: mode.value, selections: selected.map(t => t.id), confirmations: Object.fromEntries(selected.map(t => [t.id, t.warning?.token || t.selection_token])) } });
         };
         void load();
