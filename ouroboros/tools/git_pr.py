@@ -662,7 +662,9 @@ def _candidate_merge(ctx: ToolContext, action: str = "stage", source: str = "") 
             try:
                 found = body_candidate.merge_source_commit(ctx, source)
             except body_candidate.CandidateRefused as exc:
-                return f"⚠️ {exc.code}: {exc}"
+                from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+                return _publish_tool_result(ctx, ToolResult(
+                    status="blocked", code=exc.code, text=f"⚠️ {exc.code}: {exc.text}"))
             sha = found["sha"]
             from ouroboros.config import get_runtime_mode
             from ouroboros.consciousness_authority import effective_runtime_mode
