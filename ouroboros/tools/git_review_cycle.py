@@ -403,13 +403,11 @@ def _stage_candidate_for_review(
 ) -> tuple[List[str], Optional[List[str]], Optional[Dict[str, Any]]]:
     """Stage the candidate and return its paths without invoking any reviewer."""
     def git_failure(action: str, exc: Exception):
-        message = _publish_git_error(
-            ctx, f"⚠️ GIT_ERROR ({action}): {_sanitize_git_error(str(exc))}",
+        return [], None, _git()._review_cycle_infra_failure(
+            ctx, commit_message, commit_start, _publish_git_error(
+                ctx, f"⚠️ GIT_ERROR ({action}): {_sanitize_git_error(str(exc))}",
+            ),
         )
-        error = _git()._review_cycle_infra_failure(
-            ctx, commit_message, commit_start, message,
-        )
-        return [], None, error
 
     if not bool(getattr(ctx, "_review_resume_pending", False)):
         from ouroboros.commit_admission import auto_sync_release_metadata_if_needed
@@ -430,22 +428,35 @@ def _stage_candidate_for_review(
                     ).split("\0"))
                 missing = required - {""} - set(safe_paths)
                 if missing:
+                    # Share attribution's index/worktree/untracked path universe.
+                    from ouroboros.mutation_attribution import _git_status_paths
+                    missing.intersection_update(_git_status_paths(pathlib.Path(ctx.repo_dir), pathspec=sorted(missing), include_ignored=True))
+                if missing:
                     return [], None, _git()._review_cycle_infra_failure(
                         ctx, commit_message, commit_start,
                         "⚠️ GIT_PARTIAL_MERGE_BLOCKED: include all merged paths in paths before committing: "
                         + ", ".join(sorted(missing)),
                     )
             except Exception as exc:
-                error = _git()._review_cycle_infra_failure(
+                return [], None, _git()._review_cycle_infra_failure(
                     ctx, commit_message, commit_start, f"⚠️ PATH_ERROR: {_sanitize_git_error(str(exc))}"
                 )
-                return [], None, error
-            add_cmd = ["git", "add"] + safe_paths
+            # A staged deletion is already absent from the index's pathspec
+            # universe. Keep its tree change without asking Git to add it again.
+            try:
+                deleted = set(_git().run_cmd(
+                    ["git", "diff", "--cached", "--no-renames", "--diff-filter=D", "--name-only", "-z"], cwd=ctx.repo_dir,
+                ).split("\0"))
+            except Exception as exc:
+                return git_failure("staged-deletions", exc)
+            add_cmd = ["git", "add"] + [path for path in safe_paths if path not in deleted
+                or (pathlib.Path(ctx.repo_dir) / path).exists() or (pathlib.Path(ctx.repo_dir) / path).is_symlink()]
         else:
             _git()._ensure_gitignore(ctx.repo_dir)
             add_cmd = ["git", "add", "-A"]
         try:
-            _git().run_cmd(add_cmd, cwd=ctx.repo_dir)
+            if add_cmd != ["git", "add"]:
+                _git().run_cmd(add_cmd, cwd=ctx.repo_dir)
         except Exception as exc:
             return git_failure("add", exc)
         if not paths and not _git()._authorized_managed_update_resolver(ctx):
@@ -469,34 +480,23 @@ def _stage_candidate_for_review(
             ctx, commit_message, commit_start, message
         )
 
+    status_error = None
     try:
         staged_status_raw = _git().run_cmd(
             ["git", "diff", "--cached", "--name-status", "-M"], cwd=ctx.repo_dir
         )
         classification_paths = _git().paths_from_name_status(staged_status_raw)
     except Exception as exc:
-        try:
-            staged_names_raw = _git().run_cmd(
-                ["git", "diff", "--cached", "--name-only"], cwd=ctx.repo_dir
-            )
-        except Exception:
-            return git_failure("staged-status", exc)
-        classification_paths = [
-            line.strip() for line in staged_names_raw.splitlines() if line.strip()
-        ]
-    snapshot_paths = classification_paths or None
-    if snapshot_paths is None:
+        status_error, classification_paths = exc, []
+    if not classification_paths:
         try:
             staged_names_raw = _git().run_cmd(
                 ["git", "diff", "--cached", "--name-only"], cwd=ctx.repo_dir
             )
         except Exception as exc:
-            return git_failure("staged-names", exc)
-        snapshot_paths = [
-            line.strip() for line in staged_names_raw.splitlines() if line.strip()
-        ] or None
-        classification_paths = snapshot_paths or []
-    return classification_paths, snapshot_paths, None
+            return git_failure("staged-status" if status_error else "staged-names", status_error or exc)
+        classification_paths = [line.strip() for line in staged_names_raw.splitlines() if line.strip()]
+    return classification_paths, classification_paths or None, None
 
 
 def _receptive_wave(ctx: ToolContext, wave: contextlib.ExitStack, *, review_only: bool) -> tuple:

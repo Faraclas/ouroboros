@@ -90,5 +90,10 @@ def test_bundle_authorship_scope_and_no_reasoning_dump(supervisor, monkeypatch):
     for text in ["owner standing rule", "owner permission", "old permission", "mind idea", "Friends", "audience", "your work"]:
         assert text in prompt
     assert '"author": "ouroboros",\n        "standing_delegation": false' in prompt
-    for text in ["private reasoning", "huge tool output", "MUST NOT BE INCLUDED"]:
+    for text in ["private reasoning", "MUST NOT BE INCLUDED"]:
         assert text not in prompt
+    import json
+    evidence = json.JSONDecoder().raw_decode(prompt.split("Host evidence (provenance is not consent):\n")[1])[0]
+    row = evidence["observations"]["rows"][0]
+    assert row["content"] == "huge tool output" and row["record"]["state"] == "unknown"
+    assert "not owner consent" in evidence["observations"]["meaning"]

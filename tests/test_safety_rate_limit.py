@@ -385,7 +385,12 @@ def test_prompt_keeps_all_source_messages_and_excludes_private_reasoning():
     messages += [{"role": "assistant", "content": "PRIVATE_REASONING"}, {"role": "tool", "content": "TOOL_NOISE"}]
     prompt = _build_check_prompt("run_command", {"cmd": ["echo", "hello"]}, messages)
     assert all(f"round{i} " in prompt for i in range(40))
-    assert "PRIVATE_REASONING" not in prompt and "TOOL_NOISE" not in prompt
+    assert "PRIVATE_REASONING" not in prompt
+    import json
+    evidence = json.JSONDecoder().raw_decode(prompt.split("Host evidence (provenance is not consent):\n")[1])[0]
+    row = evidence["observations"]["rows"][0]
+    assert row["content"] == "TOOL_NOISE" and row["record"]["state"] == "unknown"
+    assert "not owner consent" in evidence["observations"]["meaning"]
     assert '"cmd"' in prompt and "hello" in prompt
 
 

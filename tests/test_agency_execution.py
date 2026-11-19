@@ -34,7 +34,8 @@ def test_one_process_effect_under_selected_supervisor(tmp_path, monkeypatch, mod
     ctx, registry, work = context(tmp_path, monkeypatch, mode, coverage)
     checks = []
 
-    def assessment(name, arguments, messages, actor, binding=None):
+    def assessment(name, arguments, messages, actor, binding=None, *, tool_description=""):
+        assert tool_description == registry._entries[name].schema["description"]
         checks.append((name, arguments, binding))
         return False, "Independent DANGEROUS finding: fixture criticism"
 

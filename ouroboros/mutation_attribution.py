@@ -89,9 +89,10 @@ def _run_git(root: pathlib.Path, *args: str) -> str:
     return proc.stdout
 
 
-def _git_status_paths(root: pathlib.Path) -> list[str]:
-    """Return every path named by porcelain-v1, including both rename sides."""
-    raw = _run_git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+def _git_status_paths(root: pathlib.Path, *, pathspec: Sequence[str] = (), include_ignored: bool = False) -> list[str]:
+    """Read porcelain paths/rename sides; optional literal scopes and ignored reads."""
+    flags = (["--ignored"] if include_ignored else []) + (["--", *(f":(literal){path}" for path in pathspec)] if pathspec else [])
+    raw = _run_git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all", *flags)
     fields = raw.split("\0")
     paths: list[str] = []
     index = 0
