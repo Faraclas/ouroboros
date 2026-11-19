@@ -157,7 +157,8 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
                       and s.get('origin') in {'project_created', 'genesis', 'cloned'} for s in sources)
         temp = 'private_copy_record' in sources_set
         output = 'recorded_output' in origins
-        kind = 'recorded_output' if output else 'project_created' if created else 'generated_temp' if temp else 'attached_external'
+        kind = ('recorded_output' if output else 'project_created' if created else 'generated_temp' if temp
+                else 'task_associated' if sources_set == {'task.workspace_root'} else 'attached_external')
         protection = 'runtime_or_habitat_overlap' if any(overlap(observed, p) for p in protected) else ''
         for fixed, inside in fixed_identities:
             relation = overlap(observed, fixed)
@@ -165,8 +166,9 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
                 protection = 'runtime_or_habitat_overlap'
         if sources_set & {'task.child_drive_root', 'task.headless_child_drive_root', 'task.artifacts'}:
             protection = 'runtime_memory_or_recorded_artifact'
-        if 'task.workspace_root' in sources_set and not created and not temp:
-            protection = 'workspace_association_not_disposable'
+        # A terminal task's workspace is provenance, not a retention policy.
+        # Existing external targets remain opt-in with current loss confirmation;
+        # runtime, live/shared use and Git dependencies are checked independently.
         copy_record = None
         if not protection:
             for copy, copy_identity in copy_identities:
