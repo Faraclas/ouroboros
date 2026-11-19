@@ -189,9 +189,9 @@ def _discovery(tmp_path, monkeypatch, *, on_initialize=None):
             if on_initialize:
                 on_initialize(self.server_id)
 
-        async def list_tools(self, cursor=None):
-            return SimpleNamespace(tools=[SimpleNamespace(name="lookup", description="", inputSchema={})],
-                                   nextCursor=None)
+        async def list_tools(self, *, params=None):
+            return SimpleNamespace(tools=[SimpleNamespace(name="lookup", description="", input_schema={})],
+                                   next_cursor=None)
 
     monkeypatch.setattr(mcp_client, "_MCP_SDK_AVAILABLE", True)
     monkeypatch.setattr(mcp_client, "_transport_factory", transport)

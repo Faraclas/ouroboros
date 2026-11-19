@@ -90,8 +90,8 @@ def configure_process_logging(*, drive_logs: pathlib.Path | None) -> None:
     root.setLevel(logging.INFO)
     # httpx logs each request URL at INFO; polling transports put credentials in
     # the URL path, so even redacted lines are noise at this level.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    for name in ("httpx", "httpcore", "httpx2", "httpcore2"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     install_exception_hooks()
 
 

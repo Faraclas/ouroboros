@@ -52,7 +52,7 @@ dependencies = [
     # dependencies because the packaged hermetic commit gate invokes them.
     "pytest-xdist>=3.5",
     "pytest-timeout>=2.1",
-    "mcp>=1.10",
+    "mcp>=2.3,<3",
     "PyYAML>=6.0",
     "croniter",
     # Upper-bounded: tree-sitter 0.25.x + language-pack 1.x changed the grammar/
@@ -103,7 +103,7 @@ all = [
 dev = ["ruff>=0.12"]
 
 [tool.uv]
-required-version = "==0.12.1"
+required-version = ">=0.13.4"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

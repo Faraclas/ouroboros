@@ -201,7 +201,7 @@ def _stdio(tmp_path, mode):
     return manager, raw, settings
 
 
-@pytest.mark.parametrize("mode,cause", [("exit", "McpError: Connection closed"), ("error", "McpError: denied for ***"),
+@pytest.mark.parametrize("mode,cause", [("exit", "MCPError: Connection closed"), ("error", "MCPError: denied for ***"),
                                         ("invalid", "ValidationError: 1 validation error for ListToolsResult")])
 def test_real_sdk_discovery_failures_name_their_cause_with_the_selected_secret_masked(tmp_path, mode, cause):
     manager, raw, settings = _stdio(tmp_path, mode)
@@ -221,4 +221,4 @@ def test_real_sdk_call_failure_names_the_closed_connection_and_stays_an_unknown_
     assert (result.status, result.code, result.meta["mcp_call_not_sent"]) == ("error", "MCP_ERROR", False)
     body = result.text.split("\n\n", 1)[1]
     assert body.startswith("⚠️ MCP_TOOL_ERROR: ExceptionGroup: unhandled errors in a TaskGroup"), body
-    assert "McpError: Connection closed" in body and "no running event loop" not in body, body
+    assert "MCPError: Connection closed" in body and "no running event loop" not in body, body

@@ -385,16 +385,17 @@ def test_list_tools_follows_next_cursor(monkeypatch):
         async def initialize(self):
             return None
 
-        async def list_tools(self, cursor=None):
+        async def list_tools(self, *, params=None):
+            cursor = params.cursor if params else None
             calls.append(cursor)
             if cursor is None:
                 return SimpleNamespace(
-                    tools=[SimpleNamespace(name="one", description="", inputSchema={})],
-                    nextCursor="page2",
+                    tools=[SimpleNamespace(name="one", description="", input_schema={})],
+                    next_cursor="page2",
                 )
             return SimpleNamespace(
-                tools=[SimpleNamespace(name="two", description="", inputSchema={})],
-                nextCursor=None,
+                tools=[SimpleNamespace(name="two", description="", input_schema={})],
+                next_cursor=None,
             )
 
     monkeypatch.setattr(mcp_client, "_MCP_SDK_AVAILABLE", True)
@@ -415,7 +416,7 @@ def test_stringify_keeps_structured_content_alongside_text():
 
     result = SimpleNamespace(
         content=[SimpleNamespace(text="prose answer")],
-        structuredContent={"answer": 42},
+        structured_content={"answer": 42},
         isError=False,
     )
     body = _stringify_call_result(result)
@@ -426,9 +427,9 @@ def test_stringify_keeps_structured_content_alongside_text():
 def test_serialize_content_part_carries_embedded_resource():
     from ouroboros.mcp_client import _serialize_content_part
 
-    part = SimpleNamespace(
-        type="resource",
-        resource=SimpleNamespace(uri="file:///tmp/a.txt", mimeType="text/plain", text="hello"),
-    )
+    from mcp.types import EmbeddedResource, TextResourceContents
+
+    part = EmbeddedResource(type="resource", resource=TextResourceContents(
+        uri="file:///tmp/a.txt", mime_type="text/plain", text="hello"))
     out = _serialize_content_part(part)
     assert out["resource"] == {"uri": "file:///tmp/a.txt", "mimeType": "text/plain", "text": "hello"}
