@@ -56,14 +56,16 @@ try:  # pragma: no cover - import guard exercised by tests via monkeypatch
     from mcp import ClientSession  # type: ignore
     from mcp.client.sse import sse_client  # type: ignore
     from mcp.client.stdio import StdioServerParameters, stdio_client  # type: ignore
-    from mcp.client.streamable_http import streamablehttp_client  # type: ignore
+    from mcp.client.streamable_http import streamable_http_client  # type: ignore
     from mcp.shared._httpx_utils import create_mcp_http_client  # type: ignore  # the SDK's default factory
+
+    from mcp.types import PaginatedRequestParams
 
     _MCP_SDK_AVAILABLE = True
     _MCP_SDK_IMPORT_ERROR: Optional[str] = None
 except Exception as _import_exc:  # pragma: no cover - defensive
     ClientSession = None  # type: ignore[assignment]
-    streamablehttp_client = None  # type: ignore[assignment]
+    streamable_http_client = None  # type: ignore[assignment]
     sse_client = None  # type: ignore[assignment]
     stdio_client = None  # type: ignore[assignment]
     StdioServerParameters = None  # type: ignore[assignment]
@@ -589,7 +591,8 @@ def _redacted_sdk_logs(cfg: MCPServerConfig, logger_name: str):
     inherit, so concurrent servers and other root records are never projected;
     the filters leave with the connection.
     """
-    sdk_logs = (logging.getLogger(logger_name), logging.getLogger())
+    sdk_logs = tuple(logging.getLogger(name) for name in
+                     (logger_name, "client", "mcp.shared.jsonrpc_dispatcher", ""))
 
     def project_log(record: logging.LogRecord) -> bool:
         if _SDK_DIAGNOSTIC_CONFIG.get() is cfg:
@@ -634,9 +637,9 @@ class MCPRedirectRefused(RuntimeError):
 
 def _origin(url: Any) -> tuple:
     """``(scheme, host, port)`` with the scheme's default port made explicit."""
-    import httpx
+    import httpx2
 
-    parsed = url if isinstance(url, httpx.URL) else httpx.URL(str(url))
+    parsed = url if isinstance(url, httpx2.URL) else httpx2.URL(str(url))
     return parsed.scheme, parsed.host, parsed.port or {"http": 80, "https": 443}.get(parsed.scheme, 0)
 
 
@@ -650,14 +653,13 @@ def _origin_text(origin: tuple) -> str:
 class _CredentialOriginGuard:
     """One connection's HTTP client factory: saved credentials stay on the configured origin.
 
-    The SDK client follows redirects, and the HTTP client strips only
-    ``Authorization`` when a redirect leaves the origin — every other configured
-    header would follow. While the server carries credentials, a request to a
+    The SDK follows method-preserving same-origin redirects (and HTTP-to-HTTPS
+    default-port upgrades). While the server carries credentials, a request to a
     different scheme, host or port (``http`` → ``https`` included) is stopped by
     a request hook before it is sent; requests on the configured origin,
     same-origin redirects included, are unchanged. A server without credentials
     keeps the SDK's redirect behavior. The SDK factory keeps its timeouts and
-    the transport keeps the client's lifetime.
+    SSE owns its client; the HTTP caller closes its supplied client.
     """
 
     def __init__(self, cfg: MCPServerConfig) -> None:
@@ -667,8 +669,8 @@ class _CredentialOriginGuard:
     def client(self, headers: Any = None, timeout: Any = None, auth: Any = None) -> Any:
         client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
         if self.cfg.carries_credentials():
-            async def stay_on_origin(request: Any) -> None:
-                expected, actual = _origin(self.cfg.url), _origin(request.url)
+            async def stay_on_origin(url: Any) -> None:
+                expected, actual = _origin(self.cfg.url), _origin(url)
                 if actual == expected:
                     return
                 self.refusal = MCPRedirectRefused(
@@ -681,7 +683,17 @@ class _CredentialOriginGuard:
                 await client.aclose()
                 raise self.refusal
 
-            client.event_hooks["request"].append(stay_on_origin)
+            async def request_origin(request: Any) -> None:
+                await stay_on_origin(request.url)
+
+            async def redirect_origin(response: Any) -> None:
+                # SSE swallows POST errors: close now, not at tool timeout.
+                # Optional HTTP GET/DELETE failures must not erase a POST reply.
+                if (self.cfg.transport == "sse" or response.request.method == "POST") and response.is_redirect and response.headers.get("location"):
+                    await stay_on_origin(response.request.url.join(response.headers["location"]))
+
+            client.event_hooks["request"].append(request_origin)
+            client.event_hooks["response"].append(redirect_origin)
         return client
 
 
@@ -699,11 +711,16 @@ async def _http_with_guards(cfg: MCPServerConfig):
     guard = _CredentialOriginGuard(cfg)
     sse = cfg.transport == "sse"
     with _redacted_sdk_logs(cfg, "mcp.client.sse" if sse else "mcp.client.streamable_http"):
-        opened = (sse_client if sse else streamablehttp_client)(
-            cfg.url, headers=cfg.wire_headers(), httpx_client_factory=guard.client)
         try:
-            async with opened as streams:
-                yield streams
+            if sse:
+                async with sse_client(cfg.url, headers=cfg.wire_headers(), httpx_client_factory=guard.client) as streams:
+                    yield streams
+            else:
+                # SDK2 accepts a prebuilt client but does not close it. Keep it
+                # alive through transport/session termination, then join cleanup.
+                async with guard.client(headers=cfg.wire_headers()) as client:
+                    async with streamable_http_client(cfg.url, http_client=client) as streams:
+                        yield streams
         except Exception:
             # The SDK's task groups wrap the hook's refusal or report a closed
             # connection instead; name the stopped request. Cancellation and
@@ -739,7 +756,7 @@ async def _list_tools_async(cfg: MCPServerConfig, *, timeout_sec: int) -> List[D
     """Connect to ``cfg`` and return raw tools; errors surface to status."""
     if not _MCP_SDK_AVAILABLE:
         raise RuntimeError(
-            "MCP client SDK not installed. Add `mcp>=1.10` to the runtime."
+            "MCP client SDK unavailable. The runtime requires `mcp>=2.3,<3`."
         )
     from ouroboros.owner_pause import submit_async_preparation
 
@@ -762,14 +779,14 @@ async def _list_tools_async(cfg: MCPServerConfig, *, timeout_sec: int) -> List[D
                 cursor: Any = None
                 for _page in range(50):
                     result = await (
-                        session.list_tools(cursor=cursor) if cursor else session.list_tools()
+                        session.list_tools(params=PaginatedRequestParams(cursor=cursor)) if cursor else session.list_tools()
                     )
                     for tool in result.tools or []:
                         tools_raw.append(
                             {
                                 "name": getattr(tool, "name", ""),
                                 "description": getattr(tool, "description", "") or "",
-                                "input_schema": getattr(tool, "inputSchema", {}) or {},
+                                "input_schema": tool.input_schema,
                             }
                         )
                         for key in ("annotations", "metadata"):
@@ -778,7 +795,7 @@ async def _list_tools_async(cfg: MCPServerConfig, *, timeout_sec: int) -> List[D
                                 tools_raw[-1][key] = value.model_dump(mode="json", by_alias=True) if hasattr(value, "model_dump") else value
                         if metadata := tool_metadata(tool):
                             tools_raw[-1]["metadata"] = {**(tools_raw[-1].get("metadata") or {}), **metadata}
-                    cursor = getattr(result, "nextCursor", None)
+                    cursor = getattr(result, "next_cursor", None)
                     if not cursor:
                         break
                 else:
@@ -802,7 +819,7 @@ async def _call_tool_async(
     """Open a fresh session and preserve the SDK-owned error bit."""
     if not _MCP_SDK_AVAILABLE:
         raise RuntimeError(
-            "MCP client SDK not installed. Add `mcp>=1.10` to the runtime."
+            "MCP client SDK unavailable. The runtime requires `mcp>=2.3,<3`."
         )
     from ouroboros.owner_pause import submit_async_operation, submit_async_preparation, OwnerPauseRefused, _TOOL_OPERATION
     from ouroboros.model_wait import ModelWaitInterrupted
@@ -875,7 +892,7 @@ def _stringify_call_result(result: Any) -> str:
             parts.append(repr(item))
     # structuredContent is protocol data in its own right (E5, capinv-447):
     # carry it even when text/content parts exist, unless it duplicates one.
-    structured = getattr(result, "structuredContent", None)
+    structured = getattr(result, "structured_content", None)
     if structured is not None:
         try:
             dumped = json.dumps(structured, ensure_ascii=False)
@@ -904,26 +921,8 @@ def _tool_result_from_call_result(result: Any) -> ToolResult:
 
 
 def _serialize_content_part(item: Any) -> Dict[str, Any]:
-    """Best-effort conversion of an MCP content part into a JSON-safe dict."""
-    out: Dict[str, Any] = {}
-    for attr in ("type", "uri", "mimeType", "data", "annotations"):
-        value = getattr(item, attr, None)
-        if value is not None and not callable(value):
-            out[attr] = value
-    # EmbeddedResource carries its payload in a NESTED resource object (E5,
-    # capinv-447): omitting it dropped the text/blob of every embedded resource.
-    resource = getattr(item, "resource", None)
-    if resource is not None and not callable(resource):
-        nested: Dict[str, Any] = {}
-        for attr in ("uri", "mimeType", "text", "blob"):
-            value = getattr(resource, attr, None)
-            if value is not None and not callable(value):
-                nested[attr] = str(value) if attr == "uri" else value
-        if nested:
-            out["resource"] = nested
-    if "uri" in out:
-        out["uri"] = str(out["uri"])  # AnyUrl is not JSON-serializable
-    return out
+    """SDK2's wire projection preserves nested resources and MIME/annotation aliases."""
+    return item.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
 # Sync wrapper.

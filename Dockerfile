@@ -5,7 +5,7 @@
 #   docker build --target managed --build-context ouroboros-seed=<seed dir> -t ouroboros-managed .
 # The RUN --mount caches and --build-context need BuildKit, Docker's default builder.
 
-FROM ghcr.io/astral-sh/uv:0.12.1 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.4 AS uv
 
 # CPython 3.10.22 and SQLite 3.53.1 from python-build-standalone 20261009:
 # the same install_only_stripped assets as scripts/download_python_standalone.sh.

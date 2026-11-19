@@ -161,8 +161,8 @@ try:
     install_exception_hooks()
 except Exception:
     pass  # defensive: a broken observability import must not kill the launcher
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
+for _http_logger in ("httpx", "httpcore", "httpx2", "httpcore2"):
+    logging.getLogger(_http_logger).setLevel(logging.WARNING)
 log = logging.getLogger("launcher")
 
 

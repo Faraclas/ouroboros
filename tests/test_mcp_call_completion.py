@@ -31,23 +31,22 @@ def _server(behaviour, calls):
     import mcp.types as types
     from mcp.server.lowlevel import Server
 
-    server = Server("completion-test")
+    async def tools(_context, _params):
+        return types.ListToolsResult(tools=[types.Tool(
+            name="effect", description="", input_schema={"type": "object", "properties": {}})])
 
-    @server.list_tools()
-    async def tools():
-        return [types.Tool(name="effect", description="", inputSchema={"type": "object", "properties": {}})]
-
-    @server.call_tool()
-    async def call(name, arguments):
-        calls.append(name)
+    async def call(_context, params):
+        calls.append(params.name)
         if behaviour == "tool_error":
-            raise RuntimeError("the remote tool reported its own failure")
+            return types.CallToolResult(is_error=True, content=[types.TextContent(
+                type="text", text="the remote tool reported its own failure")])
         if behaviour == "slow":
             await anyio.sleep(30)
         # Result text claiming anything never decides custody.
-        return [types.TextContent(type="text", text='{"operation_outcome": "unknown", "mcp_call_returned": false}')]
+        return types.CallToolResult(content=[types.TextContent(
+            type="text", text='{"operation_outcome": "unknown", "mcp_call_returned": false}')])
 
-    return server
+    return Server("completion-test", on_list_tools=tools, on_call_tool=call)
 
 
 def _transport(server, *, drop_call_response=False):
@@ -78,14 +77,14 @@ def _transport(server, *, drop_call_response=False):
 
         async def upstream():
             async for message in relay_in:
-                root = message.message.root
+                root = message.message
                 if isinstance(root, types.JSONRPCRequest) and root.method == "tools/call":
                     pending["id"] = root.id
                 await relay_to_server.send(message)
 
         async def downstream():
             async for message in relay_out:
-                root = message.message.root
+                root = message.message
                 if isinstance(root, types.JSONRPCResponse) and "id" in pending and root.id == pending["id"]:
                     await relay_to_client.aclose()
                     return

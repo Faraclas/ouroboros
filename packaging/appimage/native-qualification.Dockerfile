@@ -23,8 +23,8 @@ RUN apt-get install -y --no-install-recommends build-essential pkg-config file \
     libgtk-3-bin librsvg2-common glib-networking gsettings-desktop-schemas \
     gstreamer1.0-plugins-base gstreamer1.0-plugins-good bubblewrap xdg-dbus-proxy \
     adwaita-icon-theme hicolor-icon-theme shared-mime-info
-RUN curl -fLsS https://github.com/astral-sh/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-gnu.tar.gz -o /tmp/uv.tar.gz \
-    && echo '90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb  /tmp/uv.tar.gz' | sha256sum -c - \
+RUN curl -fLsS https://github.com/astral-sh/uv/releases/download/0.13.4/uv-x86_64-unknown-linux-gnu.tar.gz -o /tmp/uv.tar.gz \
+    && echo '2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f  /tmp/uv.tar.gz' | sha256sum -c - \
     && tar -xzf /tmp/uv.tar.gz -C /opt && ln -s /opt/uv-x86_64-unknown-linux-gnu/uv /usr/local/bin/uv
 FROM common AS desktop
 # libGL/libEGL/libGLESv2 (libglvnd), Mesa, gbm and drm are the declared host

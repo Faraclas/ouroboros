@@ -462,7 +462,7 @@ def test_stdio_transport_passes_exact_argv_without_env_or_cwd(monkeypatch, stdio
 
         async def list_tools(self):
             return SimpleNamespace(
-                tools=[SimpleNamespace(name="ping", description="Ping", inputSchema={},
+                tools=[SimpleNamespace(name="ping", description="Ping", input_schema={},
                                        annotations={"readOnlyHint": True})]
             )
 
@@ -1038,3 +1038,46 @@ def test_duplicate_tool_names_disclose_instead_of_crashing(monkeypatch, tmp_path
 def _private_mcp_catalog_root(tmp_path, monkeypatch):
     from ouroboros import config
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+
+
+def test_sdk2_pagination_and_wire_content_cross_real_session(monkeypatch):
+    """Python aliases must not silently erase schemas, pagination or rich content."""
+    import anyio
+    from mcp import types
+    from mcp.server.lowlevel import Server
+    from mcp.shared.memory import create_client_server_memory_streams
+
+    cursors = []
+    async def listing(_context, params):
+        cursor = params.cursor if params else None
+        cursors.append(cursor)
+        return types.ListToolsResult(tools=[types.Tool(
+            name="second" if cursor else "first", input_schema={"type": "object", "required": ["text"]},
+            output_schema={"type": "object"}, annotations=types.ToolAnnotations(read_only_hint=True))],
+            next_cursor=None if cursor else "next-page")
+    server = Server("paged", on_list_tools=listing)
+
+    @asynccontextmanager
+    async def transport(_cfg):
+        async with create_client_server_memory_streams() as (client, (read, write)):
+            async with anyio.create_task_group() as group:
+                group.start_soon(server.run, read, write, server.create_initialization_options())
+                try:
+                    yield client
+                finally:
+                    group.cancel_scope.cancel()
+    monkeypatch.setattr(mcp_client, "_transport_factory", transport)
+    cfg = mcp_client.normalize_server_config(_good_server())
+    rows = asyncio.run(mcp_client._list_tools_async(cfg, timeout_sec=3))
+    assert cursors == [None, "next-page"] and [row["name"] for row in rows] == ["first", "second"]
+    assert all(row["input_schema"]["required"] == ["text"] for row in rows)
+    assert all(row["metadata"]["outputSchema"] == {"type": "object"} and
+               row["metadata"]["annotations"]["readOnlyHint"] is True for row in rows)
+    result = types.CallToolResult(content=[types.ImageContent(type="image", data="YWJj", mime_type="image/png"),
+        types.EmbeddedResource(type="resource", resource=types.TextResourceContents(
+            uri="fixture:readme", text="resource text", mime_type="text/plain"))],
+        structured_content={"answer": 42}, is_error=True)
+    projected = mcp_client._tool_result_from_call_result(result)
+    assert projected.status == "error" and projected.meta["mcp_is_error"] is True
+    assert '"mimeType": "image/png"' in projected.text and '"mimeType": "text/plain"' in projected.text
+    assert '"text": "resource text"' in projected.text and '"answer": 42' in projected.text

@@ -80,11 +80,15 @@ def test_httpx_logger_quieted(tmp_path):
         import logging
         from ouroboros.process_logging import configure_process_logging
         configure_process_logging(drive_logs=None)
-        print("LEVELS", logging.getLogger("httpx").level, logging.getLogger("httpcore").level)
+        print("LEVELS", *(logging.getLogger(name).level for name in ("httpx", "httpcore", "httpx2", "httpcore2")))
+        import httpx2
+        with httpx2.Client(transport=httpx2.MockTransport(lambda req: httpx2.Response(200))) as client:
+            client.get("https://example.test/private-path-value?token=private-query-value")
     """, tmp_path)
     assert completed.returncode == 0, completed.stderr[-2000:]
     levels = next(line for line in completed.stdout.splitlines() if line.startswith("LEVELS")).split()[1:]
-    assert all(int(level) >= logging.WARNING for level in levels)
+    assert len(levels) == 4 and all(int(level) >= logging.WARNING for level in levels)
+    assert "private-path-value" not in completed.stderr and "private-query-value" not in completed.stderr
 
 
 @pytest.mark.serial
