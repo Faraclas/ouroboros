@@ -97,8 +97,8 @@
 .pm-cleanup-mode select { width:100%; min-width:0; box-sizing:border-box; font:inherit; font-weight:400; min-height:40px; }
 .pm-cleanup-check { display:flex; align-items:flex-start; gap:10px; line-height:var(--line-body); cursor:pointer; }
 .pm-cleanup-check input { flex:0 0 auto; margin:4px 0 0; accent-color:var(--accent); }
-.pm-cleanup-select-all { font-weight:600; padding:6px 0; border-bottom:1px solid var(--border); }
-.pm-cleanup-status { margin:4px 0; font-size:var(--type-note); font-weight:600; color:var(--text-primary); }
+.pm-cleanup-select-all { font-weight:600; padding:6px 0; border-bottom:1px solid var(--divider); }
+.pm-cleanup-status { margin:4px 0; font-size:var(--type-body); font-weight:600; color:var(--text-primary); }
 .pm-cleanup-label { margin:0 0 4px; font-weight:600; color:var(--text-secondary); }
 .pm-cleanup-targets,.pm-cleanup-targets section { min-width:0; overflow-wrap:anywhere; }
 .pm-cleanup-warning { color:var(--text-primary); line-height:var(--line-body); margin:8px 0; overflow-wrap:anywhere; }
