@@ -52,7 +52,6 @@ OPENROUTER_REVIEW_DEFAULTS = {
     "advisory": "anthropic/claude-sonnet-5",
 }
 
-
 # Settings defaults
 SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OPENROUTER_API_KEY": "",
@@ -246,8 +245,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # tool selection. It never changes the model or reasoning effort; the reply follows the route window
     # (context_budget.reply_allowance_tokens: Nano floor 8,192, its target stands in for an unknown window).
     "OUROBOROS_CONTEXT_MODE": "max",
-    # Optional Max fit target, not a change to Context Mode or physical capacity.
-    "OUROBOROS_COPILOT_PREFER_STANDARD_TIER": "false",
+    "OUROBOROS_COPILOT_PREFER_STANDARD_TIER": "false",  # optional Max target, not physical capacity
     # One-window compatibility tombstone for the retired persistent auto-Low mechanism.
     # It never sizes or routes context and no runtime writer may set it true.  An explicit
     # false still distinguishes owner-authored Low from a bare forwarded env Low for P3.

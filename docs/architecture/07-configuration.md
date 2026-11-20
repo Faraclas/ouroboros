@@ -1,10 +1,10 @@
 # 7. Configuration (ouroboros/config.py)
 
-Settings have one home: the table projects `config.SETTINGS_DEFAULTS`.
+Settings have one home: the table projects `config.SETTINGS_DEFAULTS`, never a second authority.
 
 `ouroboros/config.py` re-exports paths, loaders/writers, environment projection, normalization, runtime mode, skills location and PID lock. Vocabularies/defaults belong to its leaves (§10 invariant 3). `settings_scales.IMMEDIATE_SETTINGS` applies live; `RESTART_REQUIRED_SETTINGS` awaits restart; other keys apply from the next task, a route key from the next model call. `update_channels.py` owns update defaults.
 
-Path constants take their `OUROBOROS_*` override or derive from `APP_ROOT` (`~/Ouroboros`). A direct server's implicit `REPO_DIR` is its executing checkout; `resolve_port_file` relocates only the hosting root's port file. Exception: a server given only `APP_ROOT` keeps `~/Ouroboros/data` (`server_process.DATA_DIR`) to avoid a fresh brain. The document is data-root `settings.json`; writes take its lock. `secret_masking.py` repairs recognized disk placeholders before environment precedence, never masking a real environment credential. `OUROBOROS_SETTINGS_SHA256` (`settings_integrity.py`) makes a seeded snapshot an isolated child's owner-authored trust root: reads verify all bytes without a sibling lock and writers refuse.
+Path constants take their `OUROBOROS_*` override or derive from `APP_ROOT` (`~/Ouroboros`). A direct server's implicit `REPO_DIR` is its executing checkout; `resolve_port_file` relocates only the hosting root's port file. Exception: an `APP_ROOT`-only server keeps `~/Ouroboros/data` (`server_process.DATA_DIR`) to avoid a fresh brain. Data-root `settings.json` writes take its lock. `secret_masking.py` repairs recognized disk placeholders before environment precedence, never masking a real environment credential. `OUROBOROS_SETTINGS_SHA256` (`settings_integrity.py`) makes a seeded snapshot an isolated child's owner-authored trust root: reads verify all bytes without a sibling lock and writers refuse.
 
 `openrouter_attribution.py` is the app-identity SSOT of every first-party paid OpenRouter request (canonical URL + `X-OpenRouter-Title`); a fork uses its own URL, never renaming one app record.
 
