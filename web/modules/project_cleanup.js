@@ -6,11 +6,22 @@ import { formatNativePath } from './ui_primitives.js';
 const el = (tag, cls = '', text = '') => { const n = document.createElement(tag); n.className = cls; n.textContent = text; return n; };
 const readable = value => String(value || '').replaceAll('_', ' ');
 const retainedExplanation = reason => ({
+    runtime_or_habitat_overlap: 'Shared Viper installation, runtime, or protected habitat directory.',
+    runtime_memory_or_recorded_artifact: 'Runtime data, memory, or recorded task artifact.',
     live_task_or_process_uses_target: 'Work or an owned process is still active. Close stops it first; afterward inspect again and select cleanup.',
     process_cwd_inside: 'A running process has its working directory here. Stop that process, then inspect again.',
+    shared_with_another_project: 'Shared with another active project.',
+    another_copy_or_copy_ancestor: 'Belongs to another task copy or its parent directory.',
+    caller_access_denied: 'Outside permitted workspace access; not inspected.',
+    inside_repository_requires_repository_owner: 'Inside a Git repository; manage through the repository itself.',
+    git_metadata_requires_repository_owner: 'Git metadata directory; manage through the repository itself.',
     nested_repository_inventory_unknown: 'The bounded nested-repository check could not establish safety. Nothing here will be removed.',
     git_worktree_inventory_unknown: 'Git could not list dependent worktrees. Nothing here will be removed.',
     other_git_worktrees_depend_on_repository: 'Other Git worktrees depend on this repository. Retain it until its Git owner retires them.',
+    nested_linked_worktree_requires_repository_owner: 'Contains a linked Git worktree; manage through its owning repository.',
+    recorded_output_kept: 'Recorded task output kept in reopen-friendly mode.',
+    reconstruction_unavailable: 'No remote/branch reconstruction info available for reopen-friendly removal.',
+    new_target_requires_inspection: 'Pending loss inspection.',
 }[reason] || readable(reason));
 
 export function openProjectCleanup({ project, closing = true, signal } = {}) {
@@ -29,21 +40,31 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
         for (const [value, text] of [['complete', closing ? 'Close and clean up completely' : 'Clean up completely'], ['reopen_friendly', closing ? 'Close, keep it reopen-friendly' : 'Keep it reopen-friendly'], ['none', closing ? 'Close only (keep everything, as today)' : 'Keep everything']]) {
             const option = el('option', '', text); option.value = value; mode.append(option);
         }
-        label.append(mode); body.append(label, el('p', 'pm-note', 'Complete cleanup means selected project temporary material, not undoing delivered or shared work. Association alone never selects an external resource.'));
+        label.append(mode); body.append(label, el('p', 'pm-note', 'Complete cleanup preselects eligible temporary material across all pages, not delivered or shared work. Association alone never selects an external resource.'));
         const summary = el('p', 'pm-note'); summary.setAttribute('role', 'status');
+        const selectAllRow = el('label', 'pm-cleanup-check pm-cleanup-select-all');
+        const selectAll = el('input'); selectAll.type = 'checkbox'; selectAll.disabled = true;
+        const selectAllText = el('span', '', 'Select all eligible across whole project');
+        selectAllRow.append(selectAll, selectAllText);
         const targets = el('div', 'pm-cleanup-targets');
         const filter = el('form', 'pm-cleanup-mode'), search = el('input', 'ui-control'), find = el('button', 'btn btn-default', 'Find path');
         search.type = 'search'; search.placeholder = 'Filter recorded paths'; search.setAttribute('aria-label', 'Filter recorded paths'); find.type = 'submit'; filter.append(search, find);
         const pages = el('nav', 'pm-pagination'); pages.setAttribute('aria-label', 'Cleanup target pages');
         const previous = el('button', 'btn btn-default', 'Previous'), pageText = el('span'), next = el('button', 'btn btn-default', 'Next');
         previous.type = next.type = 'button'; pages.append(previous, pageText, next);
-        body.append(summary, filter, pages, targets);
+        body.append(summary, selectAllRow, filter, pages, targets);
         const actions = el('div', 'marketplace-modal-actions'), submit = el('button', 'btn btn-danger', closing ? 'Close project' : 'Clean selected files'); submit.type = 'button'; submit.disabled = true;
         const back = el('button', 'btn btn-default', 'Cancel'); back.type = 'button'; actions.append(back, submit);
         dialog.append(head, body, actions); backdrop.append(dialog); document.body.append(backdrop);
         let finished = false, reader = null, version = 0, plan = null, disposeFocus;
-        const selections = new Map(), confirmations = new Set(), seen = new Set();
-        let digest = '', offset = 0, query = '';
+        const selections = new Map(), confirmations = new Set(), excludedIds = new Set(), seen = new Set(), knownWarnings = new Map();
+        const rowControls = [];
+        let selectAllEligible = true, digest = '', targetsDigest = '', offset = 0, query = '';
+        const isTargetSelected = target => {
+            if (!target || target.retain_reason || !target.exists) return false;
+            if (target.eligible && selectAllEligible) return !excludedIds.has(target.id);
+            return selections.has(target.id);
+        };
         function finish(value) {
             if (finished) return; finished = true; reader?.abort(); signal?.removeEventListener('abort', abort);
             disposeFocus?.(); backdrop.remove(); resolve(value);
@@ -53,21 +74,65 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
         backdrop.onclick = e => { if (e.target === backdrop) abort(); };
         signal?.addEventListener('abort', abort, { once: true });
         disposeFocus = bindDialogFocus(dialog, { initialFocus: mode, onEscape: abort, preventScroll: true });
-        function update() {
-            if (mode.value === 'none') { submit.disabled = !closing; summary.textContent = 'All local files and resources will be retained. No cleanup will run.'; return; }
-            const selected = [...selections.values()];
-            const unconfirmed = selected.some(t => t.warning && !confirmations.has(t.id));
-            submit.disabled = !plan || (!closing && !selected.length) || unconfirmed;
-            const page = plan?.targets || [];
-            const unavailable = page.filter(t => t.retain_reason).length;
-            const scope = `${selected.length} selected for removal across inspected pages. This page: ${page.length - unavailable} selectable, ${unavailable} retained. Unseen targets are not selected; their loss inspection is not complete.`;
-            const guidance = !selected.length ? (closing ? ' Nothing selected: closing will keep all local material.' : (page.length && unavailable === page.length ? ' Nothing selectable on this page. Read the retention reasons; try another page or path filter.' : (page.length ? ' Select material to clean up.' : ' No recorded paths match this filter.'))) : '';
-            summary.textContent = scope + guidance + (unconfirmed ? ' Extra confirmation is still required.' : '');
+        function rowStatusText(target, checked, confirmed) {
+            if (target.retain_reason) return `Protected · ${retainedExplanation(target.retain_reason)}${target.exists === false ? ' (path not present on disk)' : ''}`;
+            if (!target.exists) return 'Already gone · path no longer exists on disk.';
+            if (target.warning) return checked && confirmed ? 'Will remove · loss confirmed.' : 'Needs confirmation · review local work below before removing.';
+            return checked ? 'Will remove · ready temporary material.' : 'Eligible — not selected.';
         }
+        function update() {
+            selectAllRow.hidden = mode.value === 'none';
+            if (mode.value === 'none') { submit.disabled = !closing; summary.textContent = 'All local files and resources will be retained. No cleanup will run.'; return; }
+            const eligibleTotal = plan?.eligible_total ?? 0;
+            const protectedTotal = plan?.protected_total ?? plan?.retained_total ?? 0;
+            const alreadyGoneTotal = plan?.already_gone_total ?? 0;
+            const needsConfTotal = plan?.needs_confirmation_total ?? 0;
+            const totalTargets = plan?.total ?? 0;
+            selectAll.disabled = !plan || eligibleTotal === 0;
+            selectAll.checked = Boolean(plan && eligibleTotal > 0 && selectAllEligible && excludedIds.size === 0);
+            selectAll.indeterminate = Boolean(plan && eligibleTotal > 0 && selectAllEligible && excludedIds.size > 0 && excludedIds.size < eligibleTotal);
+            selectAllText.textContent = `Select all eligible across whole project (${eligibleTotal} eligible)`;
+            const selectedEligibleCount = selectAllEligible ? Math.max(0, eligibleTotal - excludedIds.size) : [...selections.values()].filter(t => t.eligible).length;
+            const manualNonEligibleCount = [...selections.values()].filter(t => !t.eligible).length;
+            const totalSelected = selectedEligibleCount + manualNonEligibleCount;
+            const unconfirmed = [...knownWarnings.values()].filter(t => isTargetSelected(t) && !confirmations.has(t.id)).length;
+            const willRemoveCount = Math.max(0, totalSelected - unconfirmed);
+            submit.disabled = !plan || (!closing && !totalSelected) || unconfirmed > 0;
+            const page = plan?.targets || [];
+            const pageUnavailable = page.filter(t => t.retain_reason || !t.exists).length;
+            const pageSelectable = page.length - pageUnavailable;
+            const uninspected = selectAllEligible ? Math.max(0, (plan?.uninspected_eligible_total || 0) - [...excludedIds].filter(id => !seen.has(id)).length) : 0;
+            const projectScope = `Project-wide (${totalTargets} total): ${willRemoveCount} will remove · ${needsConfTotal} needs confirmation · ${protectedTotal} protected · ${alreadyGoneTotal} already gone.`;
+            const pageScope = ` This page: ${pageSelectable} selectable, ${pageUnavailable} retained.`;
+            const unseenNote = uninspected > 0 ? ` (${uninspected} selected on unseen pages will still require confirmation if unique work is found.)` : '';
+            const guidance = !totalSelected ? (closing ? ' Nothing selected: closing will keep all local material.' : (page.length && pageUnavailable === page.length ? ' Nothing selectable on this page. Read the reasons below; try another page or path filter.' : (page.length ? ' Select material to clean up.' : ' No recorded paths match this filter.'))) : '';
+            summary.textContent = projectScope + pageScope + unseenNote + guidance + (unconfirmed ? ` Extra confirmation is still required for ${unconfirmed} selected target(s).` : '');
+        }
+        selectAll.onchange = () => {
+            if (selectAll.checked) {
+                selectAllEligible = true;
+                excludedIds.clear();
+            } else {
+                selectAllEligible = false;
+                excludedIds.clear();
+                selections.clear();
+                confirmations.clear();
+            }
+            for (const item of rowControls) {
+                const checked = isTargetSelected(item.target);
+                if (item.check) item.check.checked = checked;
+                if (item.confirm) {
+                    item.confirm.disabled = !checked;
+                    if (!checked) { item.confirm.checked = false; confirmations.delete(item.target.id); }
+                }
+                item.status.textContent = rowStatusText(item.target, checked, confirmations.has(item.target.id));
+            }
+            update();
+        };
         async function load(reset = true) {
             const ownedFocus = dialog.contains(document.activeElement);
-            reader?.abort(); const current = ++version; plan = null; targets.replaceChildren(); submit.disabled = true;
-            if (reset) { selections.clear(); confirmations.clear(); seen.clear(); digest = ''; offset = 0; }
+            reader?.abort(); const current = ++version; plan = null; targets.replaceChildren(); rowControls.length = 0; submit.disabled = true;
+            if (reset) { selectAllEligible = mode.value === 'complete'; excludedIds.clear(); selections.clear(); confirmations.clear(); seen.clear(); knownWarnings.clear(); digest = ''; targetsDigest = ''; offset = 0; }
             previous.disabled = next.disabled = true;
             // Disabling the clicked page button or replacing its focused row can
             // move focus to body, outside the dialog's Escape/Tab owner.
@@ -79,32 +144,70 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
                 const result = await fetchJson(`/api/projects/${encodeURIComponent(project.id)}/cleanup/plan?${params}`, { cache: 'no-store', signal: AbortSignal.any([reader.signal, AbortSignal.timeout(30000)]) });
                 if (finished || current !== version) return;
                 if (!Array.isArray(result.targets)) throw Error('Cleanup plan is incomplete.');
-                plan = result; digest = result.plan_sha256 || '';
+                plan = result; digest = result.plan_sha256 || ''; targetsDigest = result.targets_sha256 || '';
                 previous.disabled = offset === 0; next.disabled = result.next_offset == null;
                 pageText.textContent = `${result.targets.length ? offset + 1 : 0}–${offset + result.targets.length} of ${result.matched_total ?? result.targets.length} matching · ${result.total ?? result.targets.length} total`;
                 for (const target of plan.targets) {
                     const row = el('section', 'pm-resource');
                     if (!seen.has(target.id)) {
                         seen.add(target.id);
-                        if (target.default_selected && !target.retain_reason) selections.set(target.id, target);
+                        if (target.default_selected && !target.retain_reason && target.exists && (!target.eligible || !selectAllEligible)) selections.set(target.id, target);
                     }
-                    const choice = el('label', 'pm-cleanup-check'); const check = el('input'); check.type = 'checkbox'; check.checked = selections.has(target.id); check.disabled = !!target.retain_reason;
-                    check.setAttribute('aria-label', `Remove ${formatNativePath(target.path)}`);
-                    choice.append(check, el('span', '', `Remove ${target.kind.replaceAll('_', ' ')}`)); row.append(choice, el('p', 'pm-path', formatNativePath(target.path)));
-                    if (target.retain_reason) row.append(el('p', 'pm-note', `Retained · ${retainedExplanation(target.retain_reason)}`));
-                    else if (!target.exists) row.append(el('p', 'pm-note', 'Already absent · nothing to remove.'));
-                    if (target.warning && !target.retain_reason) {
-                        row.append(el('p', 'pm-cleanup-warning', target.warning.message));
-                        const facts = target.risk?.facts || {};
-                        row.append(el('p', 'pm-note', `Local inspection: ${target.risk?.status || 'unknown'} · tracked changes ${facts.uncommitted ?? 'unknown'} · untracked ${facts.untracked ?? 'unknown'} · ignored ${facts.ignored ?? 'unknown'} · stashes ${facts.stashes ?? 'unknown'} · commits absent from known remote refs ${facts.commits_not_in_remote_tracking ?? 'unknown'}.`));
-                        const extra = el('label', 'pm-cleanup-check'), confirm = el('input'); confirm.type = 'checkbox'; confirm.disabled = !check.checked; confirm.checked = confirmations.has(target.id);
-                        confirm.setAttribute('aria-label', `Confirm loss of local material at ${formatNativePath(target.path)}`);
-                        extra.append(confirm, el('span', '', 'I understand this local material may be unique and confirm its removal.'));
-                        confirm.onchange = () => { if (confirm.checked) confirmations.add(target.id); else confirmations.delete(target.id); update(); };
-                        check.onchange = () => { if (check.checked) selections.set(target.id, target); else selections.delete(target.id); confirm.disabled = !check.checked; confirm.checked = false; confirmations.delete(target.id); update(); };
-                        row.append(extra);
-                    } else check.onchange = () => { if (check.checked) selections.set(target.id, target); else selections.delete(target.id); update(); };
+                    if (target.warning && !target.retain_reason && target.exists) knownWarnings.set(target.id, target);
+                    const statusNode = el('p', 'pm-cleanup-status');
+                    const isMissing = !target.retain_reason && !target.exists;
+                    let check = null, confirm = null;
+                    if (isMissing) {
+                        row.append(el('p', 'pm-cleanup-label', `${readable(target.kind)}`), el('p', 'pm-path', formatNativePath(target.path)));
+                        statusNode.textContent = rowStatusText(target, false, false);
+                        row.append(statusNode);
+                    } else {
+                        const checked = isTargetSelected(target);
+                        const choice = el('label', 'pm-cleanup-check');
+                        check = el('input'); check.type = 'checkbox'; check.checked = checked; check.disabled = !!target.retain_reason;
+                        check.setAttribute('aria-label', `Remove ${formatNativePath(target.path)}`);
+                        choice.append(check, el('span', '', `Remove ${target.kind.replaceAll('_', ' ')}`));
+                        row.append(choice, el('p', 'pm-path', formatNativePath(target.path)));
+                        statusNode.textContent = rowStatusText(target, checked, confirmations.has(target.id));
+                        row.append(statusNode);
+                        if (target.warning && !target.retain_reason) {
+                            row.append(el('p', 'pm-cleanup-warning', target.warning.message));
+                            const facts = target.risk?.facts || {};
+                            row.append(el('p', 'pm-note', `Local inspection: ${target.risk?.status || 'unknown'} · tracked changes ${facts.uncommitted ?? 'unknown'} · untracked ${facts.untracked ?? 'unknown'} · ignored ${facts.ignored ?? 'unknown'} · stashes ${facts.stashes ?? 'unknown'} · commits absent from known remote refs ${facts.commits_not_in_remote_tracking ?? 'unknown'}.`));
+                            const extra = el('label', 'pm-cleanup-check');
+                            confirm = el('input'); confirm.type = 'checkbox'; confirm.disabled = !checked; confirm.checked = confirmations.has(target.id);
+                            confirm.setAttribute('aria-label', `Confirm loss of local material at ${formatNativePath(target.path)}`);
+                            extra.append(confirm, el('span', '', 'I understand this local material may be unique and confirm its removal.'));
+                            confirm.onchange = () => {
+                                if (confirm.checked) confirmations.add(target.id); else confirmations.delete(target.id);
+                                statusNode.textContent = rowStatusText(target, check.checked, confirm.checked);
+                                update();
+                            };
+                            check.onchange = () => {
+                                if (target.eligible && selectAllEligible) {
+                                    if (check.checked) excludedIds.delete(target.id); else excludedIds.add(target.id);
+                                } else {
+                                    if (check.checked) selections.set(target.id, target); else selections.delete(target.id);
+                                }
+                                confirm.disabled = !check.checked; confirm.checked = false; confirmations.delete(target.id);
+                                statusNode.textContent = rowStatusText(target, check.checked, false);
+                                update();
+                            };
+                            row.append(extra);
+                        } else {
+                            check.onchange = () => {
+                                if (target.eligible && selectAllEligible) {
+                                    if (check.checked) excludedIds.delete(target.id); else excludedIds.add(target.id);
+                                } else {
+                                    if (check.checked) selections.set(target.id, target); else selections.delete(target.id);
+                                }
+                                statusNode.textContent = rowStatusText(target, check.checked, false);
+                                update();
+                            };
+                        }
+                    }
                     if (target.reconstruction) row.append(el('p', 'pm-note', `Before removal, retain reconstruction: ${target.reconstruction.remote_url} · ${target.reconstruction.branch} · ${target.reconstruction.head}`));
+                    rowControls.push({ target, check, confirm, status: statusNode });
                     targets.append(row);
                 }
                 targets.append(el('p', 'pm-note', plan.coverage));
@@ -112,7 +215,7 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
                 update();
             } catch (error) {
                 if (finished || current !== version) return;
-                selections.clear(); confirmations.clear(); seen.clear(); digest = ''; offset = 0;
+                selectAllEligible = mode.value === 'complete'; excludedIds.clear(); selections.clear(); confirmations.clear(); seen.clear(); knownWarnings.clear(); digest = ''; targetsDigest = ''; offset = 0;
                 summary.textContent = `Cleanup preview unavailable: ${error.message}. No cleanup is selected. Refresh or choose keep everything.`;
                 const retry = el('button', 'btn btn-default', 'Refresh inspection'); retry.type = 'button'; retry.onclick = () => load(true); targets.append(retry);
             }
@@ -124,9 +227,21 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
         submit.onclick = () => {
             if (submit.disabled) return;
             if (mode.value === 'none') { finish({}); return; }
-            const selected = [...selections.values()];
-            if (!selected.length) { if (closing) finish({}); return; }
-            finish({ cleanup: { mode: mode.value, selections: selected.map(t => t.id), confirmations: Object.fromEntries(selected.map(t => [t.id, t.warning?.token || t.selection_token])) } });
+            const eligibleTotal = plan?.eligible_total ?? 0;
+            const selectedEligibleCount = selectAllEligible ? Math.max(0, eligibleTotal - excludedIds.size) : [...selections.values()].filter(t => t.eligible).length;
+            const explicitTargets = [...selections.values()].filter(t => !selectAllEligible || !t.eligible);
+            if (!selectedEligibleCount && !explicitTargets.length) { if (closing) finish({}); return; }
+            const confirmationEntries = new Map();
+            for (const t of explicitTargets) confirmationEntries.set(t.id, t.warning?.token || t.selection_token);
+            for (const t of knownWarnings.values()) if (isTargetSelected(t)) confirmationEntries.set(t.id, t.warning.token);
+            finish({
+                cleanup: {
+                    mode: mode.value,
+                    selections: explicitTargets.map(t => t.id),
+                    confirmations: Object.fromEntries(confirmationEntries),
+                    ...(selectAllEligible && eligibleTotal > 0 ? { select_all_eligible: true, excluded_ids: [...excludedIds], targets_sha256: targetsDigest } : {}),
+                }
+            });
         };
         void load();
     });

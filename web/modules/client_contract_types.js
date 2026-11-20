@@ -1154,6 +1154,9 @@
  * @property {"complete"|"reopen_friendly"} mode
  * @property {string[]} selections
  * @property {Object<string,string>} confirmations
+ * @property {boolean=} select_all_eligible
+ * @property {string[]=} excluded_ids
+ * @property {string=} targets_sha256
  */
 /** @typedef {Object} ProjectCloseRequest
  * @property {ProjectCleanupRequest=} cleanup
@@ -1168,11 +1171,17 @@
  * @property {number=} total
  * @property {number=} matched_total
  * @property {number=} retained_total
+ * @property {number=} protected_total
+ * @property {number=} already_gone_total
+ * @property {number=} eligible_total
+ * @property {number=} needs_confirmation_total
+ * @property {number=} uninspected_eligible_total
  * @property {number=} offset
  * @property {number=} limit
  * @property {(number|null)=} next_offset
  * @property {string=} query
  * @property {string=} plan_sha256
+ * @property {string=} targets_sha256
  * @property {boolean=} immutable
  * @property {string=} selection_scope
  */
@@ -1199,4 +1208,7 @@
  * @property {"complete"|"reopen_friendly"=} mode
  * @property {string[]=} selections
  * @property {Object<string,string>=} confirmations
+ * @property {boolean=} select_all_eligible
+ * @property {string[]=} excluded_ids
+ * @property {string=} targets_sha256
  */

@@ -228,15 +228,17 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
                                       'remote_coverage': risk['remote_coverage']}
                 except (OSError, subprocess.SubprocessError):
                     retain_reason = retain_reason or 'reconstruction_unavailable'
+        eligible = bool(exists is True and (created or temp) and not output and not protection and (deferred or not retain_reason))
         targets.append({'id': target_id, 'path': item['path'], 'kind': kind,
                         'origins': sorted(origins), 'sources': sources, 'identity': observed,
                         'exists': exists, 'protection': protection, 'retain_reason': retain_reason,
                         'access_denial': item['access_denial'],
                         'risk': risk, 'warning': warning, 'reconstruction': reconstruction, 'copy_record': copy_record,
                         'selection_token': _hash([target_id, observed, risk]), 'operand_inode': observed['operand_inode'],
-                        'default_selected': bool((created or temp) and not output and not retain_reason and
+                        'eligible': eligible,
+                        'default_selected': bool(exists is True and (created or temp) and not output and not retain_reason and
                                                  (mode == 'complete' or (reconstruction and not warning))),
-                        'action': 'retain' if retain_reason else 'remove_if_selected'})
+                        'action': 'already_absent' if exists is False and not retain_reason else 'retain' if retain_reason else 'remove_if_selected'})
     return {'project_id': project_id, 'mode': mode, 'lifecycle': project['lifecycle'],
             'targets': targets, 'gaps': [*generated['gaps'], *(['Some recorded targets are retained without loss inspection because caller access is denied.'] if any(t['access_denial'] for t in targets) else [])],
             'coverage': 'Recorded targets only. No container inventory or backup verification. Remote refs are local knowledge, not a live push check.'}
@@ -261,6 +263,9 @@ def cleanup_plan_page(drive_root, project_id, mode='complete', system_repo_dir=N
     plan = _plan(drive_root, project_id, mode, system_repo_dir,
                  registry._load(drive_root, strict=True)['projects'], authorize, page=(offset, limit, query))
     targets = plan['targets']
+    targets_digest = _hash([project_id, mode, [
+        [t['id'], t['path'], t['identity'], t['exists'], t['protection'], t['access_denial'], t['sources']]
+        for t in targets]])
     digest = _hash([project_id, mode, plan['lifecycle'], [
         [t['id'], t['path'], t['identity'], t['exists'], t['protection'], t['access_denial'], t['sources']]
         for t in targets]])
@@ -269,11 +274,23 @@ def cleanup_plan_page(drive_root, project_id, mode='complete', system_repo_dir=N
     matches = [t for t in targets if query.casefold() in t['path'].casefold()]
     page = matches[offset:offset + limit]
     next_offset = offset + len(page)
+    protected_total = sum(bool(t['protection']) or (t['risk']['status'] != 'unavailable' and bool(t['retain_reason'])) for t in targets)
+    already_gone_total = sum(not t['protection'] and t['exists'] is False for t in targets)
+    eligible_total = sum(bool(t['eligible']) for t in targets)
+    needs_confirmation_total = sum(
+        not t['protection'] and t['exists'] is True
+        and not (t['risk']['status'] != 'unavailable' and bool(t['retain_reason']))
+        and (t['kind'] not in {'project_created', 'generated_temp'} or (t['risk']['status'] != 'unavailable' and bool(t['warning'])))
+        for t in targets)
+    uninspected_eligible_total = sum(bool(t['eligible']) and t['risk']['status'] == 'unavailable' for t in targets)
     return {**plan, 'targets': page, 'total': len(targets), 'matched_total': len(matches),
-            'retained_total': sum(bool(t['protection']) for t in targets),
+            'retained_total': protected_total,
+            'protected_total': protected_total, 'already_gone_total': already_gone_total,
+            'eligible_total': eligible_total, 'needs_confirmation_total': needs_confirmation_total,
+            'uninspected_eligible_total': uninspected_eligible_total,
             'offset': offset, 'limit': limit, 'next_offset': next_offset if next_offset < len(matches) else None,
-            'query': query, 'plan_sha256': digest, 'immutable': False,
-            'selection_scope': 'Only explicitly selected inspected targets are submitted; unseen targets are not selected.'}
+            'query': query, 'plan_sha256': digest, 'targets_sha256': targets_digest, 'immutable': False,
+            'selection_scope': 'Complete cleanup preselects eligible temporary material across all pages; unseen targets with unique work still require explicit confirmation.'}
 
 
 def _remove(target):
@@ -291,7 +308,8 @@ def _remove(target):
 
 
 def cleanup_execute(drive_root, project_id, mode, selections, confirmations, decided_by,
-                    system_repo_dir=None, *, authorize=None, read_authorize=None, pending_request=None):
+                    system_repo_dir=None, *, authorize=None, read_authorize=None, pending_request=None,
+                    select_all_eligible=False, excluded_ids=(), targets_sha256=''):
     """Replan, confirm current warnings, persist intent, then remove selected paths.
 
     authorize is the tool caller's existing physical read/write authority check;
@@ -301,7 +319,26 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
         raise ProjectManagementError('invalid_cleanup', 'decided_by and a list of target ids are required')
     if not isinstance(confirmations, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in confirmations.items()):
         raise ProjectManagementError('invalid_cleanup', 'confirmations must map target ids to current warning tokens')
-    inspected = cleanup_plan(drive_root, project_id, mode, system_repo_dir, authorize=read_authorize, selected_ids=set(selections))
+    if not isinstance(excluded_ids, (list, tuple)) or any(not isinstance(s, str) for s in excluded_ids):
+        raise ProjectManagementError('invalid_cleanup', 'excluded_ids must be a list of target ids')
+    if not isinstance(targets_sha256, str):
+        raise ProjectManagementError('invalid_cleanup', 'targets_sha256 must be a string')
+    bulk_ids = set()
+    effective_selections = list(selections)
+    if select_all_eligible:
+        if not targets_sha256:
+            raise ProjectManagementError('invalid_cleanup', 'targets_sha256 is required with select_all_eligible')
+        structural = _plan(drive_root, project_id, mode, system_repo_dir,
+                           registry._load(drive_root, strict=True)['projects'], read_authorize, page=(0, 0, ''))
+        current_digest = _hash([project_id, mode, [
+            [t['id'], t['path'], t['identity'], t['exists'], t['protection'], t['access_denial'], t['sources']]
+            for t in structural['targets']]])
+        if current_digest != targets_sha256:
+            raise ProjectManagementError('cleanup_plan_changed', 'Cleanup facts changed; refresh inspection before continuing', 409)
+        excluded_set = set(excluded_ids)
+        bulk_ids = {t['id'] for t in structural['targets'] if t['eligible'] and t['id'] not in excluded_set}
+        effective_selections = list(dict.fromkeys([*selections, *bulk_ids]))
+    inspected = cleanup_plan(drive_root, project_id, mode, system_repo_dir, authorize=read_authorize, selected_ids=set(effective_selections))
     risk_cache = {t['path']: t['risk'] for t in inspected['targets']}
     with registry._file_write_lock(registry._registry_path(drive_root)):
         data = registry._load(drive_root, strict=True)
@@ -312,13 +349,17 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
             raise ProjectManagementError('cleanup_in_progress', 'The saved Close cleanup is pending; wait for its outcome or POST action=clear_pending to the cleanup endpoint', 409)
         plan = _plan(drive_root, project_id, mode, system_repo_dir, data['projects'], read_authorize, risk_cache)
         targets = {t['id']: t for t in plan['targets']}
-        if set(selections) - targets.keys():
+        if set(effective_selections) - targets.keys():
             raise ProjectManagementError('cleanup_plan_changed', 'Unknown target id; refresh the cleanup plan', 409)
         reasons = {}
         for tid, target in targets.items():
-            reason = target['retain_reason'] or ('not_selected' if tid not in selections else '')
-            if not reason and target['exists'] and confirmations.get(tid) != (target['warning']['token'] if target['warning'] else target['selection_token']):
-                reason = 'current_warning_confirmation_required' if target['warning'] else 'current_selection_confirmation_required'
+            reason = target['retain_reason'] or ('not_selected' if tid not in effective_selections else '')
+            if not reason and target['exists']:
+                if target['warning']:
+                    if confirmations.get(tid) != target['warning']['token']:
+                        reason = 'current_warning_confirmation_required'
+                elif tid not in bulk_ids and confirmations.get(tid) != target['selection_token']:
+                    reason = 'current_selection_confirmation_required'
             if not reason and authorize:
                 reason = authorize(target['path']) or ''
                 if not reason and target['risk'].get('arrangement') == 'linked':
@@ -343,16 +384,16 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
         project['cleanup_lease'] = custody.lease(operation)
         intent = {'id': operation, 'phase': 'started', 'at': utc_now_iso(), 'mode': mode, 'decided_by': 'agent-confirmed' if decided_by == 'agent' else decided_by,
                   'targets': [{'id': tid, 'path': t['path'], 'reconstruction': t['reconstruction'],
-                               'warning_token': confirmations.get(tid), 'reason': reasons[tid]} for tid, t in targets.items() if tid in selections]}
+                               'warning_token': confirmations.get(tid), 'reason': reasons[tid]} for tid, t in targets.items() if tid in effective_selections]}
         project['cleanup_history'] = [*history, intent]
         registry._save(drive_root, data)  # reconstruction is durable BEFORE deleting its checkout
     results = []
     history_error = ''
     try:
-        for tid, target in sorted(((tid, t) for tid, t in targets.items() if tid in selections),
+        for tid, target in sorted(((tid, t) for tid, t in targets.items() if tid in effective_selections),
                                   key=lambda pair: len(pathlib.Path(pair[1]['path']).parts), reverse=True):
             reason = reasons[tid] or ('history_publication_failed' if history_error else '')
-            status = 'refused' if reason and tid in selections else 'retained' if reason else 'removed'
+            status = 'refused' if reason and tid in effective_selections else 'retained' if reason else 'removed'
             if not reason:
                 removal_started = False
                 try:
@@ -373,12 +414,17 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
                             status, reason = 'changed_since_confirmation', 'target_identity_changed'
                         elif now['retain_reason']:
                             status, reason = 'refused', now['retain_reason']
-                        elif now['exists'] and confirmations.get(tid) != (now['warning']['token'] if now['warning'] else now['selection_token']):
+                        elif now['exists'] and (
+                            (now['warning'] and confirmations.get(tid) != now['warning']['token'])
+                            or (not now['warning'] and tid not in bulk_ids and confirmations.get(tid) != now['selection_token'])
+                        ):
                             status, reason = 'changed_since_confirmation', 'risk_or_selection_changed'
                         elif any(child['id'] != tid and _preview_overlap(now['identity'], child['identity']) in {'same', 'contains'}
-                                 and (child['id'] not in selections or child['retain_reason'] or reasons.get(child['id'])
+                                 and (child['id'] not in effective_selections or child['retain_reason'] or reasons.get(child['id'])
                                       or any(r['id'] == child['id'] and r['status'] not in {'removed', 'already_absent'} for r in results)
-                                      or (child['exists'] and confirmations.get(child['id']) != (child['warning']['token'] if child['warning'] else child['selection_token'])))
+                                      or (child['exists'] and (
+                                          (child['warning'] and confirmations.get(child['id']) != child['warning']['token'])
+                                          or (not child['warning'] and child['id'] not in bulk_ids and confirmations.get(child['id']) != child['selection_token']))))
                                  for child in current['targets']):
                             status, reason = 'refused', 'contains_retained_target'
                         elif custody.contains_mount(now['identity']['resolved_path'], mounts):
@@ -425,7 +471,7 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
                 outcome['history_error'] = history_error
         result = {'id': operation, 'phase': 'finished', 'at': utc_now_iso(), 'project_id': project_id,
                   'mode': mode, 'decided_by': 'agent-confirmed' if decided_by == 'agent' else decided_by, 'results': results,
-                  'unselected_retained_count': len(targets) - len(set(selections)),
+                  'unselected_retained_count': len(targets) - len(set(effective_selections)),
                   **({'error': 'Cleanup history publication failed: ' + history_error} if history_error else {})}
         with registry._file_write_lock(registry._registry_path(drive_root)):
             saved = registry._load(drive_root, strict=True)

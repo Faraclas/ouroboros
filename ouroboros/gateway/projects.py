@@ -950,7 +950,10 @@ async def api_project_cleanup(request: Request) -> JSONResponse:
         result = await run_sync_to_completion(
             cleanup_execute, request_drive_root(request), str(request.path_params['project_id']),
             body['mode'], body['selections'], body['confirmations'], 'human',
-            getattr(request.app.state, 'repo_dir', None))
+            getattr(request.app.state, 'repo_dir', None),
+            select_all_eligible=bool(body.get('select_all_eligible', False)),
+            excluded_ids=body.get('excluded_ids') or [],
+            targets_sha256=body.get('targets_sha256') or '')
         return JSONResponse(result)
     except ProjectManagementError as exc:
         return JSONResponse({'error': str(exc), 'reason_code': exc.reason}, status_code=exc.status_code)

@@ -601,6 +601,9 @@ class ProjectCleanupRequest(TypedDict):
     mode: Literal["complete", "reopen_friendly"]
     selections: List[str]
     confirmations: Dict[str, str]  # target id -> fresh warning token, never client paths
+    select_all_eligible: NotRequired[bool]
+    excluded_ids: NotRequired[List[str]]
+    targets_sha256: NotRequired[str]
 
 
 class ProjectCleanupControlRequest(TypedDict, total=False):
@@ -612,6 +615,9 @@ class ProjectCleanupControlRequest(TypedDict, total=False):
     mode: Literal["complete", "reopen_friendly"]
     selections: List[str]
     confirmations: Dict[str, str]
+    select_all_eligible: bool
+    excluded_ids: List[str]
+    targets_sha256: str
 
 
 class ProjectCloseRequest(TypedDict):
@@ -628,11 +634,17 @@ class ProjectCleanupPlan(TypedDict):
     total: NotRequired[int]
     matched_total: NotRequired[int]
     retained_total: NotRequired[int]  # structural protections only; risk retention is inspected per page
+    protected_total: NotRequired[int]
+    already_gone_total: NotRequired[int]
+    eligible_total: NotRequired[int]
+    needs_confirmation_total: NotRequired[int]
+    uninspected_eligible_total: NotRequired[int]
     offset: NotRequired[int]
     limit: NotRequired[int]
     next_offset: NotRequired[Optional[int]]
     query: NotRequired[str]
     plan_sha256: NotRequired[str]
+    targets_sha256: NotRequired[str]
     immutable: NotRequired[bool]
     selection_scope: NotRequired[str]
 

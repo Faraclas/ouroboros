@@ -343,3 +343,97 @@ def test_existing_task_workspace_cleanup_and_unavailable_page(cleanup_server, th
         assert closed.value.ok and 'cleanup' not in closed.value.request.post_data_json
         assert original.exists() and not r.get_reserved_project(data, 'alpha').get('cleanup_request')
         browser.close()
+
+
+@pytest.mark.parametrize('theme,width', [('dark', 1360), ('light', 390)])
+def test_project_wide_select_all_labels_and_absent_rows_without_paging(cleanup_server, theme, width, tmp_path):
+    if os.environ.get('OUROBOROS_RUN_UI_SMOKE') != '1': pytest.skip('UI smoke opt-in')
+    from playwright.sync_api import sync_playwright, expect
+    from ouroboros.task_results import write_task_result
+    url, data, material = cleanup_server
+    import subprocess
+    def init_clean_repo(path):
+        path.mkdir(parents=True, exist_ok=True)
+        remote = tmp_path / f'{path.name}-remote.git'
+        subprocess.run(['git', 'init', '--bare', str(remote)], check=True, capture_output=True)
+        subprocess.run(['git', 'init', str(path)], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(path), 'config', 'user.email', 't@example.com'], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(path), 'config', 'user.name', 'Test'], check=True, capture_output=True)
+        (path / 'README').write_text('ok')
+        subprocess.run(['git', '-C', str(path), 'add', 'README'], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(path), 'commit', '-m', 'init'], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(path), 'remote', 'add', 'origin', str(remote)], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(path), 'push', '-u', 'origin', 'HEAD'], check=True, capture_output=True)
+    # Build a multi-page inventory (>25 targets) with protected, already gone,
+    # attached external, and clean eligible targets on both page 1 and page 2.
+    repo = pathlib.Path(__file__).parents[1]
+    ext = tmp_path / 'ext-checkout'; ext.mkdir(); (ext / 'local.txt').write_text('keep')
+    r.create_project(data, 'gamma', name='Project Attention like', working_dir=str(ext))
+    clean_p1 = tmp_path / '00-clean-p1'; init_clean_repo(clean_p1)
+    clean_p1_skip = tmp_path / '01-clean-p1-skip'; init_clean_repo(clean_p1_skip)
+    gone_path = tmp_path / '02-already-gone'
+    f.record_workspace_creation(data, 'gamma', str(clean_p1), 'fixture-base')
+    f.record_workspace_creation(data, 'gamma', str(clean_p1_skip), 'fixture-base')
+    f.record_workspace_creation(data, 'gamma', str(gone_path), 'fixture-base')
+    # 24 protected artifacts + 1 shared repo = 25 protected, plus 2 clean eligible targets on page 2
+    artifacts = [data / f'art-{i:02}' for i in range(24)]
+    for p in artifacts: p.mkdir(); (p / 'ev').write_text('keep')
+    write_task_result(data, 'gamma-work', 'completed', project_id='gamma', workspace_root=str(repo),
+                      artifacts=[{'path': str(p)} for p in artifacts])
+    clean_p2 = [tmp_path / f'zz-clean-p2-{i}' for i in range(2)]
+    for p in clean_p2:
+        init_clean_repo(p)
+        f.record_workspace_creation(data, 'gamma', str(p), 'fixture-base')
+    out = pathlib.Path(os.environ.get('CLEANUP_SCREENSHOTS', str(tmp_path / 'screenshots'))); out.mkdir(parents=True, exist_ok=True)
+    errors = []
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=os.environ.get('OUROBOROS_UI_BROWSER_EXECUTABLE') or None, args=['--no-sandbox'])
+        context = browser.new_context(viewport={'width': width, 'height': 1000})
+        context.add_init_script(f"localStorage.setItem('ouroboros.theme','{theme}')")
+        def guard(route):
+            path = route.request.url.split(url)[-1]
+            if path == '/' or path.startswith('/static/') or path.startswith('/api/projects/'):
+                route.continue_()
+            else: route.fulfill(status=200, json={})
+        context.route('**/*', guard); context.route_web_socket('**/*', lambda ws: None)
+        page = context.new_page(); page.on('pageerror', lambda e: errors.append(str(e)))
+        page.goto(url); page.evaluate("window.manager.select('gamma')")
+        page.get_by_role('button', name='Close project…', exact=True).click()
+        dialog = page.get_by_role('dialog', name='Close project', exact=True)
+        # Without paging: project-wide totals and all four status/reason labels are clear.
+        status = dialog.get_by_role('status')
+        expect(status).to_contain_text('Project-wide (31 total): 4 will remove · 1 needs confirmation · 25 protected · 1 already gone.')
+        expect(dialog.get_by_text('Protected · Shared Viper installation, runtime, or protected habitat directory.', exact=True)).to_be_visible()
+        expect(dialog.get_by_text('Already gone · path no longer exists on disk.', exact=True)).to_be_visible()
+        expect(dialog.get_by_text('Needs confirmation · review local work below before removing.', exact=True)).to_be_visible()
+        expect(dialog.get_by_text('Will remove · ready temporary material.', exact=False).first).to_be_visible()
+        # Already-gone row has NO checkbox.
+        assert dialog.get_by_role('checkbox', name=f'Remove {gone_path}', exact=True).count() == 0
+        # Top-level Select all eligible toggles all 4 eligible targets across pages.
+        select_all = dialog.get_by_role('checkbox', name='Select all eligible across whole project (4 eligible)', exact=True)
+        expect(select_all).to_be_checked()
+        select_all.uncheck()
+        expect(status).to_contain_text('Project-wide (31 total): 0 will remove')
+        select_all.check()
+        expect(status).to_contain_text('Project-wide (31 total): 4 will remove')
+        # Uncheck one row on page 1 -> 3 will remove across all pages (2 unseen on page 2).
+        dialog.get_by_role('checkbox', name=f'Remove {clean_p1_skip}', exact=True).uncheck()
+        expect(status).to_contain_text('Project-wide (31 total): 3 will remove')
+        assert dialog.evaluate('(n)=>n.scrollWidth<=n.clientWidth+1')
+        page.screenshot(path=str(out / f'cleanup-project-wide-{theme}-{width}.png'))
+        with page.expect_response(lambda response: response.url.endswith('/gamma/delete')) as resp:
+            dialog.get_by_role('button', name='Close project', exact=True).click()
+        assert resp.value.ok
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            project = r.get_reserved_project(data, 'gamma')
+            if project.get('cleanup_request', {}).get('status') == 'finished': break
+            time.sleep(.02)
+        assert project['cleanup_request']['status'] == 'finished', project
+        assert not clean_p1.exists()
+        assert all(not p.exists() for p in clean_p2)  # unseen page 2 targets removed!
+        assert clean_p1_skip.exists()  # excluded target preserved
+        assert (ext / 'local.txt').read_text() == 'keep'  # unconfirmed external preserved
+        assert all((p / 'ev').read_text() == 'keep' for p in artifacts)
+        assert not errors
+        context.close(); browser.close()

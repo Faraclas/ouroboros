@@ -234,7 +234,10 @@ def run_pending_cleanup(root, project_id):
     try:
         result = ({'error': 'A cleanup lease is still live or unknown. Wait for the owning process, then retry cleanup or POST action=clear_pending to the cleanup endpoint.'} if busy else
                   cleanup_execute(root, project_id, request['mode'], request['selections'],
-                                  request['confirmations'], 'human', request['system_repo_dir'], pending_request=request))
+                                  request['confirmations'], 'human', request['system_repo_dir'], pending_request=request,
+                                  select_all_eligible=bool(request.get('select_all_eligible', False)),
+                                  excluded_ids=request.get('excluded_ids') or [],
+                                  targets_sha256=request.get('targets_sha256') or ''))
     except Exception as exc:
         status = 'failed'
         result = {'error': f'{type(exc).__name__}: {exc}'}

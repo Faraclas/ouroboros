@@ -108,3 +108,90 @@ def test_page_risk_is_local_and_execution_history_is_selected_only(setup, tmp_pa
     assert [row['phase'] for row in history] == ['started', 'target', 'finished']
     assert len(history[-1]['results']) == 1
     assert (paths[-1] / 'new-local-work').read_text() == 'must stay'
+
+
+def test_absent_targets_not_default_selected_and_bulk_eligible_across_pages(setup, tmp_path, monkeypatch):
+    root, system, record, _, close, _ = setup
+    # Mix: 2 protected artifacts, 2 already-gone (1 created, 1 task_associated),
+    # 1 attached_external needing confirmation, 3 clean empty created dirs across 2 pages (limit=2),
+    # and 1 off-page created dir with unique work.
+    art1 = tmp_path / 'art1'; art1.mkdir()
+    art2 = tmp_path / 'art2'; art2.mkdir()
+    gone_created = tmp_path / 'gone-created'
+    gone_task = tmp_path / 'gone-task'
+    ext = record(tmp_path / 'ext'); ext.mkdir(); (ext / 'work').write_text('keep')
+    import subprocess
+    def init_clean(path):
+        path.mkdir(parents=True, exist_ok=True)
+        remote = tmp_path / f'{path.name}-remote.git'
+        subprocess.run(['git', 'init', '--bare', str(remote)], check=True, capture_output=True)
+        subprocess.run(['git', 'init', str(path)], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(path), 'config', 'user.email', 't@example.com'], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(path), 'config', 'user.name', 'Test'], check=True, capture_output=True)
+        (path / 'README').write_text('ok')
+        subprocess.run(['git', '-C', str(path), 'add', 'README'], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(path), 'commit', '-m', 'init'], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(path), 'remote', 'add', 'origin', str(remote)], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(path), 'push', '-u', 'origin', 'HEAD'], check=True, capture_output=True)
+    clean = [tmp_path / f'clean-{i}' for i in range(3)]
+    for p in clean: init_clean(p)
+    unique_offpage = tmp_path / 'z-unique-offpage'; unique_offpage.mkdir(); (unique_offpage / 'file').write_text('unconfirmed')
+    monkeypatch.setattr(f, 'generated_targets', lambda *a: {'targets': [
+        {'path': str(art1), 'source': 'task.artifacts', 'origin': 'recorded_output'},
+        {'path': str(art2), 'source': 'task.artifacts', 'origin': 'recorded_output'},
+        {'path': str(gone_created), 'source': 'create_producer', 'origin': 'project_created'},
+        {'path': str(gone_task), 'source': 'task.workspace_root', 'origin': 'unknown'},
+        {'path': str(clean[0]), 'source': 'create_producer', 'origin': 'project_created'},
+        {'path': str(clean[1]), 'source': 'create_producer', 'origin': 'project_created'},
+        {'path': str(clean[2]), 'source': 'private_copy_record', 'origin': 'body_candidate'},
+        {'path': str(unique_offpage), 'source': 'create_producer', 'origin': 'project_created'},
+    ], 'gaps': []})
+    inspected = []; inspect = c.inspect_repository
+    def counted(path):
+        inspected.append(path); return inspect(path)
+    monkeypatch.setattr(c, 'inspect_repository', counted)
+    page0 = c.cleanup_plan_page(root, 'alpha', system_repo_dir=system, limit=2)
+    assert inspected == [str(ext)]  # only page 0's non-protected target (ext) was probed
+    assert page0['total'] == 9
+    assert page0['protected_total'] == 2
+    assert page0['already_gone_total'] == 2
+    assert page0['eligible_total'] == 5  # setup's 1 + 3 clean + 1 unique_offpage
+    assert page0['needs_confirmation_total'] == 1  # ext
+    assert page0['uninspected_eligible_total'] == 4
+    page1 = c.cleanup_plan_page(root, 'alpha', system_repo_dir=system, offset=3, limit=2, plan_sha256=page0['plan_sha256'])
+    gone_rows = [t for t in page1['targets'] if t['exists'] is False]
+    assert len(gone_rows) == 2
+    assert all(not t['default_selected'] and not t['eligible'] and t['action'] == 'already_absent' for t in gone_rows)
+    close()
+    # Re-read targets_sha256 after close (lifecycle changed, targets_sha256 is current)
+    closed_page = c.cleanup_plan_page(root, 'alpha', system_repo_dir=system, limit=2)
+    with pytest.raises(ProjectManagementError, match='targets_sha256'):
+        c.cleanup_execute(root, 'alpha', 'complete', [], {}, 'human', system, select_all_eligible=True)
+    # Exclude clean[1], bulk-select the rest across unseen pages:
+    # clean[0] and clean[2] are empty (no warning) -> removed;
+    # unique_offpage has local file (warning) and no confirmation -> refused!
+    # ext, protected, and gone are untouched.
+    clean1_id = 'cleanup:' + c._hash(str(clean[1]))
+    res = c.cleanup_execute(
+        root, 'alpha', 'complete', [], {}, 'human', system,
+        select_all_eligible=True, excluded_ids=[clean1_id], targets_sha256=closed_page['targets_sha256'],
+    )
+    by_path = {r['path']: r for r in res['results']}
+    assert by_path[str(clean[0])]['status'] == 'removed' and not clean[0].exists()
+    assert by_path[str(clean[2])]['status'] == 'removed' and not clean[2].exists()
+    assert str(clean[1]) not in by_path and clean[1].exists()
+    assert by_path[str(unique_offpage)]['status'] == 'refused'
+    assert by_path[str(unique_offpage)]['reason'] == 'current_warning_confirmation_required'
+    assert (unique_offpage / 'file').read_text() == 'unconfirmed'
+    assert (ext / 'work').read_text() == 'keep'
+    # Stale targets_sha256 refuses rather than silently adding newly eligible targets.
+    new_dir = tmp_path / 'newly-added'; new_dir.mkdir()
+    monkeypatch.setattr(f, 'generated_targets', lambda *a: {'targets': [
+        {'path': str(new_dir), 'source': 'create_producer', 'origin': 'project_created'},
+    ], 'gaps': []})
+    with pytest.raises(ProjectManagementError, match='changed'):
+        c.cleanup_execute(
+            root, 'alpha', 'complete', [], {}, 'human', system,
+            select_all_eligible=True, targets_sha256=closed_page['targets_sha256'],
+        )
+    assert new_dir.exists()
