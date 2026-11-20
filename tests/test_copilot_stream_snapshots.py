@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import socket
+from types import SimpleNamespace
 
 import httpx
 import openai
@@ -111,6 +113,211 @@ def test_sdk_canonical_and_next_send_snapshots(monkeypatch, isolated, asynchrono
             asyncio.run(sdk.close())
         else:
             sdk.close()
+
+
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("source_model,destination_model,change", [
+    ("gemini-4-neon", "claude-opus-5.5", "model"),
+    ("claude-opus-5.5", "gemini-4-neon", "model"),
+    ("claude-opus-5.5", "claude-sonnet-5.5", "model"),
+    ("gemini-4-neon", "gpt-6.1-sol", "model"),
+    ("gpt-6.1-sol", "claude-opus-5.5", "model"),
+    ("gemini-4-neon", "gemini-4-neon", "credential"),
+    ("gemini-4-neon", "gemini-4-neon", "endpoint"),
+    ("gemini-4-neon", "gemini-4-neon", "unbound"),
+    ("gemini-4-neon", "gemini-4-neon", "same"),
+], ids=["gemini-to-claude", "claude-to-gemini", "claude-to-claude",
+        "gemini-to-gpt", "gpt-to-claude", "same-model-credential",
+        "same-model-endpoint", "legacy-unbound-history", "same-binding"])
+def test_fallback_final_wire_and_next_round(monkeypatch, isolated, asynchronous, source_model, destination_model, change):
+    from ouroboros import net_transport
+    from ouroboros.copilot_native_custody import CHAT_REASONING_BINDING_KEY
+    from ouroboros.loop_model_call import _adopt_fallback_route
+
+    def deny_network(*args, **kwargs):
+        raise AssertionError("only mocked inference HTTP is allowed")
+
+    monkeypatch.setattr(socket.socket, "connect", deny_network)
+    monkeypatch.setattr(socket.socket, "connect_ex", deny_network)
+    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", HOST)
+    monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "fixture-primary")
+    monkeypatch.setattr("ouroboros.llm.in_worker_process", lambda: False)
+    hm = net_transport._openai_httpx_module()
+    sent = []
+    candidates = []
+
+    def wire_answer(request):
+        sent.append((request, json.loads(request.content)))
+        ordinal = len(sent)
+        call_id = f"call-{ordinal}"
+        body = sent[-1][1]
+        if request.url.path.endswith("/responses"):
+            return hm.Response(200, json={"id": f"response-{ordinal}", "model": body["model"],
+                "status": "completed", "usage": {"input_tokens": 30, "output_tokens": 5}, "output": [
+                    {"type": "reasoning", "id": f"reason-{ordinal}", "summary": [],
+                     "encrypted_content": f"native-private-{ordinal}"},
+                    {"type": "message", "role": "assistant", "status": "completed", "phase": "commentary",
+                     "content": [{"type": "output_text", "text": f"visible-{ordinal}"}]},
+                    {"type": "function_call", "id": f"item-{ordinal}", "status": "completed",
+                     "call_id": call_id, "name": "lookup", "arguments": "{}"},
+                ]})
+        return hm.Response(200, json={"id": f"response-{ordinal}", "model": body["model"],
+            "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": f"visible-{ordinal}",
+                CHAT_REASONING_BINDING_KEY: "untrusted provider label",
+                **{name: f"{name}-private-{ordinal}" for name in ("reasoning_opaque", "reasoning_text", "cot_id", "cot_summary")},
+                "tool_calls": [{"id": call_id, "type": "function", "function": {"name": "lookup", "arguments": "{}"}}],
+            }}], "usage": {"prompt_tokens": 30, "completion_tokens": 5}})
+
+    client = LLMClient()
+    sdks = {}
+    build = client._build_remote_kwargs
+
+    def observe_candidate(*args, **kwargs):
+        candidate = build(*args, **kwargs)
+        candidates.append(copy.deepcopy(candidate["messages"]))
+        return candidate
+
+    monkeypatch.setattr(client, "_build_remote_kwargs", observe_candidate)
+
+    def mocked_sdk(target):
+        key = (target["base_url"], target["api_key"])
+        if key not in sdks:
+            http = (hm.AsyncClient if asynchronous else hm.Client)(transport=hm.MockTransport(wire_answer))
+            cls = openai.AsyncOpenAI if asynchronous else openai.OpenAI
+            remote = cls(base_url=key[0], api_key=key[1], max_retries=0, http_client=http)
+            sdks[key] = net_transport.attach_remote_client(remote, async_client=asynchronous)
+        return sdks[key]
+
+    monkeypatch.setattr(client, "_get_async_remote_client" if asynchronous else "_get_remote_client", mocked_sdk)
+    source = f"openai-compatible::{source_model}"
+    destination = f"openai-compatible::{destination_model}"
+
+    def add_tool_episode(history, answer, n):
+        assert answer["content"] == f"visible-{n}"
+        assert answer["tool_calls"][0]["id"] == f"call-{n}"
+        history.extend([answer, {"role": "tool", "tool_call_id": f"call-{n}", "content": f"result-{n}"}])
+
+    async def run():
+        async def send(history, model):
+            if asynchronous:
+                return (await client.chat_async(messages=history, model=model, max_tokens=1024))[0]
+            return client.chat(messages=history, model=model, max_tokens=1024)[0]
+
+        history = [{"role": "user", "content": "fixture"}]
+        original_answer = await send(history, source)
+        if not source_model.startswith("gpt-"):
+            binding = original_answer.get(CHAT_REASONING_BINDING_KEY)
+            assert isinstance(binding, dict) and binding.get("model") == source_model
+            assert "fixture-primary" not in json.dumps(binding)
+        if change == "unbound":
+            original_answer.pop(CHAT_REASONING_BINDING_KEY, None)
+        add_tool_episode(history, original_answer, 1)
+        history[:] = json.loads(json.dumps(history))  # private checkpoint round-trip
+        original = copy.deepcopy(history)
+        if change == "credential":
+            monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "fixture-fallback")
+        if change == "endpoint":
+            monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", HOST + "/alternate")
+
+        candidate = client.sanitize_reasoning_on_model_switch(history, source, destination)
+        answer = await send(candidate, destination)
+        assert history == original
+        ctx = SimpleNamespace(active_model=source)
+        _adopt_fallback_route(ctx, None, destination, False, history, candidate, None, "max", [], {})
+        add_tool_episode(history, answer, 2)
+        assert (await send(history, ctx.active_model))["content"] == "visible-3"
+
+    async def close():
+        for sdk in sdks.values():
+            if asynchronous:
+                await sdk.close()
+            else:
+                sdk.close()
+
+    scope = ua.UsageScope(drive_root=isolated, task_id="fallback-fixture", root_task_id="fallback-fixture")
+    try:
+        with ua.usage_scope(scope):
+            asyncio.run(run())
+    finally:
+        asyncio.run(close())
+    assert len(sent) == len(candidates) == 3
+    assert [body["model"] for _, body in sent] == [source_model, destination_model, destination_model]
+    for ordinal, (request, body) in enumerate(sent[1:], 2):
+        assert request.url.path.endswith("/responses" if destination_model.startswith("gpt-") else "/chat/completions")
+        encoded = json.dumps(body)
+        sdk_input = json.dumps(candidates[ordinal - 1])
+        assert CHAT_REASONING_BINDING_KEY not in sdk_input
+        assert CHAT_REASONING_BINDING_KEY not in encoded
+        for n in range(1, ordinal):
+            assert f"visible-{n}" in encoded
+            if "input" in body:
+                assert {"type": "function_call", "call_id": f"call-{n}", "name": "lookup", "arguments": "{}"} in body["input"]
+                assert {"type": "function_call_output", "call_id": f"call-{n}", "output": f"result-{n}"} in body["input"]
+            else:
+                assistant = next(row for row in body["messages"] if row.get("content") == f"visible-{n}")
+                assert assistant["tool_calls"][0]["id"] == f"call-{n}"
+                assert {"role": "tool", "tool_call_id": f"call-{n}", "content": f"result-{n}"} in body["messages"]
+            can_replay = n == 2 or change == "same"
+            originating_model = source_model if n == 1 else destination_model
+            values = [f"native-private-{n}"] if originating_model.startswith("gpt-") else [
+                f"{name}-private-{n}" for name in ("reasoning_opaque", "reasoning_text", "cot_id", "cot_summary")]
+            assert all((value in encoded) == can_replay for value in values)
+            # The Responses codec alone would silently ignore foreign Chat keys.
+            assert all((value in sdk_input) == can_replay for value in values)
+    records = ledger_rows(isolated)
+    assert len(records) == 3 and all(row["state"] == "settled" for row in records)
+
+
+def test_bound_chat_reasoning_can_return_to_origin_after_a_cross_family_fallback():
+    from ouroboros.anthropic_native_custody import scrub_native_custody
+    from ouroboros.copilot_native_custody import (
+        CHAT_REASONING_BINDING_KEY, CHAT_REASONING_FIELDS, bind_chat_reasoning, prepare_chat_replay,
+    )
+
+    client = LLMClient()
+    target = {"provider": "openai-compatible", "base_url": HOST,
+              "resolved_model": "gemini-4-neon", "api_key": "fixture-primary"}
+    source = {"role": "assistant", "content": "visible", "reasoning_opaque": "private",
+              "tool_calls": [{"id": "call", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}]}
+    bind_chat_reasoning(source, target)
+    assert CHAT_REASONING_BINDING_KEY in source
+    history = [source, {"role": "tool", "tool_call_id": "call", "content": "result"}]
+    switched = client.sanitize_reasoning_on_model_switch(history, "openai-compatible::gemini-4-neon", "anthropic::claude-opus-5.5")
+    assert switched[0]["reasoning_opaque"] == "private"
+    foreign_wire = scrub_native_custody(switched)
+    assert not CHAT_REASONING_FIELDS.intersection(foreign_wire[0])
+    assert CHAT_REASONING_BINDING_KEY not in foreign_wire[0]
+    assert foreign_wire[1] == history[1]
+    returned = client.sanitize_reasoning_on_model_switch(switched, "anthropic::claude-opus-5.5", "openai-compatible::gemini-4-neon")
+    same_route_wire = scrub_native_custody(returned)
+    prepare_chat_replay(returned, same_route_wire, target)
+    assert same_route_wire[0]["reasoning_opaque"] == "private"
+    assert same_route_wire[0]["tool_calls"] == source["tool_calls"]
+    assert CHAT_REASONING_BINDING_KEY not in same_route_wire[0]
+
+
+@pytest.mark.parametrize("part", ["text", "call", "private"])
+def test_changed_chat_message_cannot_replay_its_old_private_continuation(part):
+    from ouroboros.anthropic_native_custody import scrub_native_custody
+    from ouroboros.copilot_native_custody import CHAT_REASONING_FIELDS, bind_chat_reasoning, prepare_chat_replay
+
+    target = {"provider": "openai-compatible", "base_url": HOST,
+              "resolved_model": "gemini-4-neon", "api_key": "fixture-primary"}
+    source = {"role": "assistant", "content": "original", "reasoning_opaque": "private",
+              "tool_calls": [{"id": "call", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}]}
+    bind_chat_reasoning(source, target)
+    if part == "text":
+        source["content"] = "edited"
+    elif part == "call":
+        source["tool_calls"][0]["function"]["arguments"] = '{"changed":true}'
+    else:
+        source["reasoning_opaque"] = "changed"
+    prepared = scrub_native_custody([source])
+    prepare_chat_replay([source], prepared, target)
+    assert not CHAT_REASONING_FIELDS.intersection(prepared[0])
+    assert prepared[0]["content"] == source["content"]
+    assert prepared[0]["tool_calls"] == source["tool_calls"]
 
 
 @pytest.mark.parametrize("provider,base,model,selected", [

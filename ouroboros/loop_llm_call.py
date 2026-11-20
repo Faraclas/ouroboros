@@ -1512,7 +1512,8 @@ def call_llm_with_retry(
                     "root_task_id", "parent_task_id") if getattr(scope, key, "")},
                 "round_id": round_id, "llm_call_id": llm_call_id, "round": round_idx, "model": display_model,
                 "reasoning_effort": effort,
-                **{key: usage[key] for key in ("effort", "effort_resolution", "request_wire", "claudexor", "provider_usage") if key in usage},
+                **{key: usage[key] for key in ("effort", "effort_resolution", "request_wire", "claudexor",
+                                               "provider_usage", "copilot_catalog_estimate") if key in usage},
                 "provider": provider, "source": "loop", "model_category": infer_model_category(display_model),
                 **event_token_counts(usage),  # each counter reported, a reported 0, or null (#1578)
                 "prompt_cache_ttl": prompt_cache_ttl, "cache_hit_rate": cache_hit_rate,
@@ -1527,7 +1528,8 @@ def call_llm_with_retry(
                 "task_attempt": task_attempt, "model": display_model,
                 **{key: _round_event[key] for key in (
                     "record_contract_version", "reasoning_effort", "cost_usd", "prompt_tokens", "completion_tokens", "cached_tokens", "cache_write_tokens",
-                    "prompt_cache_ttl", "effort", "effort_resolution", "request_wire", "claudexor", "duration_ms", "provider_usage") if key in _round_event},
+                    "prompt_cache_ttl", "effort", "effort_resolution", "request_wire", "claudexor", "duration_ms",
+                    "provider_usage", "copilot_catalog_estimate") if key in _round_event},
                 "response_kind": "tool_calls" if tool_calls else "message",
                 "tool_call_count": len(tool_calls), "rounds": accumulated_usage["rounds"],
                 "has_text": bool(content and str(content).strip()),

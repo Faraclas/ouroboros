@@ -5,11 +5,41 @@ from __future__ import annotations
 import inspect
 import json
 import math
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 
 import pytest
 
 from ouroboros.context_budget import RECLAIM_LOW_WATER_DIVISOR
+from ouroboros.context_window import WindowRecord
+
+
+STANDARD_TIER_SETTING = "OUROBOROS_COPILOT_PREFER_STANDARD_TIER"
+
+
+@dataclass(frozen=True)
+class _CatalogWindow(WindowRecord):
+    # Synthesize the peer's WindowRecord contract, not a catalog response/price claim.
+    catalog_prices: dict = field(default_factory=dict)
+    has_long_context_surcharge: bool | None = None
+
+
+def _catalog_fit(monkeypatch, *, surcharge=True, standard=272_000, long=1_050_000):
+    from ouroboros import context_fit, context_window
+
+    real_resolve = context_window.resolve_window
+
+    def resolve(evidence, *args, **kwargs):
+        window = real_resolve(evidence, *args, **kwargs)
+        model = getattr(evidence, "model", "")
+        return _CatalogWindow(**{
+            **vars(window),
+            "catalog_prices": {"default": {"max_prompt_tokens": standard},
+                               **({"long_context": {"max_prompt_tokens": long}} if long else {})},
+            "has_long_context_surcharge": False if model == "flat" else surcharge,
+        })
+
+    monkeypatch.setattr(context_fit, "resolve_window", resolve)
 
 
 def _projection(mode: str):
@@ -77,6 +107,126 @@ def test_unknown_owner_max_stays_max_and_sends(monkeypatch, tmp_path):
     assert disposition.action == "send"
     assert disposition.measurement.capacity_total_tokens is None
     assert disposition.measurement.target_total_tokens is None
+
+
+def test_opt_in_max_uses_catalog_input_threshold_and_existing_margin(monkeypatch, tmp_path):
+    from ouroboros import context_fit
+    from ouroboros.settings_defaults import SETTINGS_DEFAULTS
+    from ouroboros.settings_integrity import task_settings_scope, task_settings_snapshot
+
+    _catalog_fit(monkeypatch)
+    plan = _plan(window=1_050_000, known=True)
+    monkeypatch.setattr(context_fit, "estimate_context_prompt_tokens", lambda *_a, **_kw: 282_000)
+    monkeypatch.delenv(STANDARD_TIER_SETTING, raising=False)
+    measure = lambda: _measure(monkeypatch, tmp_path, plan=plan, profile="owner_max", mode="max", messages=[])
+    assert SETTINGS_DEFAULTS[STANDARD_TIER_SETTING] == "false"
+    assert measure().measurement.target_input_tokens is None
+    with task_settings_scope(task_settings_snapshot({}, {STANDARD_TIER_SETTING: "true"})):
+        fit = measure()
+    measurement = fit.measurement
+    assert fit.action == "send_target_miss"  # sends are not denied by price
+    assert not fit.predicted_capacity_miss
+    assert measurement.target_input_tokens == 272_000
+    assert measurement.target_total_tokens == 272_000 + 65_536
+    assert measurement.target_deficit_tokens == 10_000
+    assert measurement.low_water_margin_tokens == math.ceil(272_000 / RECLAIM_LOW_WATER_DIVISOR)
+    assert measurement.reclaim_goal_tokens == 10_000 + measurement.low_water_margin_tokens
+    assert measurement.capacity_total_tokens == 1_050_000
+    assert measurement.reply_allowance_tokens == 65_536
+
+
+@pytest.mark.parametrize("surcharge,standard,long,bound,window,stale", [
+    (False, 200_000, 936_000, True, 1_000_000, False),  # flat Claude or Gemini
+    (None, 200_000, 936_000, True, 1_000_000, False),   # prices unknown
+    (True, 200_000, None, True, 1_000_000, False),      # no long-context tier
+    (True, 272_000, 272_000, True, 1_000_000, False),   # no distinct long threshold
+    (True, True, 936_000, True, 1_000_000, False),      # malformed numeric threshold
+    (True, 272_000, 936_000, False, 1_000_000, False),  # route scope unbound
+    (True, 272_000, 936_000, True, 0, False),          # no current physical capacity
+    (True, 272_000, 936_000, True, 300_000, False),     # physical usable input is tighter
+    (True, 272_000, 936_000, True, 337_536, False),     # equal to physical usable input
+    (True, 272_000, 936_000, True, 1_000_000, True),    # stale evidence
+])
+def test_opt_in_max_does_not_invent_an_input_target(monkeypatch, tmp_path, surcharge, standard, long, bound, window, stale):
+    monkeypatch.setenv(STANDARD_TIER_SETTING, "true")
+    _catalog_fit(monkeypatch, surcharge=surcharge, standard=standard, long=long)
+    plan = replace(_plan(window=window, known=bool(window)), window_witness_bound=bound, stale=stale)
+    measurement = _measure(monkeypatch, tmp_path, plan=plan, profile="owner_max", mode="max", messages=[]).measurement
+    assert measurement.target_input_tokens is measurement.target_total_tokens is None
+
+
+@pytest.mark.parametrize("profile,mode", [("owner_low", "low"), ("owner_nano", "nano"),
+                                            ("task_local_low", "low"), ("task_local_nano", "nano")])
+def test_opt_in_leaves_low_and_nano_fit_unchanged(monkeypatch, tmp_path, profile, mode):
+    _catalog_fit(monkeypatch)
+    plan = _plan(window=1_000_000, known=True)
+    monkeypatch.setenv(STANDARD_TIER_SETTING, "false")
+    before = _measure(monkeypatch, tmp_path, plan=plan, profile=profile, mode=mode, messages=[])
+    monkeypatch.setenv(STANDARD_TIER_SETTING, "true")
+    assert _measure(monkeypatch, tmp_path, plan=plan, profile=profile, mode=mode, messages=[]) == before
+
+
+@pytest.mark.parametrize("prefix", [260_000, 275_000])
+def test_standard_tier_budget_limits_unsolicited_output_not_chosen_reads(monkeypatch, tmp_path, prefix):
+    from ouroboros.loop_model_call import _measure_main_context_view
+    from ouroboros.loop_tool_execution import _deliver_tool_results
+
+    _catalog_fit(monkeypatch)
+    plan = _plan(window=1_050_000, known=True)
+    messages = [{"role": "user", "content": "s" * (4 * prefix)}]
+    text = "r" * (4 * 20_000)
+    ctx = SimpleNamespace(drive_root=tmp_path, task_id="catalog-test")
+
+    def fit(candidate, schemas):
+        return _measure_main_context_view(plan, candidate, schemas, "max", "", "2")
+
+    def deliver(args):
+        trace = {}
+        rows = _deliver_tool_results(ctx,
+            [{"tool_call_id": "catalog-test", "fn_name": "read_file", "tool_args": args, "result": text}],
+            messages, [], fit, trace)
+        return rows[0], trace
+
+    monkeypatch.setenv(STANDARD_TIER_SETTING, "false")
+    ordinary, trace = deliver({})
+    assert ordinary["result"] == text and not trace
+    assert fit([*messages, {"role": "tool", "content": ordinary["result"]}], [])["estimated_input_tokens"] > 272_000
+
+    monkeypatch.setenv(STANDARD_TIER_SETTING, "true")
+    prior = fit(messages, [])
+    assert (prior["target_deficit_tokens"] > 0) == (prefix > 272_000)
+    assert not prior["predicted_capacity_miss"]
+    automatic, trace = deliver({})
+    if prefix < 272_000:
+        receipt, = trace["tool_result_delivery"]
+        assert receipt["boundary_tokens"] == 272_000 + 65_536
+        assert receipt["capacity_tokens"] == 1_050_000
+        assert automatic["result_partial"] and automatic["result_source_status"] == "ready"
+        assert automatic["result_source_view"]["delivery"]["limiters"] == ["target_pressure"]
+    else:
+        # If even the minimum view has already crossed, cutting the body cannot
+        # recover the standard tier; preserve usable output in physical room.
+        assert automatic["result"] == text and not trace
+    result_fit = fit([*messages, {"role": "tool", "content": automatic["result"]}], [])
+    assert (result_fit["estimated_input_tokens"] > 272_000) == (prefix > 272_000)
+    chosen, trace = deliver({"max_chars": len(text)})
+    assert chosen["result"] == text and not trace
+    assert len(messages) == 1  # neither a miss nor projection rewrites the resident transcript
+
+
+def test_standard_tier_budget_keeps_the_built_max_memory_view(monkeypatch):
+    from tests.test_memory_max_room import _core, _start
+
+    _catalog_fit(monkeypatch)
+    core = _core()
+    monkeypatch.setenv(STANDARD_TIER_SETTING, "false")
+    before = _start(core, 1_050_000, monkeypatch)
+    monkeypatch.setenv(STANDARD_TIER_SETTING, "true")
+    after = _start(core, 1_050_000, monkeypatch)
+    assert before == after
+    assert after.initial_mode == "max"
+    assert after.max_projection.memory_facts["max_room"]["cause"] == "held"
+    assert core.architecture_md in after.max_projection.system_content_json
 
 
 def test_known_owner_max_miss_reclaims_without_predicted_low(monkeypatch, tmp_path):
@@ -345,6 +495,32 @@ def test_route_rebind_keeps_owner_projection_on_small_confirmed_route(monkeypatc
     assert mode == "max"
     assert messages[0] == rebound.max_projection.system_message()
     assert rebound.route_fp == "small-route"
+
+
+def test_standard_tier_target_rebinds_to_fallback_not_old_route(monkeypatch, tmp_path):
+    from ouroboros import context, loop
+    from ouroboros.tools.registry import ToolRegistry
+
+    _catalog_fit(monkeypatch)
+    monkeypatch.setenv(STANDARD_TIER_SETTING, "true")
+    monkeypatch.setattr(context, "_context_fit_route", lambda task, **_: (
+        {"model": task["model"], "provider": "openai-compatible", "base_url": "", "use_local": False},
+        SimpleNamespace(status="confirmed", stale=False, window_tokens=1_050_000, route_fp=task["model"]),
+    ))
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    registry._ctx.task_id = "catalog-rebind"
+    registry._ctx.event_queue = None
+    plan = _plan(window=1_050_000, known=True)
+    messages = plan.messages_for("max")
+    for model, target in [("flat", None), ("surcharge", 272_000), ("flat", None)]:
+        plan, mode = loop._rebind_context_fit_plan(plan, registry, messages, model=model, use_local=False,
+                                                 tool_schemas=[], start_mode="max")
+        measurement = _measure(monkeypatch, tmp_path, plan=plan, profile="owner_max", mode=mode,
+                               messages=messages).measurement
+        assert mode == "max"
+        assert plan.route_fp == model
+        assert measurement.target_input_tokens == target
+        assert measurement.capacity_total_tokens == 1_050_000
 
 
 @pytest.mark.parametrize("window,estimated", [(80_000, 35_000), (500_000, 40_000)])

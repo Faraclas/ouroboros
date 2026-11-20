@@ -384,13 +384,14 @@ def _measured_frame(
     whole = measure(full)
     boundary, reserve, eighth = frame_bounds(whole)
     target = _positive(whole.get("target_total_tokens"))
+    input_target = _positive(whole.get("target_input_tokens"))
     capacity = _positive(whole.get("capacity_total_tokens"))
     limiters = [set() for _ in rows]
 
     def diagnostic(index: int) -> Dict[str, Any]:
         return {"selection": "automatic" if requests[index] is None else "explicit",
                 "limiters": sorted(limiters[index]), "target_tokens": target, "capacity_tokens": capacity,
-                "target_input_tokens": _positive(whole.get("target_input_tokens")),
+                "target_input_tokens": input_target,
                 "reserve_tokens": reserve, "batch_share_tokens": eighth,
                 "unasked_results": sum(request is None for request in requests)}
 
@@ -437,6 +438,18 @@ def _measured_frame(
     envelopes = [envelope(index, standins[index]) for index in range(count)]
     minimum = measure(envelopes)
     p_min, p_whole = _tokens(minimum), _tokens(whole)
+    measurements = 2
+    if whole.get("target_source") == "copilot_standard_tier" and target and p_min + reserve > target:
+        # A price target cannot make an already-over-tier baseline cheaper by
+        # hiding every new tool result. Fall back to the physical frame for
+        # this batch; a later smaller transcript can use the target again.
+        target = input_target = None
+        boundary, reserve, eighth = frame_bounds({**whole, "target_total_tokens": None, "target_input_tokens": None})
+        envelopes = [envelope(index, standins[index]) for index in range(count)]
+        minimum = measure(envelopes)
+        p_min = _tokens(minimum)
+        measurements += 1
+        receipt.update(boundary_tokens=boundary, pricing_target_suspended=True)
     # Stand-ins size allocation only; minimum_view_unfit is measured below
     # with actual source outcomes (a failed persistence has a shorter envelope).
     free = boundary - reserve - p_min
@@ -447,7 +460,7 @@ def _measured_frame(
     # What each call asked to see: the whole produced form, or a head+tail view.
     wants = {i: (len(texts[i]) if requests[i] == (None, None) else min(len(texts[i]), requests[i][0] + requests[i][1]))
              for i in range(count) if requests[i] is not None}
-    receipt.update(measurements=2, minimum_tokens=p_min, whole_tokens=p_whole, free_tokens=free,
+    receipt.update(measurements=measurements, minimum_tokens=p_min, whole_tokens=p_whole, free_tokens=free,
                    requested_room_tokens=room, unsolicited_allowance_tokens=unsolicited_allowance)
     whole_fits = (room is None or p_whole + reserve < capacity) and all(wants[i] >= len(texts[i]) for i in wants)
     complete = "complete" if room is not None else "capacity_unknown"
@@ -470,7 +483,7 @@ def _measured_frame(
     protected = {i for i in wants if capacity is None or body_costs[i] <= capacity - reserve}
     for i in wants.keys() - protected:
         facts[i] = {**facts[i], "cut_reason": "chosen_body_exceeds_usable_input"}
-    receipt.update(measurements=2 + (chosen is not minimum and chosen is not whole) + 2 * len(wants),
+    receipt.update(measurements=measurements + (chosen is not minimum and chosen is not whole) + 2 * len(wants),
                    chosen_tokens=p_chosen, chosen_body_tokens={rows[i]["tool_call_id"]: cost for i, cost in body_costs.items()})
     chosen_chars = sum(max(0, len(chosen_contents[i]) - len(envelopes[i])) for i in wants)
     requested_rate = max(p_chosen - p_min, 1) / max(chosen_chars, 1)

@@ -277,6 +277,7 @@ class _MessageShapingMixin:
         *,
         keep_reasoning_content: bool = False,
         keep_reasoning_details: bool = False,
+        keep_chat_reasoning: bool = False,
     ) -> List[Dict[str, Any]]:
         """Strip provider-private reasoning round-trip artifacts that a DIFFERENT
         upstream family rejects: assistant-level ``reasoning``/``reasoning_details``/
@@ -298,7 +299,7 @@ class _MessageShapingMixin:
         without converting either carrier. Cross-family switches still scrub them
         (``sanitize_reasoning_on_model_switch``); retention alone proves no
         cross-route portability."""
-        cleaned = scrub_native_custody(messages)
+        cleaned = scrub_native_custody(messages, keep_chat_reasoning=keep_chat_reasoning)
         for msg in cleaned:
             if not isinstance(msg, dict):
                 continue
@@ -540,7 +541,10 @@ class _MessageShapingMixin:
             any(custody_private_key(key) for key in message)
             for message in messages if isinstance(message, dict)
         )
-        prepared = scrub_native_custody(messages) if switched and has_native_custody else messages
+        # A compatible proxy's label is not sufficient provenance: the resolved
+        # Chat builder matches exact route/model on every send, including aliases
+        # and a credential/endpoint switch with the same model label.
+        prepared = scrub_native_custody(messages, keep_chat_reasoning=True) if switched and has_native_custody else messages
         if switched and any(isinstance(message, dict) and "nativeContinuation" in message for message in prepared):
             prepared = copy.deepcopy(prepared)
             for message in prepared:
@@ -548,4 +552,6 @@ class _MessageShapingMixin:
                     message.pop("nativeContinuation", None)
         if cls._model_family(from_model) == cls._model_family(to_model):
             return prepared
-        return cls._strip_openrouter_roundtrip_metadata(prepared)
+        # Retain route-bound Chat facts in history for a later return. Send-copy
+        # builders strip them unless the exact producing route matches.
+        return cls._strip_openrouter_roundtrip_metadata(prepared, keep_chat_reasoning=True)

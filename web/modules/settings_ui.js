@@ -532,6 +532,13 @@ export function renderSettingsPage() {
                                 ],
                             })}
                         </div>
+                        <div class="ui-field">
+                            <label class="local-toggle ui-field-inline">
+                                <input type="checkbox" id="s-copilot-prefer-standard-tier" class="ui-checkbox" name="s-copilot-prefer-standard-tier" aria-describedby="s-copilot-prefer-standard-tier-help">
+                                Prefer Copilot standard pricing in Max
+                            </label>
+                            <div class="settings-inline-note ui-field-help" id="s-copilot-prefer-standard-tier-help">For models whose catalog lists higher long-context prices, fit incidental tool output to the standard tier. This is a soft target, not a spending limit. If the context is already above the tier, tool output uses the full window instead. Low and Nano are unchanged. Applies to new tasks after saving.</div>
+                        </div>
                     </div>
 
                     <div class="form-section">

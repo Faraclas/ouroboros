@@ -5,13 +5,17 @@ threshold is not a context limit and an advertisement is not a successful send.
 """
 from __future__ import annotations
 
+from fractions import Fraction
 from hashlib import sha256
 import json
+from math import isfinite
 from typing import Any
 
 from ouroboros.copilot_responses import copilot_endpoint
 
 CATALOG_VERSION = "2026-08-01"
+_PRICE_FIELDS = ("input_price", "output_price", "cache_read_price", "cache_write_price", "cache_write_1h_price")
+_TIER_NAMES = ("default", "long_context")
 
 
 def metadata_scope(base_url: str, api_key: Any) -> str:
@@ -31,6 +35,49 @@ def _object(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _price(value: Any) -> bool:
+    return (type(value) is int and value >= 0) or (type(value) is float and isfinite(value) and value >= 0)
+
+
+def _catalog_pricing(prices: dict) -> tuple[dict, dict, bool | None]:
+    tiers, catalog = {}, {}
+    raw = {name: _object(prices.get(name)) for name in _TIER_NAMES}
+    for name, tier in raw.items():
+        if not tier:
+            continue
+        # Preserve the old threshold-only compatibility alias, without turning
+        # it into an explicitly advertised max_prompt_tokens field.
+        threshold = _positive(tier.get("max_prompt_tokens")) or _positive(tier.get("context_max"))
+        if threshold:
+            tiers[name] = threshold
+        values = {key: tier[key] for key in _PRICE_FIELDS if _price(tier.get(key))}
+        if prompt := _positive(tier.get("max_prompt_tokens")):
+            values["max_prompt_tokens"] = prompt
+        # CAPI can publish one batch size on token_prices for all its tiers.
+        # An explicit tier value wins; a malformed override is not evidence.
+        if batch := _positive(tier.get("batch_size", prices.get("batch_size"))):
+            values["batch_size"] = batch
+        if values:
+            catalog[name] = values
+
+    standard, long = (catalog.get(name, {}) for name in _TIER_NAMES)
+    if not standard.get("batch_size") or not long.get("batch_size"):
+        return tiers, catalog, None
+    # Relative rates don't require knowing the currency. A missing optional
+    # field on both sides is not a quote of zero; one-sided or malformed prices
+    # cannot prove flatness. A comparable increase suffices to prove a surcharge.
+    unknown = False
+    for key in _PRICE_FIELDS:
+        if key in standard and key in long:
+            long_rate = Fraction(str(long[key])) / long["batch_size"]
+            standard_rate = Fraction(str(standard[key])) / standard["batch_size"]
+            if long_rate > standard_rate:
+                return tiers, catalog, True
+        elif key in {"input_price", "output_price"} or any(key in tier for tier in raw.values()):
+            unknown = True
+    return tiers, catalog, None if unknown else False
+
+
 def catalog_limits(payload: Any, model: str) -> dict | None:
     """Extract exact-model advertised values; ambiguous duplicate IDs are not evidence."""
     from ouroboros.provider_models import parse_model_route
@@ -45,12 +92,7 @@ def catalog_limits(payload: Any, model: str) -> dict | None:
     row = matches[0]
     limits = _object(_object(row.get("capabilities")).get("limits"))
     prices = _object(_object(row.get("billing")).get("token_prices"))
-    tiers = {}
-    for name in ("default", "long_context"):
-        tier = _object(prices.get(name))
-        threshold = _positive(tier.get("max_prompt_tokens")) or _positive(tier.get("context_max"))
-        if threshold:
-            tiers[name] = threshold
+    tiers, catalog_prices, surcharge = _catalog_pricing(prices)
     return {
         "total": _positive(limits.get("max_context_window_tokens")),
         "input": _positive(limits.get("max_prompt_tokens")),
@@ -59,6 +101,8 @@ def catalog_limits(payload: Any, model: str) -> dict | None:
         "tokenizer": str(_object(row.get("capabilities")).get("tokenizer") or ""),
         "preferred_tier": str(prices.get("preferred_tier") or ""),
         "pricing_tiers": tiers,
+        "catalog_prices": catalog_prices,
+        "has_long_context_surcharge": surcharge,
         "version": CATALOG_VERSION,
     }
 

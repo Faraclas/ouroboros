@@ -33,6 +33,8 @@ class WindowRecord:
     retired_ack: dict = field(default_factory=dict)
     pricing_tiers: dict = field(default_factory=dict)
     catalog_details: dict = field(default_factory=dict)
+    catalog_prices: dict[str, dict[str, int | float]] = field(default_factory=dict)
+    has_long_context_surcharge: bool | None = None
 
     @property
     def usable(self) -> Optional[int]:
@@ -180,6 +182,7 @@ def resolve_window(evidence, reserve: int, *, root=None, bound: bool = True,
             break
     output = getattr(evidence, "response_limit", {}) or {}
     maximum = output.get("max_output_tokens", 0)
+    price_source = None if getattr(evidence, "stale", False) else captured or evidence
     return WindowRecord(fp, limits.get("input"), limits.get("total"),
                         WindowLimit(maximum, "output", output.get("source", "metadata"),
                                     output.get("observed_at", "")) if maximum and not output.get("stale")
@@ -190,7 +193,9 @@ def resolve_window(evidence, reserve: int, *, root=None, bound: bool = True,
                         pricing_tiers=(captured.pricing_tiers if captured else
                             getattr(evidence, "pricing_tiers", {}) if not getattr(evidence, "stale", False) else {}),
                         catalog_details=(captured.catalog_details if captured else
-                            getattr(evidence, "catalog_details", {}) if not getattr(evidence, "stale", False) else {}))
+                            getattr(evidence, "catalog_details", {}) if not getattr(evidence, "stale", False) else {}),
+                        catalog_prices=getattr(price_source, "catalog_prices", {}),
+                        has_long_context_surcharge=getattr(price_source, "has_long_context_surcharge", None))
 
 
 def record_refusal(usage, plan) -> None:

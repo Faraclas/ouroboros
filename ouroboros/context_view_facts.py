@@ -85,6 +85,9 @@ def window_projection(record):
         parts = [f"{name.replace('_', ' ')} ≤ {tiers[name]:,}" for name in ("default", "long_context") if name in tiers]
         projection.update(pricing_tiers=dict(tiers), declared=[asdict(item) for item in record.declared])
         projection["text"] += "; Copilot catalog pricing tiers: " + ", ".join(parts) + " input tokens (not hard limits)"
+    if record.catalog_prices:
+        projection.update(catalog_prices={name: dict(tier) for name, tier in record.catalog_prices.items()},
+                          has_long_context_surcharge=record.has_long_context_surcharge)
     return projection
 
 

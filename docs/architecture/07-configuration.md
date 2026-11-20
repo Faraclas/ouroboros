@@ -1,10 +1,10 @@
 # 7. Configuration (ouroboros/config.py)
 
-Settings have one home and default; the table projects `config.SETTINGS_DEFAULTS`, never a second authority.
+Settings have one home: the table projects `config.SETTINGS_DEFAULTS`.
 
 `ouroboros/config.py` re-exports paths, loaders/writers, environment projection, normalization, runtime mode, skills location and PID lock. Vocabularies/defaults belong to its leaves (§10 invariant 3). `settings_scales.IMMEDIATE_SETTINGS` applies live; `RESTART_REQUIRED_SETTINGS` awaits restart; other keys apply from the next task, a route key from the next model call. `update_channels.py` owns update defaults.
 
-Each path constant takes its `OUROBOROS_*` override, else derives from `APP_ROOT` (`~/Ouroboros`); a direct server's implicit `REPO_DIR` is its executing checkout; `resolve_port_file` relocates only the hosting root's port file. Retained exception: a server given only `APP_ROOT` keeps `~/Ouroboros/data` (`server_process.DATA_DIR`), since deriving it would start a fresh brain. The document is `data/settings.json` under the data root. Writes need the settings file lock. Secret placeholders are repaired only when recognized on disk, before environment precedence resolves, so a real environment credential never reads as a mask (`secret_masking.py`). While `OUROBOROS_SETTINGS_SHA256` is set (`settings_integrity.py`) the seeded snapshot is an owner-authored trust root for an isolated child: every read verifies the whole byte stream without creating a sibling lock file, and every writer refuses.
+Path constants take their `OUROBOROS_*` override or derive from `APP_ROOT` (`~/Ouroboros`). A direct server's implicit `REPO_DIR` is its executing checkout; `resolve_port_file` relocates only the hosting root's port file. Exception: a server given only `APP_ROOT` keeps `~/Ouroboros/data` (`server_process.DATA_DIR`) to avoid a fresh brain. The document is data-root `settings.json`; writes take its lock. `secret_masking.py` repairs recognized disk placeholders before environment precedence, never masking a real environment credential. `OUROBOROS_SETTINGS_SHA256` (`settings_integrity.py`) makes a seeded snapshot an isolated child's owner-authored trust root: reads verify all bytes without a sibling lock and writers refuse.
 
 `openrouter_attribution.py` is the app-identity SSOT of every first-party paid OpenRouter request (canonical URL + `X-OpenRouter-Title`); a fork uses its own URL, never renaming one app record.
 
@@ -163,6 +163,7 @@ One row per key (`settings_defaults.py`). Env-only rows have no settings.json ca
 | OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS | true | Auto-grant manifest requests to accepted bytes (clean review or trusted install; hash-bound) |
 | OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS | true | Derived Built in trust (`false`: review); once a source list is saved its Built in row decides |
 | OUROBOROS_CONTEXT_MODE | max | Main's `nano`/`low`/`max` and initial project copy; owner-selected outside Cyber. Review stays independent (§6 Context fitting) |
+| OUROBOROS_COPILOT_PREFER_STANDARD_TIER | false | Optional surcharge-only standard-tier Max elastic target for unsolicited results; not a hard window or billing guarantee (§6 Context fitting) |
 | OUROBOROS_CONTEXT_MODE_AUTO_LOW | false | Provenance tombstone, not a toggle: normalization writes `false`; a persisted `low` is honoured only beside it (`context_mode_compat.py`) |
 | OUROBOROS_RUNTIME_MODE | advanced | Effective Access light/advanced/pro/cyber_pro, persisted as the next-boot value (§6 Safety and runtime mode) |
 | OUROBOROS_SKILLS_REPO_PATH | "" | Skills Repo Path: read in place as My folder (`my-folder`), even with a saved source list; removing that row clears this path. Other folders stay connected. |

@@ -155,6 +155,8 @@ class CapabilityEvidence:
     pricing_tiers: Dict[str, int] = field(default_factory=dict)
     catalog_details: Dict[str, Any] = field(default_factory=dict)
     metadata_scope: str = ""
+    catalog_prices: Dict[str, Dict[str, int | float]] = field(default_factory=dict)
+    has_long_context_surcharge: bool | None = None
 
     def to_json(self) -> Dict[str, Any]:
         return {
@@ -179,6 +181,8 @@ class CapabilityEvidence:
             "pricing_tiers": self.pricing_tiers,
             "catalog_details": self.catalog_details,
             "metadata_scope": self.metadata_scope,
+            "catalog_prices": self.catalog_prices,
+            "has_long_context_surcharge": self.has_long_context_surcharge,
         }
 
 
@@ -784,7 +788,34 @@ def _cached_evidence(record: Dict[str, Any], fp: str, model: str, provider: str,
         pricing_tiers=dict(record.get("pricing_tiers") or {}),
         catalog_details=dict(record.get("catalog_details") or {}),
         metadata_scope=str(record.get("metadata_scope") or ""),
+        # Keep the retained prices in the store, not in an actionable stale
+        # result. An owner/role window override can clear evidence.stale for sizing.
+        catalog_prices={name: dict(tier) for name, tier in (record.get("catalog_prices") or {}).items()}
+        if not stale else {},
+        has_long_context_surcharge=record.get("has_long_context_surcharge") if not stale else None,
     )
+
+
+def _copilot_cached_row(probes, fp: str, scope: str) -> dict:
+    row = probes.get(f"{fp}:{scope}") if scope else None
+    return row if isinstance(row, dict) and row.get("metadata_scope") == scope else {}
+
+
+def cached_copilot_evidence(drive_root: Any, *, model: str, base_url: str, api_key: str,
+                            headers=None, options=None) -> CapabilityEvidence | None:
+    """Fresh advertisement for the physical credential; no discovery, probes or owner-ack overlay."""
+    from ouroboros.copilot_model_limits import metadata_scope
+
+    scope = metadata_scope(base_url, api_key)
+    if not scope:
+        return None
+    provider = "openai-compatible"
+    fp = route_fingerprint(provider=provider, model=model, base_url=base_url,
+                           headers=headers, options=options)
+    row = _copilot_cached_row(_read(drive_root).get("probes", {}), fp, scope)
+    if row.get("status") != STATUS_CONFIRMED or _age_seconds(row.get("ts", "")) > _CONFIRMED_TTL_SEC:
+        return None
+    return _cached_evidence(row, fp, model, provider)
 
 
 def _claudexor_metadata_evidence(model: str, base_url: str, headers: Any,
@@ -1005,17 +1036,24 @@ def _probe_window(
         api_key = _route_api_key(model) if api_key is None else api_key
         scope = metadata_scope(base_url, api_key)
     cache_key = f"{fp}:{scope}" if scope else fp
-    cached = data.get("probes", {}).get(cache_key)
-    if copilot and (not scope or (cached or {}).get("metadata_scope") != scope):
-        cached = None  # An old or another account's catalog says nothing about this send.
+    probes = data.get("probes", {})
+    cached = _copilot_cached_row(probes, fp, scope) if copilot else probes.get(cache_key)
     if subscription and not account_bound and str((cached or {}).get("status") or "") in _KNOWN_STATUS:
         # Model-only legacy evidence cannot certify any subscription account.
         cached = None
+    refresh_legacy_catalog = False
     if cached and not force:
         age = _age_seconds(str(cached.get("ts") or ""))
         ttl = _CONFIRMED_TTL_SEC if cached.get("status") == STATUS_CONFIRMED else _FAILED_TTL_SEC
         if age <= ttl:
-            return _cached_evidence(cached, fp, model, provider)
+            # A pre-pricing catalog row is still valid window evidence, but it
+            # cannot supply the new price feature until one normal metadata fetch.
+            refresh_legacy_catalog = bool(copilot and scope and allow_fetch and
+                                          cached.get("status") == STATUS_CONFIRMED and
+                                          "catalog_prices" not in cached and
+                                          _age_seconds(cached.get("price_refresh_failed_at", "")) > _FAILED_TTL_SEC)
+            if not refresh_legacy_catalog:
+                return _cached_evidence(cached, fp, model, provider)
 
     if not allow_fetch:
         # Hot path: never block on the network. Return the (possibly stale) cache
@@ -1062,6 +1100,7 @@ def _probe_window(
                     ts=observed_at, detail="Copilot /models " + facts["version"],
                     window_kind="total" if facts["total"] else "input", declared_limits=declared,
                     pricing_tiers=facts["pricing_tiers"], metadata_scope=scope,
+                    catalog_prices=facts["catalog_prices"], has_long_context_surcharge=facts["has_long_context_surcharge"],
                     catalog_details={key: facts[key] for key in ("version", "tokenizer", "preferred_tier", "non_streaming_output")})
                 _store_evidence(drive_root, "probes", cache_key, ev.to_json())
                 return ev
@@ -1080,6 +1119,19 @@ def _probe_window(
     # sees an error: "no connection") from a route that simply has no metadata
     # source (STATUS_UNPROBEABLE -> the owner-ack path).
     prior = cached if isinstance(cached, dict) else None
+    if refresh_legacy_catalog and prior is not None:
+        # A failed additive refresh does not age or invalidate the prior window.
+        # Cool down only this exact unchanged row; never overwrite a concurrent refresh.
+        try:
+            with _store_transaction(drive_root):
+                data = _load(drive_root)
+                row = data.get("probes", {}).get(cache_key)
+                if isinstance(row, dict) and row.get("ts") == prior.get("ts") and "catalog_prices" not in row:
+                    row["price_refresh_failed_at"] = utc_now_iso()
+                    _save(drive_root, data)
+        except (OSError, TimeoutError):
+            log.debug("catalog price refresh cooldown could not be stored", exc_info=True)
+        return _cached_evidence(prior, fp, model, provider, detail="catalog price refresh unavailable")
     prior_win = int((prior or {}).get("window_tokens") or 0)
     prior_status = str((prior or {}).get("status") or "")
     if prior is not None and prior_status in _KNOWN_STATUS and prior_win > 0:

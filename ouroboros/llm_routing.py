@@ -139,6 +139,9 @@ def resolve_target(model: str, settings: Optional[Dict[str, Any]] = None, *,
     usage_model = (f"{provider}@{route.connection}::{resolved_model}" if route.connection
                    else _ProviderRoutingMixin._qualified_model_name(provider, resolved_model))
     return {"provider": provider, "resolved_model": resolved_model, "usage_model": usage_model,
+            # Main's catalog cache is keyed on the selected route spelling, which
+            # is not necessarily the normalized accounting label above.
+            **({"catalog_model": model.strip()} if provider == "openai-compatible" else {}),
             **_kind_target(provider, get, route.connection, configured,
                            api_key_override=None if explicit_settings else api_key_override,
                            openrouter_base_url=OPENROUTER_BASE_URL if explicit_settings else openrouter_base_url),

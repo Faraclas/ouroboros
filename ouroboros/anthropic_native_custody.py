@@ -241,24 +241,33 @@ def mark_replayed_receipts_consumed(message: Mapping[str, Any]) -> Dict[str, Any
     return out
 
 
-def scrub_native_custody(messages: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+def scrub_native_custody(
+    messages: Sequence[Mapping[str, Any]], *, keep_chat_reasoning: bool = False,
+) -> List[Dict[str, Any]]:
     """Remove direct-route custody before another provider/API/model dispatch."""
     cleaned = copy.deepcopy(list(messages))
-    from ouroboros.copilot_native_custody import COPILOT_NATIVE_KEY, COPILOT_WIRE_KEY
+    from ouroboros.copilot_native_custody import (
+        CHAT_REASONING_BINDING_KEY, CHAT_REASONING_FIELDS, COPILOT_NATIVE_KEY, COPILOT_WIRE_KEY,
+    )
     for message in cleaned:
         if isinstance(message, dict):
             message.pop(ANTHROPIC_NATIVE_RECEIPT_KEY, None)
             message.pop(ANTHROPIC_CONSUMED_RECEIPTS_KEY, None)
             message.pop(COPILOT_NATIVE_KEY, None)
             message.pop(COPILOT_WIRE_KEY, None)
+            if not keep_chat_reasoning:
+                message.pop(CHAT_REASONING_BINDING_KEY, None)
+                if message.get("role") == "assistant":
+                    for key in CHAT_REASONING_FIELDS:
+                        message.pop(key, None)
     return cleaned
 
 
 def custody_private_key(value: Any) -> bool:
     """Keys withheld from public/summarizer projections, not transport copies."""
-    from ouroboros.copilot_native_custody import COPILOT_NATIVE_KEY, COPILOT_WIRE_KEY
+    from ouroboros.copilot_native_custody import CHAT_REASONING_BINDING_KEY, COPILOT_NATIVE_KEY, COPILOT_WIRE_KEY
     return str(value) in {
-        COPILOT_NATIVE_KEY, COPILOT_WIRE_KEY,
+        COPILOT_NATIVE_KEY, COPILOT_WIRE_KEY, CHAT_REASONING_BINDING_KEY,
         ANTHROPIC_NATIVE_RECEIPT_KEY,
         ANTHROPIC_CONSUMED_RECEIPTS_KEY,
         "nativeContinuation",
@@ -300,7 +309,7 @@ def _receipt_projection(receipt: Any) -> Dict[str, Any]:
 
 def observability_custody_projection(value: Any) -> Any:
     """Replace private replay receipts with type/order/size/digest metadata."""
-    from ouroboros.copilot_native_custody import COPILOT_NATIVE_KEY, COPILOT_WIRE_KEY
+    from ouroboros.copilot_native_custody import CHAT_REASONING_BINDING_KEY, COPILOT_NATIVE_KEY, COPILOT_WIRE_KEY
     if isinstance(value, Mapping):
         projected = {}
         for key, item in value.items():
@@ -311,7 +320,7 @@ def observability_custody_projection(value: Any) -> Any:
                 encoded = encoded if isinstance(encoded, str) else ""
                 projected["_copilot_native_custody"] = {"size_bytes": len(encoded.encode("utf-8")),
                                                        "sha256": _sha256_bytes(encoded)}
-            elif str(key) != ANTHROPIC_CONSUMED_RECEIPTS_KEY:
+            elif str(key) not in {ANTHROPIC_CONSUMED_RECEIPTS_KEY, CHAT_REASONING_BINDING_KEY}:
                 projected[str(key)] = observability_custody_projection(item)
         return projected
     if isinstance(value, (list, tuple)):

@@ -689,6 +689,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             ...slot, inputId: slot.settingsInputId,
         })) });
         applyCheckboxValue('s-auto-grant-reviewed-skills', s.OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS);
+        applyCheckboxValue('s-copilot-prefer-standard-tier', s.OUROBOROS_COPILOT_PREFER_STANDARD_TIER);
         // Owner-facing mutative-subagents control shows the EFFECTIVE state when it
         // is binary-representable: an explicit value, or unset in advanced/pro
         // (every acting surface on = "On"). Unset in LIGHT mode is surface-aware
@@ -920,6 +921,10 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             ...collectSubagentsSettings(),
         };
         Object.assign(body, modelRoles.collect());
+        const preferStandardTier = Boolean(byId('s-copilot-prefer-standard-tier')?.checked);
+        if (preferStandardTier !== isTruthySetting(currentSettings?.OUROBOROS_COPILOT_PREFER_STANDARD_TIER)) {
+            body.OUROBOROS_COPILOT_PREFER_STANDARD_TIER = String(preferStandardTier);
+        }
         INPUT_FIELDS.forEach(([id, key, fallback = '']) => {
             const value = fieldValue(id).trim();
             body[key] = key === 'OUROBOROS_SERVER_HOST' ? value || fallback : value || '';

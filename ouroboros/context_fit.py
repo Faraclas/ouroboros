@@ -121,7 +121,8 @@ class MainFitMeasurement:
     window_witness_bound: bool = False
     window_observation_fp: str = ""
     window: Dict[str, Any] = field(default_factory=dict)
-    target_input_tokens: Optional[int] = None  # Low only; total-equivalent fields retain their meaning
+    target_input_tokens: Optional[int] = None  # input-based economy targets exclude the reply reserve
+    target_source: str = ""  # distinguishes the optional price preference from physical and mode limits
 
 
 @dataclass(frozen=True)
@@ -571,6 +572,24 @@ def reclaim_low_water_margin(
         target_input_tokens=target_input_tokens, boundary_tokens=boundary_tokens)
 
 
+def _standard_tier_input_target(window: WindowRecord) -> Optional[int]:
+    """Catalog threshold only when a distinct long-context tier costs more."""
+    from ouroboros.settings_integrity import runtime_setting
+
+    if getattr(window, "has_long_context_surcharge", None) is not True:
+        return None
+    if str(runtime_setting("OUROBOROS_COPILOT_PREFER_STANDARD_TIER", "false")).strip().lower() not in {
+        "true", "1", "yes", "on",
+    }:
+        return None
+    prices = getattr(window, "catalog_prices", {}) or {}
+    standard = (prices.get("default") or {}).get("max_prompt_tokens")
+    long = (prices.get("long_context") or {}).get("max_prompt_tokens")
+    usable = window.usable
+    return standard if (usable is not None and type(standard) is int and type(long) is int
+                        and 0 < standard < min(long, usable)) else None
+
+
 def measure_main_fit(
     plan: ContextFitPlan,
     messages: List[Dict[str, Any]],
@@ -593,7 +612,9 @@ def measure_main_fit(
     the round and recovery. A known window with no tool-result room starts the same refusal
     passes before sending (owner revision, 20 October 2026); an unknown window never does.
     Total-equivalent bounds count the reply floor (Nano: ``min(8192, C)``).
-    Low's explicit input target excludes it; the actual reply is ``reply_allowance_tokens``.
+    Low and the opt-in Max catalog target count input only; the actual reply is
+    ``reply_allowance_tokens``. A price target sizes the existing economy fit, not
+    the physical window, the initial memory view, or the mode.
     """
     from ouroboros.capability_evidence import canonical_evidence_root, is_known, resolve_main_token_density
     from ouroboros.context_budget import (
@@ -616,6 +637,11 @@ def measure_main_fit(
     current = resolve_window(plan, reserve, bound=plan.window_witness_bound,
                              accepted_input_tokens=accepted_input_tokens)
     capacity = current.total_equivalent if current.usable is not None else None
+    target_source = ""
+    if rendered_mode == owner_mode == "max" and plan.window_witness_bound and reading is not None:
+        if (standard := _standard_tier_input_target(current)) is not None:
+            input_target, target = standard, standard + reserve
+            target_source = "copilot_standard_tier"
     if capacity is None:
         reading = None
     target_deficit = max(0, total - target) if target is not None else None
@@ -639,6 +665,7 @@ def measure_main_fit(
         response_reserve_tokens=reserve,
         target_total_tokens=target,
         target_input_tokens=input_target,
+        target_source=target_source,
         capacity_total_tokens=capacity,
         measurement_basis=basis,
         measurement_density=density,

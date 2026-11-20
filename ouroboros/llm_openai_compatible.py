@@ -311,7 +311,9 @@ class _OpenAICompatibleLaneMixin:
                 keep_reasoning_content=provider == "minimax" or bool(target.get("requires_reasoning_echo")),
                 keep_reasoning_details=bool(target.get("reasoning_split")),
             )
-            from ouroboros.copilot_native_custody import prepare_native_replay
+            from ouroboros.copilot_native_custody import prepare_chat_replay, prepare_native_replay
+
+            prepare_chat_replay(messages, clean_messages, target)
             clean_messages = prepare_native_replay(messages, clean_messages, target)
             if target.get("requires_reasoning_echo"):
                 # A reasoning-echo route (DeepSeek) REQUIRES every assistant
@@ -568,7 +570,9 @@ class _OpenAICompatibleLaneMixin:
         """Normalize a reply without generation lookup; skip_cost_fetch also skips tariffs."""
         usage = dict(resp_dict.get("usage") or {})
         from ouroboros._usage_response import provider_usage_evidence
+        from ouroboros.copilot_catalog_estimate import CATALOG_ESTIMATE_KEY, response_catalog_estimate
         usage.pop("provider_usage", None)
+        usage.pop(CATALOG_ESTIMATE_KEY, None)  # Host-authored, not a provider extension.
         if claims := provider_usage_evidence(resp_dict):
             usage["provider_usage"] = claims
         # Host-authored attempt disclosures cannot originate in provider JSON.
@@ -613,6 +617,8 @@ class _OpenAICompatibleLaneMixin:
         # caller classifies it as a real rate_limit/provider_transient instead of
         # a blank finish_reason=null "incomplete response".
         _body_err = self._provider_body_error(resp_dict)
+        if not _body_err and (estimate := response_catalog_estimate(target, resp_dict, usage)) is not None:
+            usage[CATALOG_ESTIMATE_KEY] = estimate
         if _body_err:
             _body_message = str(_body_err.get("message") or "")
             usage["provider_error"] = {
@@ -770,7 +776,9 @@ class _OpenAICompatibleLaneMixin:
         from ouroboros.openai_chat_dispatch import normalize_direct_openai_completion
 
         msg, usage = normalize_direct_openai_completion(msg, usage, wire_completion)
-        from ouroboros.copilot_native_custody import retain_native_output
+        from ouroboros.copilot_native_custody import bind_chat_reasoning, retain_native_output
+
+        bind_chat_reasoning(msg, target)
         msg = retain_native_output(msg, target, wire_completion)
         _custom_receipts = usage.get("_request_wire_custom_receipts", ())
         finalize_wire_response(msg, usage, custom_receipts=_custom_receipts)

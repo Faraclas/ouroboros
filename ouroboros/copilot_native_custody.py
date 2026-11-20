@@ -1,4 +1,4 @@
-"""Same-route Copilot Responses output custody, separate from model-visible prose.
+"""Route-bound Copilot Responses and compatible Chat continuation.
 
 The HTTP codec observes accepted native items; a scoped, out-of-band attachment
 joins them to that send's consumed SDK result. Canonical text/calls remain the
@@ -18,6 +18,8 @@ from ouroboros.request_wire_contract import canonical_sha256, normalize_endpoint
 
 COPILOT_NATIVE_KEY = "_copilot_native_output"
 COPILOT_WIRE_KEY = "_copilot_replay_output"
+CHAT_REASONING_BINDING_KEY = "_chat_reasoning_binding"
+CHAT_REASONING_FIELDS = frozenset({"reasoning_opaque", "reasoning_text", "cot_id", "cot_summary"})
 _TOKEN = object()
 _OUTPUT = contextvars.ContextVar("copilot_native_output", default=None)
 
@@ -35,10 +37,10 @@ def _projection(message: Mapping) -> dict:
     return {"content": message.get("content") or "", "tool_calls": calls}
 
 
-def _route(target: Mapping) -> dict:
+def _route(target: Mapping, *, surface: str = "responses") -> dict:
     return {"provider": str(target.get("provider") or ""),
             "endpoint_sha256": canonical_sha256(normalize_endpoint(target.get("base_url"))),
-            "model": str(target.get("resolved_model") or ""), "api_surface": "responses",
+            "model": str(target.get("resolved_model") or ""), "api_surface": surface,
             "credential_sha256": canonical_sha256(str(target.get("api_key") or ""))}
 
 
@@ -46,6 +48,45 @@ def _eligible(target: Mapping) -> bool:
     from ouroboros.copilot_responses import uses_copilot_responses
     return (target.get("provider") == "openai-compatible"
             and uses_copilot_responses(target.get("base_url"), target.get("resolved_model")))
+
+
+def _chat_route(target: Mapping) -> dict | None:
+    if (target.get("provider") != "openai-compatible" or _eligible(target)
+            or not target.get("resolved_model") or not normalize_endpoint(target.get("base_url"))):
+        return None
+    return _route(target, surface="chat_completions")
+
+
+def _chat_binding(message: Mapping, route: dict) -> dict:
+    return {**route, "message_sha256": canonical_sha256({
+        "canonical": _projection(message),
+        "private": {key: message[key] for key in CHAT_REASONING_FIELDS if key in message},
+    })}
+
+
+def bind_chat_reasoning(message: dict, target: Mapping) -> None:
+    """Only a normalized reply can assign its producing route to known Chat extras."""
+    message.pop(CHAT_REASONING_BINDING_KEY, None)
+    if message.get("role") == "assistant" and CHAT_REASONING_FIELDS.intersection(message):
+        route = _chat_route(target)
+        if route is not None:
+            message[CHAT_REASONING_BINDING_KEY] = _chat_binding(message, route)
+
+
+def prepare_chat_replay(original: list, prepared: list, target: Mapping) -> None:
+    """Restore known extensions to the scrubbed send copy only on exact provenance.
+
+    Without provenance (legacy checkpoints or supplied history), don't guess from
+    the acting model. Assistant prose and calls remain usable by the other route.
+    """
+    route = _chat_route(target)
+    if route is None:
+        return
+    for source, row in zip(original, prepared):
+        binding = source.get(CHAT_REASONING_BINDING_KEY)
+        if (row.get("role") == "assistant" and isinstance(binding, dict)
+                and binding == _chat_binding(source, route)):
+            row.update({key: copy.deepcopy(source[key]) for key in CHAT_REASONING_FIELDS if key in source})
 
 
 @contextlib.contextmanager

@@ -11,6 +11,7 @@ import { historyRetentionView } from './history_retention.js';
 import { checkFailureView } from './verification_presentation.js';
 import { hostRowDisplayText } from './host_notice_text.js';
 import { effortEvidenceText } from './effort_evidence.js';
+import { catalogEstimateText } from './catalog_estimate_presentation.js';
 import { delegatedActivityView } from './delegated_activity.js';
 import { workerShaLogView, workerShaRelation } from './worker_sha_presentation.js';
 import {
@@ -24,6 +25,10 @@ const REVIEW_LIFECYCLE_ERROR_STATUSES = new Set([
 ]);
 
 export { formatReviewProjection } from './review_presentation.js';
+
+function modelUsageEvidenceText(evt) {
+    return [effortEvidenceText(evt), catalogEstimateText(evt.copilot_catalog_estimate)].filter(Boolean).join(' · ');
+}
 
 export const LOG_CATEGORIES = {
     tools: { label: 'Tools', color: 'var(--blue)' },
@@ -803,7 +808,7 @@ export function summarizeLogEvent(evt) {
 
     if (t === 'llm_round_finished' || t === 'llm_round') {
         return view('done', `LLM round ${evt.round || ''} finished`.trim(), {
-            body: effortEvidenceText(evt),
+            body: modelUsageEvidenceText(evt),
             meta: taskMeta(
                 evt.model || '',
                 formatUsageTokens(evt),
@@ -829,7 +834,7 @@ export function summarizeLogEvent(evt) {
 
     if (t === 'llm_usage') {
         return view('usage', 'LLM usage recorded', {
-            body: effortEvidenceText(evt),
+            body: modelUsageEvidenceText(evt),
             meta: taskMeta(
                 evt.model || '',
                 formatUsageTokens(evt),
