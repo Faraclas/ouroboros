@@ -74,7 +74,12 @@ def test_outward_speech_survives_while_the_unrelated_large_tool_body_folds(main_
     request = _request(messages, 1)
     if recovery == "emergency":
         from ouroboros.context_source_view import emergency_address_view
-        rebuilt, receipt = emergency_address_view(messages, request, rung="unseen_bodies",
+        # A default file page is now chosen. Unknown capacity protects it, but a
+        # physically oversized page is still eligible without folding owner speech.
+        unchanged, protected = emergency_address_view(messages, request, rung="unseen_bodies",
+                                                      drive_root=f.ctx.drive_root, task_id=f.ctx.task_id)
+        assert protected.status == "no_eligible" and unchanged == messages
+        rebuilt, receipt = emergency_address_view(messages, request, rung="unseen_bodies", usable_input=1,
                                                   drive_root=f.ctx.drive_root, task_id=f.ctx.task_id)
     else:
         request = replace(request, working_note="The large source is recorded; the question remains explicit.",

@@ -615,8 +615,8 @@ class ToolResult:
     meta: Mapping[str, Any] = field(default_factory=dict)
     producer_text: str | None = None
     host_annotations: tuple[str, ...] = ()
-    # Host-resolved dispatch fact, outside producer metadata. None is legacy.
-    result_selection: Mapping[str, Any] | None = None
+    # Delivery envelope, not part of the producer outcome's value equality. None is legacy.
+    result_selection: Mapping[str, Any] | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.code, str) or not _CODE_RE.fullmatch(self.code):
