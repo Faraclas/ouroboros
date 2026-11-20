@@ -107,10 +107,11 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
             const pageUnavailable = page.filter(t => t.retain_reason || !t.exists).length;
             const pageSelectable = page.length - pageUnavailable;
             const projectScope = `Project-wide (${totalTargets} total): ${willRemoveCount} will remove · ${Math.max(0, needsConfTotal - confirmed)} needs confirmation · ${protectedTotal} protected · ${alreadyGoneTotal} already gone.`;
+            const inspectionScope = plan?.uninspected_total ? ` ${plan.uninspected_total} not yet inspected for loss or Git restrictions; review their pages to classify them.` : '';
             const pageScope = ` This page: ${pageSelectable} selectable, ${pageUnavailable} unavailable.`;
             const unseenNote = selectedWarnings - confirmed > unconfirmed ? ' Unconfirmed targets on other pages will stay unless you review and confirm them separately.' : '';
             const guidance = !totalSelected ? (closing ? ' Nothing selected: closing will keep all local material.' : (page.length && pageUnavailable === page.length ? ' Nothing selectable on this page. Read the reasons below; try another page or path filter.' : (page.length ? ' Select material to clean up.' : ' No recorded paths match this filter.'))) : '';
-            summary.textContent = projectScope + pageScope + unseenNote + guidance + (unconfirmed ? ` Extra confirmation is still required for ${unconfirmed} selected target(s).` : '');
+            summary.textContent = projectScope + inspectionScope + pageScope + unseenNote + guidance + (unconfirmed ? ` Extra confirmation is still required for ${unconfirmed} selected target(s).` : '');
         }
         selectAll.onchange = () => {
             if (selectAll.checked) {

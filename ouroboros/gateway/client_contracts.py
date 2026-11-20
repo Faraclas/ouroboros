@@ -638,6 +638,7 @@ class ProjectCleanupPlan(TypedDict):
     already_gone_total: NotRequired[int]
     eligible_total: NotRequired[int]
     needs_confirmation_total: NotRequired[int]
+    uninspected_total: NotRequired[int]
     eligible_needs_confirmation_total: NotRequired[int]
     offset: NotRequired[int]
     limit: NotRequired[int]

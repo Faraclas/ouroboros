@@ -241,7 +241,7 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
                         'access_denial': item['access_denial'],
                         'risk': risk, 'warning': warning, 'reconstruction': reconstruction, 'copy_record': copy_record,
                         'selection_token': _hash([target_id, observed, risk]), 'operand_inode': observed['operand_inode'],
-                        'eligible': eligible,
+                        'eligible': eligible, 'inspection_deferred': deferred and not protection and exists is True,
                         'default_selected': bool(exists is True and (created or temp) and not output and not retain_reason and
                                                  (mode == 'complete' or (reconstruction and not warning))),
                         'action': 'already_absent' if exists is False and not retain_reason else 'retain' if retain_reason else 'remove_if_selected'})
@@ -288,19 +288,17 @@ def cleanup_plan_page(drive_root, project_id, mode='complete', system_repo_dir=N
     matches = [t for t in targets if query.casefold() in t['path'].casefold()]
     page = matches[offset:offset + limit]
     next_offset = offset + len(page)
-    protected_total = sum(bool(t['protection']) or (t['exists'] is True and t['risk']['status'] != 'unavailable' and bool(t['retain_reason'])) for t in targets)
+    protected_total = sum(bool(t['protection']) or (t['exists'] is True and not t['inspection_deferred'] and bool(t['retain_reason'])) for t in targets)
     already_gone_total = sum(not t['protection'] and t['exists'] is False for t in targets)
     eligible_total = sum(bool(t['eligible']) for t in targets)
-    needs_confirmation_total = sum(
-        not t['protection'] and t['exists'] is True
-        and not (t['risk']['status'] != 'unavailable' and bool(t['retain_reason']))
-        and (t['kind'] not in {'project_created', 'generated_temp'} or (t['risk']['status'] != 'unavailable' and bool(t['warning'])))
-        for t in targets)
+    uninspected_total = sum(bool(t['inspection_deferred']) for t in targets)
+    needs_confirmation_total = sum(t['exists'] is True and not t['retain_reason'] and bool(t['warning']) for t in targets)
     eligible_needs_confirmation_total = sum(bool(t['eligible'] and t['warning']) for t in targets)
     return {**plan, 'targets': page, 'total': len(targets), 'matched_total': len(matches),
             'retained_total': sum(bool(t['protection']) for t in targets),
             'protected_total': protected_total, 'already_gone_total': already_gone_total,
             'eligible_total': eligible_total, 'needs_confirmation_total': needs_confirmation_total,
+            'uninspected_total': uninspected_total,
             'eligible_needs_confirmation_total': eligible_needs_confirmation_total,
             'offset': offset, 'limit': limit, 'next_offset': next_offset if next_offset < len(matches) else None,
             'query': query, 'plan_sha256': digest, 'targets_sha256': targets_digest, 'immutable': False,

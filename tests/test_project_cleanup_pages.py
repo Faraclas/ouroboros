@@ -34,6 +34,30 @@ def test_pages_are_complete_native_and_digest_bound(setup, tmp_path, monkeypatch
         c.cleanup_plan_page(root, 'alpha', system_repo_dir=system, offset=7, plan_sha256=digest)
 
 
+def test_off_page_git_restriction_is_uninspected_not_a_loss_warning(setup, tmp_path, monkeypatch):
+    root, system, _, _, _, _ = setup
+    artifact = root / 'artifacts' / 'retained'
+    external = tmp_path / 'repo' / 'subdir'
+    artifact.mkdir(parents=True)
+    external.mkdir(parents=True)
+    import subprocess
+    subprocess.run(['git', 'init', str(external.parent)], check=True, capture_output=True)
+    monkeypatch.setattr(f, 'generated_targets', lambda *a: {'targets': [
+        {'path': str(artifact), 'source': 'task.artifacts', 'origin': 'recorded_output'},
+        {'path': str(external), 'source': 'task.workspace_root', 'origin': 'unknown'},
+    ], 'gaps': []})
+    first = c.cleanup_plan_page(root, 'alpha', system_repo_dir=system, limit=1, inspect_bulk=True)
+    assert first['total'] == 2 and first['eligible_total'] == 0
+    assert first['uninspected_total'] == 1 and first['needs_confirmation_total'] == 0
+    assert first['protected_total'] == 1
+    filtered = c.cleanup_plan_page(root, 'alpha', system_repo_dir=system, limit=1, query='subdir',
+                                   plan_sha256=first['plan_sha256'], inspect_bulk=True)
+    assert filtered['targets'][0]['path'] == str(external)
+    assert filtered['targets'][0]['retain_reason']
+    assert filtered['uninspected_total'] == 0 and filtered['needs_confirmation_total'] == 0
+    assert filtered['protected_total'] == 2 and filtered['eligible_total'] == 0
+
+
 @pytest.mark.parametrize('kwargs', [{'offset': -1}, {'offset': True}, {'limit': 0}, {'limit': 101}, {'query': 'x' * 2001}])
 def test_invalid_paging_refuses_before_planning(monkeypatch, kwargs):
     monkeypatch.setattr(c, 'cleanup_plan', lambda *a, **k: pytest.fail('must validate first'))
