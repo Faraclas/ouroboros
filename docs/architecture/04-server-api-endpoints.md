@@ -173,15 +173,15 @@ Files routes: `gateway/files.py::file_browser_routes()` (envelopes/parity: §11)
 | GET | `/api/projects` | optional `chat_id`: that active room from the full registry, beyond sidebar limits (missing → empty `projects`; unreadable → error) |
 | GET | `/api/projects/catalog` | lifecycle all/active/closed, q, offset, limit; optional parent_id: empty roots, id immediate children; paths, no probes |
 | GET | `/api/projects/{project_id}/detail` | all lifecycles; resources with fresh read-only path/Git observations |
-| GET | `/api/projects/{project_id}/cleanup/plan` | mode=complete/reopen_friendly; read-only recorded targets, risk/identity tokens, protected/retained reasons |
-| POST | `/api/projects/{project_id}/cleanup` | closed room only; mode, selections (target ids), confirmations (current tokens); per-target recorded effects, no client paths |
+| GET | `/api/projects/{project_id}/cleanup/plan` | bounded recorded targets and counts; complete mode returns a digest for the inspected bulk set (CLIENT_CONTRACT) |
+| POST | `/api/projects/{project_id}/cleanup` | closed only; explicit IDs/current tokens or digest-bound bulk scope; per-target effects, no client paths |
 | POST | `/api/projects/{project_id}/reopen` | same closed room, fresh routing incarnation; no setup or task |
 | POST | `/api/projects/{project_id}/resources` | contextual association: path, optional label; no grant/cwd change |
 | POST | `/api/projects/{project_id}/resources/{resource_id}/detach` | association only; no file deletion |
 | POST | `/api/projects` | |
 | POST | `/api/projects/from-task` | |
 | POST | `/api/projects/{project_id}/update` | name/pin, parent-only, or exact content CAS; CLIENT_CONTRACT §6 |
-| POST | `/api/projects/{project_id}/delete` | optional cleanup={mode,selections,confirmations}; saved before Close fence, executed server-side after quiescence/tombstone; no cleanup body preserves files; Viper Interface refused |
+| POST | `/api/projects/{project_id}/delete` | optional cleanup scope saved before fence; executes after quiescence/tombstone with fresh checks; no cleanup body keeps files; Interface refused |
 | GET | `/api/fs/dirs` | |
 | GET | `/api/chat/history` | |
 | GET | `/api/logs/{name}` | |

@@ -119,7 +119,7 @@ def test_absent_targets_not_default_selected_and_bulk_eligible_across_pages(setu
     art2 = tmp_path / 'art2'; art2.mkdir()
     gone_created = tmp_path / 'gone-created'
     gone_task = tmp_path / 'gone-task'
-    ext = record(tmp_path / 'ext'); ext.mkdir(); (ext / 'work').write_text('keep')
+    ext = record(tmp_path / 'ext', origin='unknown'); ext.mkdir(); (ext / 'work').write_text('keep')
     import subprocess
     def init_clean(path):
         path.mkdir(parents=True, exist_ok=True)
@@ -155,16 +155,32 @@ def test_absent_targets_not_default_selected_and_bulk_eligible_across_pages(setu
     assert page0['total'] == 9
     assert page0['protected_total'] == 2
     assert page0['already_gone_total'] == 2
-    assert page0['eligible_total'] == 5  # setup's 1 + 3 clean + 1 unique_offpage
+    assert page0['targets_sha256'] == ''  # generic caller retains bounded page inspection
     assert page0['needs_confirmation_total'] == 1  # ext
-    assert page0['uninspected_eligible_total'] == 4
+    inspected.clear()
+    bulk_page = c.cleanup_plan_page(root, 'alpha', system_repo_dir=system, limit=2, inspect_bulk=True)
+    assert len(bulk_page['targets']) == 2  # no bulk target list sent to the browser
+    assert {*map(str, clean), str(unique_offpage)} <= set(inspected)
+    assert not {str(art1), str(art2), str(gone_created), str(gone_task)} & set(inspected)
+    assert bulk_page['eligible_total'] == 4  # 3 clean + 1 unique_offpage; external is never bulk-selected
+    assert bulk_page['needs_confirmation_total'] == 2  # external and unique off-page
+    assert bulk_page['eligible_needs_confirmation_total'] == 1
     page1 = c.cleanup_plan_page(root, 'alpha', system_repo_dir=system, offset=3, limit=2, plan_sha256=page0['plan_sha256'])
     gone_rows = [t for t in page1['targets'] if t['exists'] is False]
     assert len(gone_rows) == 2
     assert all(not t['default_selected'] and not t['eligible'] and t['action'] == 'already_absent' for t in gone_rows)
     close()
     # Re-read targets_sha256 after close (lifecycle changed, targets_sha256 is current)
-    closed_page = c.cleanup_plan_page(root, 'alpha', system_repo_dir=system, limit=2)
+    closed_page = c.cleanup_plan_page(root, 'alpha', system_repo_dir=system, limit=2, inspect_bulk=True)
+    assert bulk_page['targets_sha256'] == closed_page['targets_sha256']  # safe Close lifecycle change alone
+    novel = clean[2] / 'new-work'
+    novel.write_text('work added after preview')
+    with pytest.raises(ProjectManagementError, match='changed'):
+        c.cleanup_execute(root, 'alpha', 'complete', [], {}, 'human', system,
+                          select_all_eligible=True, targets_sha256=closed_page['targets_sha256'])
+    assert all(p.exists() for p in clean) and novel.exists()
+    novel.unlink()
+    closed_page = c.cleanup_plan_page(root, 'alpha', system_repo_dir=system, limit=2, inspect_bulk=True)
     with pytest.raises(ProjectManagementError, match='targets_sha256'):
         c.cleanup_execute(root, 'alpha', 'complete', [], {}, 'human', system, select_all_eligible=True)
     # Exclude clean[1], bulk-select the rest across unseen pages:
@@ -183,7 +199,7 @@ def test_absent_targets_not_default_selected_and_bulk_eligible_across_pages(setu
     assert by_path[str(unique_offpage)]['status'] == 'refused'
     assert by_path[str(unique_offpage)]['reason'] == 'current_warning_confirmation_required'
     assert (unique_offpage / 'file').read_text() == 'unconfirmed'
-    assert (ext / 'work').read_text() == 'keep'
+    assert str(ext) not in by_path and (ext / 'work').read_text() == 'keep'
     # Stale targets_sha256 refuses rather than silently adding newly eligible targets.
     new_dir = tmp_path / 'newly-added'; new_dir.mkdir()
     monkeypatch.setattr(f, 'generated_targets', lambda *a: {'targets': [

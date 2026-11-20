@@ -1175,7 +1175,7 @@
  * @property {number=} already_gone_total
  * @property {number=} eligible_total
  * @property {number=} needs_confirmation_total
- * @property {number=} uninspected_eligible_total
+ * @property {number=} eligible_needs_confirmation_total
  * @property {number=} offset
  * @property {number=} limit
  * @property {(number|null)=} next_offset

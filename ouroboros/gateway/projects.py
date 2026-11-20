@@ -922,7 +922,8 @@ async def api_project_cleanup_plan(request: Request) -> JSONResponse:
             cleanup_plan_page, request_drive_root(request), str(request.path_params['project_id']),
             request.query_params.get('mode', 'complete'), getattr(request.app.state, 'repo_dir', None),
             offset=offset, limit=limit,
-            query=request.query_params.get('query', ''), plan_sha256=request.query_params.get('plan_sha256', ''))
+            query=request.query_params.get('query', ''), plan_sha256=request.query_params.get('plan_sha256', ''),
+            inspect_bulk=True)
         return JSONResponse(result)
     except ProjectManagementError as exc:
         return JSONResponse({'error': str(exc), 'reason_code': exc.reason}, status_code=exc.status_code)

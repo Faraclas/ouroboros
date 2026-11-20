@@ -72,7 +72,7 @@ def _risk(path, identity, cached=None):
     return risk, warning
 
 
-def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=None, risk_cache=None, *, page=None, selected_ids=None):
+def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=None, risk_cache=None, *, page=None, selected_ids=None, inspect_bulk=False):
     if mode not in MODES:
         raise ProjectManagementError('invalid_cleanup', 'mode must be complete or reopen_friendly')
     project = next((p for p in projects if p['id'] == project_id), None)
@@ -186,13 +186,18 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
         if any(cwd[:len(parts(observed['resolved_path']))] == parts(observed['resolved_path']) for cwd in cwd_parts):
             protection = protection or 'process_cwd_inside'
         target_id = 'cleanup:' + _hash(item['path'])
-        deferred = ((inspected_paths is not None and item['path'] not in inspected_paths)
-                    or (selected_ids is not None and target_id not in selected_ids))
+        if item['access_denial']:
+            protection = 'caller_access_denied'
+        exists = None if item['access_denial'] else path.exists() or path.is_symlink()
+        bulk_candidate = mode == 'complete' and exists is True and (created or temp) and not output and not protection
+        # The complete browser preview inspects the prospective bulk set, not every
+        # recorded target. A page may omit its rows, never its eligibility facts.
+        deferred = ((inspected_paths is not None and item['path'] not in inspected_paths
+                     and target_id not in (selected_ids or ()) and not (inspect_bulk and bulk_candidate))
+                    or (inspected_paths is None and selected_ids is not None and target_id not in selected_ids))
         cached = None if risk_cache is None and not deferred else (risk_cache or {}).get(item['path'], {
             'status': 'unavailable', 'gaps': ['New target requires inspection outside the registry lock'],
             'facts': {}, 'cleanup_retain_reason': 'new_target_requires_inspection'})
-        if item['access_denial']:
-            protection = 'caller_access_denied'
         # Loss inspection cannot make an already-protected target removable.
         # Report it as uninspected, and inspect afresh if that protection ends.
         if protection:
@@ -200,6 +205,8 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
                     'gaps': ['Loss inspection not performed: ' + protection],
                     'cleanup_retain_reason': protection}
             warning = None
+        elif exists is False:
+            risk, warning = {'status': 'missing', 'facts': {}, 'gaps': []}, None
         else:
             risk, warning = _risk(path, observed, cached)
         if not warning and not (created or temp) and risk['status'] not in {'missing'}:
@@ -208,7 +215,6 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
         if any(overlap(observed, p) for p in closed_others):
             warning = {'message': 'Another closed Project still references this path. Explicitly confirm removing its local material.',
                        'token': _hash([str(path), observed, risk, 'closed_shared']), 'unique_work': True, 'unknown': True}
-        exists = None if item['access_denial'] else path.exists() or path.is_symlink()
         reconstruction = None
         retain_reason = protection or risk.get('cleanup_retain_reason', '')
         facts = risk.get('facts', {})
@@ -228,7 +234,7 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
                                       'remote_coverage': risk['remote_coverage']}
                 except (OSError, subprocess.SubprocessError):
                     retain_reason = retain_reason or 'reconstruction_unavailable'
-        eligible = bool(exists is True and (created or temp) and not output and not protection and (deferred or not retain_reason))
+        eligible = bool(bulk_candidate and not retain_reason)
         targets.append({'id': target_id, 'path': item['path'], 'kind': kind,
                         'origins': sorted(origins), 'sources': sources, 'identity': observed,
                         'exists': exists, 'protection': protection, 'retain_reason': retain_reason,
@@ -250,8 +256,18 @@ def cleanup_plan(drive_root, project_id, mode='complete', system_repo_dir=None, 
                  registry._load(drive_root, strict=True)['projects'], authorize, selected_ids=selected_ids)
 
 
+def _target_facts(targets):
+    return [[t['id'], t['path'], t['identity'], t['exists'], t['protection'], t['access_denial'], t['sources']]
+            for t in targets]
+
+
+def _bulk_digest(project_id, mode, targets):
+    return _hash([project_id, mode, _target_facts(targets),
+                  [[t['id'], t['selection_token'], t['warning']] for t in targets if t['eligible']]])
+
+
 def cleanup_plan_page(drive_root, project_id, mode='complete', system_repo_dir=None, *,
-                      authorize=None, offset=0, limit=25, query='', plan_sha256=''):
+                      authorize=None, offset=0, limit=25, query='', plan_sha256='', inspect_bulk=False):
     """Bounded current observation; never substitute this page for execution's plan.
 
     Pages are current rereads, not a stored snapshot or deletion lease. A digest
@@ -261,20 +277,18 @@ def cleanup_plan_page(drive_root, project_id, mode='complete', system_repo_dir=N
             or not isinstance(query, str) or len(query) > 2000 or not isinstance(plan_sha256, str)):
         raise ProjectManagementError('invalid_cleanup', 'offset >=0, limit 1..100 and query <=2000 characters are required')
     plan = _plan(drive_root, project_id, mode, system_repo_dir,
-                 registry._load(drive_root, strict=True)['projects'], authorize, page=(offset, limit, query))
+                 registry._load(drive_root, strict=True)['projects'], authorize,
+                 page=(offset, limit, query), inspect_bulk=inspect_bulk)
     targets = plan['targets']
-    targets_digest = _hash([project_id, mode, [
-        [t['id'], t['path'], t['identity'], t['exists'], t['protection'], t['access_denial'], t['sources']]
-        for t in targets]])
-    digest = _hash([project_id, mode, plan['lifecycle'], [
-        [t['id'], t['path'], t['identity'], t['exists'], t['protection'], t['access_denial'], t['sources']]
-        for t in targets]])
+    bulk = inspect_bulk and mode == 'complete'
+    targets_digest = _bulk_digest(project_id, mode, targets) if bulk else ''
+    digest = _hash([plan['lifecycle'], targets_digest]) if bulk else _hash([project_id, mode, plan['lifecycle'], _target_facts(targets)])
     if plan_sha256 and plan_sha256 != digest:
         raise ProjectManagementError('cleanup_plan_changed', 'Cleanup facts changed; refresh inspection before continuing', 409)
     matches = [t for t in targets if query.casefold() in t['path'].casefold()]
     page = matches[offset:offset + limit]
     next_offset = offset + len(page)
-    protected_total = sum(bool(t['protection']) or (t['risk']['status'] != 'unavailable' and bool(t['retain_reason'])) for t in targets)
+    protected_total = sum(bool(t['protection']) or (t['exists'] is True and t['risk']['status'] != 'unavailable' and bool(t['retain_reason'])) for t in targets)
     already_gone_total = sum(not t['protection'] and t['exists'] is False for t in targets)
     eligible_total = sum(bool(t['eligible']) for t in targets)
     needs_confirmation_total = sum(
@@ -282,15 +296,16 @@ def cleanup_plan_page(drive_root, project_id, mode='complete', system_repo_dir=N
         and not (t['risk']['status'] != 'unavailable' and bool(t['retain_reason']))
         and (t['kind'] not in {'project_created', 'generated_temp'} or (t['risk']['status'] != 'unavailable' and bool(t['warning'])))
         for t in targets)
-    uninspected_eligible_total = sum(bool(t['eligible']) and t['risk']['status'] == 'unavailable' for t in targets)
+    eligible_needs_confirmation_total = sum(bool(t['eligible'] and t['warning']) for t in targets)
     return {**plan, 'targets': page, 'total': len(targets), 'matched_total': len(matches),
-            'retained_total': protected_total,
+            'retained_total': sum(bool(t['protection']) for t in targets),
             'protected_total': protected_total, 'already_gone_total': already_gone_total,
             'eligible_total': eligible_total, 'needs_confirmation_total': needs_confirmation_total,
-            'uninspected_eligible_total': uninspected_eligible_total,
+            'eligible_needs_confirmation_total': eligible_needs_confirmation_total,
             'offset': offset, 'limit': limit, 'next_offset': next_offset if next_offset < len(matches) else None,
             'query': query, 'plan_sha256': digest, 'targets_sha256': targets_digest, 'immutable': False,
-            'selection_scope': 'Complete cleanup preselects eligible temporary material across all pages; unseen targets with unique work still require explicit confirmation.'}
+            'selection_scope': ('Complete cleanup preselects eligible temporary material across all pages. Loss warnings require separate confirmation.' if bulk
+                                else 'Only explicitly selected inspected targets are submitted; unseen targets are not selected.')}
 
 
 def _remove(target):
@@ -323,22 +338,29 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
         raise ProjectManagementError('invalid_cleanup', 'excluded_ids must be a list of target ids')
     if not isinstance(targets_sha256, str):
         raise ProjectManagementError('invalid_cleanup', 'targets_sha256 must be a string')
-    bulk_ids = set()
-    effective_selections = list(selections)
+    effective_selections = set(selections)
+    bulk_tokens = {}
     if select_all_eligible:
-        if not targets_sha256:
-            raise ProjectManagementError('invalid_cleanup', 'targets_sha256 is required with select_all_eligible')
-        structural = _plan(drive_root, project_id, mode, system_repo_dir,
-                           registry._load(drive_root, strict=True)['projects'], read_authorize, page=(0, 0, ''))
-        current_digest = _hash([project_id, mode, [
-            [t['id'], t['path'], t['identity'], t['exists'], t['protection'], t['access_denial'], t['sources']]
-            for t in structural['targets']]])
-        if current_digest != targets_sha256:
+        if mode != 'complete' or not targets_sha256:
+            raise ProjectManagementError('invalid_cleanup', 'Complete mode and targets_sha256 are required with select_all_eligible')
+        inspected = _plan(drive_root, project_id, mode, system_repo_dir,
+                          registry._load(drive_root, strict=True)['projects'], read_authorize,
+                          page=(0, 0, ''), selected_ids=effective_selections, inspect_bulk=True)
+        if _bulk_digest(project_id, mode, inspected['targets']) != targets_sha256:
             raise ProjectManagementError('cleanup_plan_changed', 'Cleanup facts changed; refresh inspection before continuing', 409)
-        excluded_set = set(excluded_ids)
-        bulk_ids = {t['id'] for t in structural['targets'] if t['eligible'] and t['id'] not in excluded_set}
-        effective_selections = list(dict.fromkeys([*selections, *bulk_ids]))
-    inspected = cleanup_plan(drive_root, project_id, mode, system_repo_dir, authorize=read_authorize, selected_ids=set(effective_selections))
+        excluded = set(excluded_ids)
+        bulk_tokens = {t['id']: t['selection_token'] for t in inspected['targets'] if t['eligible'] and t['id'] not in excluded}
+        effective_selections.update(bulk_tokens)
+    else:
+        inspected = cleanup_plan(drive_root, project_id, mode, system_repo_dir, authorize=read_authorize, selected_ids=effective_selections)
+
+    def confirmation_reason(target):
+        if not target['exists']:
+            return ''
+        tid = target['id']
+        if target['warning']:
+            return '' if confirmations.get(tid) == target['warning']['token'] else 'current_warning_confirmation_required'
+        return '' if bulk_tokens.get(tid, confirmations.get(tid)) == target['selection_token'] else 'current_selection_confirmation_required'
     risk_cache = {t['path']: t['risk'] for t in inspected['targets']}
     with registry._file_write_lock(registry._registry_path(drive_root)):
         data = registry._load(drive_root, strict=True)
@@ -349,17 +371,15 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
             raise ProjectManagementError('cleanup_in_progress', 'The saved Close cleanup is pending; wait for its outcome or POST action=clear_pending to the cleanup endpoint', 409)
         plan = _plan(drive_root, project_id, mode, system_repo_dir, data['projects'], read_authorize, risk_cache)
         targets = {t['id']: t for t in plan['targets']}
-        if set(effective_selections) - targets.keys():
+        if select_all_eligible and _bulk_digest(project_id, mode, plan['targets']) != targets_sha256:
+            raise ProjectManagementError('cleanup_plan_changed', 'Cleanup facts changed; refresh inspection before continuing', 409)
+        if effective_selections - targets.keys():
             raise ProjectManagementError('cleanup_plan_changed', 'Unknown target id; refresh the cleanup plan', 409)
         reasons = {}
         for tid, target in targets.items():
             reason = target['retain_reason'] or ('not_selected' if tid not in effective_selections else '')
-            if not reason and target['exists']:
-                if target['warning']:
-                    if confirmations.get(tid) != target['warning']['token']:
-                        reason = 'current_warning_confirmation_required'
-                elif tid not in bulk_ids and confirmations.get(tid) != target['selection_token']:
-                    reason = 'current_selection_confirmation_required'
+            if not reason:
+                reason = confirmation_reason(target)
             if not reason and authorize:
                 reason = authorize(target['path']) or ''
                 if not reason and target['risk'].get('arrangement') == 'linked':
@@ -414,17 +434,12 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
                             status, reason = 'changed_since_confirmation', 'target_identity_changed'
                         elif now['retain_reason']:
                             status, reason = 'refused', now['retain_reason']
-                        elif now['exists'] and (
-                            (now['warning'] and confirmations.get(tid) != now['warning']['token'])
-                            or (not now['warning'] and tid not in bulk_ids and confirmations.get(tid) != now['selection_token'])
-                        ):
+                        elif confirmation_reason(now):
                             status, reason = 'changed_since_confirmation', 'risk_or_selection_changed'
                         elif any(child['id'] != tid and _preview_overlap(now['identity'], child['identity']) in {'same', 'contains'}
                                  and (child['id'] not in effective_selections or child['retain_reason'] or reasons.get(child['id'])
                                       or any(r['id'] == child['id'] and r['status'] not in {'removed', 'already_absent'} for r in results)
-                                      or (child['exists'] and (
-                                          (child['warning'] and confirmations.get(child['id']) != child['warning']['token'])
-                                          or (not child['warning'] and child['id'] not in bulk_ids and confirmations.get(child['id']) != child['selection_token']))))
+                                      or confirmation_reason(child))
                                  for child in current['targets']):
                             status, reason = 'refused', 'contains_retained_target'
                         elif custody.contains_mount(now['identity']['resolved_path'], mounts):
@@ -471,7 +486,7 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
                 outcome['history_error'] = history_error
         result = {'id': operation, 'phase': 'finished', 'at': utc_now_iso(), 'project_id': project_id,
                   'mode': mode, 'decided_by': 'agent-confirmed' if decided_by == 'agent' else decided_by, 'results': results,
-                  'unselected_retained_count': len(targets) - len(set(effective_selections)),
+                  'unselected_retained_count': len(targets) - len(effective_selections),
                   **({'error': 'Cleanup history publication failed: ' + history_error} if history_error else {})}
         with registry._file_write_lock(registry._registry_path(drive_root)):
             saved = registry._load(drive_root, strict=True)

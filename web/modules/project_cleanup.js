@@ -57,7 +57,7 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
         const back = el('button', 'btn btn-default', 'Cancel'); back.type = 'button'; actions.append(back, submit);
         dialog.append(head, body, actions); backdrop.append(dialog); document.body.append(backdrop);
         let finished = false, reader = null, version = 0, plan = null, disposeFocus;
-        const selections = new Map(), confirmations = new Set(), excludedIds = new Set(), seen = new Set(), knownWarnings = new Map();
+        const selections = new Map(), confirmations = new Map(), excludedIds = new Set(), seen = new Set(), knownWarnings = new Map();
         const rowControls = [];
         let selectAllEligible = true, digest = '', targetsDigest = '', offset = 0, query = '';
         const isTargetSelected = target => {
@@ -75,13 +75,13 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
         signal?.addEventListener('abort', abort, { once: true });
         disposeFocus = bindDialogFocus(dialog, { initialFocus: mode, onEscape: abort, preventScroll: true });
         function rowStatusText(target, checked, confirmed) {
+            if (target.exists === false && !target.protection) return 'Already gone · path no longer exists on disk.';
             if (target.retain_reason) return `Protected · ${retainedExplanation(target.retain_reason)}${target.exists === false ? ' (path not present on disk)' : ''}`;
-            if (!target.exists) return 'Already gone · path no longer exists on disk.';
             if (target.warning) return checked && confirmed ? 'Will remove · loss confirmed.' : 'Needs confirmation · review local work below before removing.';
             return checked ? 'Will remove · ready temporary material.' : 'Eligible — not selected.';
         }
         function update() {
-            selectAllRow.hidden = mode.value === 'none';
+            selectAllRow.hidden = mode.value !== 'complete';
             if (mode.value === 'none') { submit.disabled = !closing; summary.textContent = 'All local files and resources will be retained. No cleanup will run.'; return; }
             const eligibleTotal = plan?.eligible_total ?? 0;
             const protectedTotal = plan?.protected_total ?? plan?.retained_total ?? 0;
@@ -96,15 +96,19 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
             const manualNonEligibleCount = [...selections.values()].filter(t => !t.eligible).length;
             const totalSelected = selectedEligibleCount + manualNonEligibleCount;
             const unconfirmed = [...knownWarnings.values()].filter(t => isTargetSelected(t) && !confirmations.has(t.id)).length;
-            const willRemoveCount = Math.max(0, totalSelected - unconfirmed);
+            const selectedWarnings = selectAllEligible
+                ? (plan?.eligible_needs_confirmation_total || 0) - [...excludedIds].filter(id => knownWarnings.has(id)).length
+                    + [...knownWarnings.values()].filter(t => !t.eligible && isTargetSelected(t)).length
+                : [...knownWarnings.values()].filter(isTargetSelected).length;
+            const confirmed = [...confirmations.keys()].filter(id => isTargetSelected(knownWarnings.get(id))).length;
+            const willRemoveCount = Math.max(0, totalSelected - selectedWarnings + confirmed);
             submit.disabled = !plan || (!closing && !totalSelected) || unconfirmed > 0;
             const page = plan?.targets || [];
             const pageUnavailable = page.filter(t => t.retain_reason || !t.exists).length;
             const pageSelectable = page.length - pageUnavailable;
-            const uninspected = selectAllEligible ? Math.max(0, (plan?.uninspected_eligible_total || 0) - [...excludedIds].filter(id => !seen.has(id)).length) : 0;
-            const projectScope = `Project-wide (${totalTargets} total): ${willRemoveCount} will remove · ${needsConfTotal} needs confirmation · ${protectedTotal} protected · ${alreadyGoneTotal} already gone.`;
-            const pageScope = ` This page: ${pageSelectable} selectable, ${pageUnavailable} retained.`;
-            const unseenNote = uninspected > 0 ? ` (${uninspected} selected on unseen pages will still require confirmation if unique work is found.)` : '';
+            const projectScope = `Project-wide (${totalTargets} total): ${willRemoveCount} will remove · ${Math.max(0, needsConfTotal - confirmed)} needs confirmation · ${protectedTotal} protected · ${alreadyGoneTotal} already gone.`;
+            const pageScope = ` This page: ${pageSelectable} selectable, ${pageUnavailable} unavailable.`;
+            const unseenNote = selectedWarnings - confirmed > unconfirmed ? ' Unconfirmed targets on other pages will stay unless you review and confirm them separately.' : '';
             const guidance = !totalSelected ? (closing ? ' Nothing selected: closing will keep all local material.' : (page.length && pageUnavailable === page.length ? ' Nothing selectable on this page. Read the reasons below; try another page or path filter.' : (page.length ? ' Select material to clean up.' : ' No recorded paths match this filter.'))) : '';
             summary.textContent = projectScope + pageScope + unseenNote + guidance + (unconfirmed ? ` Extra confirmation is still required for ${unconfirmed} selected target(s).` : '');
         }
@@ -151,11 +155,14 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
                     const row = el('section', 'pm-resource');
                     if (!seen.has(target.id)) {
                         seen.add(target.id);
-                        if (target.default_selected && !target.retain_reason && target.exists && (!target.eligible || !selectAllEligible)) selections.set(target.id, target);
+                        if (mode.value === 'reopen_friendly' && target.default_selected && !target.retain_reason && target.exists) selections.set(target.id, target);
                     }
                     if (target.warning && !target.retain_reason && target.exists) knownWarnings.set(target.id, target);
+                    else knownWarnings.delete(target.id);
+                    // A later inspection may find different local work without changing the structural plan.
+                    if (confirmations.get(target.id) !== target.warning?.token) confirmations.delete(target.id);
                     const statusNode = el('p', 'pm-cleanup-status');
-                    const isMissing = !target.retain_reason && !target.exists;
+                    const isMissing = target.exists === false && !target.protection;
                     let check = null, confirm = null;
                     if (isMissing) {
                         row.append(el('p', 'pm-cleanup-label', `${readable(target.kind)}`), el('p', 'pm-path', formatNativePath(target.path)));
@@ -179,7 +186,7 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
                             confirm.setAttribute('aria-label', `Confirm loss of local material at ${formatNativePath(target.path)}`);
                             extra.append(confirm, el('span', '', 'I understand this local material may be unique and confirm its removal.'));
                             confirm.onchange = () => {
-                                if (confirm.checked) confirmations.add(target.id); else confirmations.delete(target.id);
+                                if (confirm.checked) confirmations.set(target.id, target.warning.token); else confirmations.delete(target.id);
                                 statusNode.textContent = rowStatusText(target, check.checked, confirm.checked);
                                 update();
                             };
@@ -232,8 +239,8 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
             const explicitTargets = [...selections.values()].filter(t => !selectAllEligible || !t.eligible);
             if (!selectedEligibleCount && !explicitTargets.length) { if (closing) finish({}); return; }
             const confirmationEntries = new Map();
-            for (const t of explicitTargets) confirmationEntries.set(t.id, t.warning?.token || t.selection_token);
-            for (const t of knownWarnings.values()) if (isTargetSelected(t)) confirmationEntries.set(t.id, t.warning.token);
+            for (const t of explicitTargets) if (!t.warning) confirmationEntries.set(t.id, t.selection_token);
+            for (const [id, token] of confirmations) if (isTargetSelected(knownWarnings.get(id))) confirmationEntries.set(id, token);
             finish({
                 cleanup: {
                     mode: mode.value,

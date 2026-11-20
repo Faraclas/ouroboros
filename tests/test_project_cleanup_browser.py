@@ -307,7 +307,7 @@ def test_existing_task_workspace_cleanup_and_unavailable_page(cleanup_server, th
         search = dialog.get_by_label('Filter recorded paths')
         search.fill('retained-'); dialog.get_by_role('button', name='Find path', exact=True).click()
         expect(dialog.get_by_text('1–25 of 27 matching · 28 total', exact=True)).to_be_visible()
-        expect(dialog.get_by_role('status')).to_contain_text('This page: 0 selectable, 25 retained.')
+        expect(dialog.get_by_role('status')).to_contain_text('This page: 0 selectable, 25 unavailable.')
         expect(dialog.get_by_role('status')).to_contain_text('Nothing selectable on this page.')
         expect(submit).to_be_disabled()
         assert all(not c.is_enabled() for c in dialog.get_by_role('checkbox').all())
@@ -367,7 +367,7 @@ def test_project_wide_select_all_labels_and_absent_rows_without_paging(cleanup_s
     # Build a multi-page inventory (>25 targets) with protected, already gone,
     # attached external, and clean eligible targets on both page 1 and page 2.
     repo = pathlib.Path(__file__).parents[1]
-    ext = tmp_path / 'ext-checkout'; ext.mkdir(); (ext / 'local.txt').write_text('keep')
+    ext = tmp_path / 'ext-checkout'; init_clean_repo(ext); (ext / 'local.txt').write_text('keep')
     r.create_project(data, 'gamma', name='Project Attention like', working_dir=str(ext))
     clean_p1 = tmp_path / '00-clean-p1'; init_clean_repo(clean_p1)
     clean_p1_skip = tmp_path / '01-clean-p1-skip'; init_clean_repo(clean_p1_skip)
@@ -383,6 +383,12 @@ def test_project_wide_select_all_labels_and_absent_rows_without_paging(cleanup_s
     clean_p2 = [tmp_path / f'zz-clean-p2-{i}' for i in range(2)]
     for p in clean_p2:
         init_clean_repo(p)
+    f.record_target(data, 'gamma', str(repo), task_id='gamma-work', origin='pre_existing', note='Shared installation fixture')
+    # Establish the page boundary in the recorded footprint itself. The same
+    # artifact paths from the task result coalesce with these earlier entries.
+    for p in artifacts:
+        f.record_target(data, 'gamma', str(p), task_id='gamma-work', origin='pre_existing', note='Disposable browser fixture')
+    for p in clean_p2:
         f.record_workspace_creation(data, 'gamma', str(p), 'fixture-base')
     out = pathlib.Path(os.environ.get('CLEANUP_SCREENSHOTS', str(tmp_path / 'screenshots'))); out.mkdir(parents=True, exist_ok=True)
     errors = []
@@ -409,16 +415,42 @@ def test_project_wide_select_all_labels_and_absent_rows_without_paging(cleanup_s
         expect(dialog.get_by_text('Will remove · ready temporary material.', exact=False).first).to_be_visible()
         # Already-gone row has NO checkbox.
         assert dialog.get_by_role('checkbox', name=f'Remove {gone_path}', exact=True).count() == 0
+        external = dialog.get_by_role('checkbox', name=f'Remove {ext}', exact=True)
+        loss = dialog.get_by_role('checkbox', name=f'Confirm loss of local material at {ext}', exact=True)
+        external.check(); loss.check()
+        expect(dialog.get_by_text('Will remove · loss confirmed.', exact=True)).to_be_visible()
+        (ext / 'new-local.txt').write_text('new local work after the first confirmation')
+        path_filter = dialog.get_by_role('searchbox', name='Filter recorded paths')
+        path_filter.fill('ext-checkout')
+        dialog.get_by_role('button', name='Find path').click()
+        expect(dialog.get_by_role('navigation', name='Cleanup target pages')).to_contain_text('1–1 of 1 matching')
+        expect(external).to_be_checked()
+        expect(loss).not_to_be_checked()
+        expect(dialog.get_by_role('button', name='Close project', exact=True)).to_be_disabled()
+        external.uncheck()
+        path_filter.fill('')
+        dialog.get_by_role('button', name='Find path').click()
+        expect(dialog.get_by_role('navigation', name='Cleanup target pages')).to_contain_text('1–25 of 31 matching')
         # Top-level Select all eligible toggles all 4 eligible targets across pages.
         select_all = dialog.get_by_role('checkbox', name='Select all eligible across whole project (4 eligible)', exact=True)
         expect(select_all).to_be_checked()
         select_all.uncheck()
         expect(status).to_contain_text('Project-wide (31 total): 0 will remove')
+        dialog.get_by_role('button', name='Next', exact=True).click()
+        off_page = dialog.get_by_role('checkbox', name=f'Remove {clean_p2[0]}', exact=True)
+        expect(off_page).to_be_visible(); expect(off_page).not_to_be_checked()
+        expect(status).to_contain_text('Project-wide (31 total): 0 will remove')
+        dialog.get_by_role('button', name='Previous', exact=True).click()
+        expect(dialog.get_by_role('checkbox', name=f'Remove {clean_p1}', exact=True)).to_be_visible()
         select_all.check()
         expect(status).to_contain_text('Project-wide (31 total): 4 will remove')
         # Uncheck one row on page 1 -> 3 will remove across all pages (2 unseen on page 2).
         dialog.get_by_role('checkbox', name=f'Remove {clean_p1_skip}', exact=True).uncheck()
         expect(status).to_contain_text('Project-wide (31 total): 3 will remove')
+        dialog.get_by_role('button', name='Next', exact=True).click()
+        expect(dialog.get_by_role('checkbox', name=f'Remove {clean_p2[0]}', exact=True)).to_be_checked()
+        dialog.get_by_role('button', name='Previous', exact=True).click()
+        expect(dialog.get_by_role('checkbox', name=f'Remove {clean_p1_skip}', exact=True)).not_to_be_checked()
         assert dialog.evaluate('(n)=>n.scrollWidth<=n.clientWidth+1')
         page.screenshot(path=str(out / f'cleanup-project-wide-{theme}-{width}.png'))
         with page.expect_response(lambda response: response.url.endswith('/gamma/delete')) as resp:
