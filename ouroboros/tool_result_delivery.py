@@ -379,7 +379,7 @@ def _measured_frame(
     digests = [hashlib.sha256(text.encode("utf-8")).hexdigest() for text in texts]
     names = [str(row.get("fn_name") or row.get("tool") or "") for row in rows]
     facts = [typed_result_facts(row) for row in rows]
-    requests = [requested_result_view(row.get("tool_args")) for row in rows]
+    requests = [requested_result_view(row.get("tool_args"), selection=row.get("result_selection")) for row in rows]
 
     whole = measure(full)
     boundary, reserve, eighth = frame_bounds(whole)

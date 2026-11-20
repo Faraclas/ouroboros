@@ -364,6 +364,7 @@ class PluginAPIImpl:
         description: str,
         schema: Dict[str, Any],
         timeout_sec: int = 60,
+        result_selection: Dict[str, Any] | None = None,
     ) -> None:
         self._require("tool")
         short = _assert_tool_name(name)
@@ -374,6 +375,18 @@ class PluginAPIImpl:
         # keyword-only / zero-arg handlers). Dispatch reads this stored flag.
         from ouroboros.extension_process_runner import _handler_wants_ctx
         wants_ctx = _handler_wants_ctx(handler)
+        from ouroboros.tool_capabilities import legacy_result_selection, result_selection_policy
+        from ouroboros.contracts.plugin_api import api_generation
+        if result_selection is None:
+            manifest = getattr(self._loaded_skill, "manifest", None)
+            version = api_generation(manifest) if manifest is not None else self._plugin_api_generation
+            if tuple(int(part) for part in version.split(".")) < (2, 1):
+                # Preserve pre-2.1 window semantics at the legacy producer adapter.
+                result_selection = legacy_result_selection(schema)
+        try:
+            selection = result_selection_policy(result_selection, schema)
+        except ValueError as exc:
+            raise ExtensionRegistrationError(str(exc)) from exc
         with _lock:
             self._stage_surface_locked(_tools, self._staged.tools, full, {
                 "name": full,
@@ -382,6 +395,7 @@ class PluginAPIImpl:
                 "description": str(description or ""),
                 "schema": dict(schema or {}),
                 "timeout_sec": max(1, int(timeout_sec)),
+                "result_selection": selection,
                 "skill": self._skill,
                 **({"_model_credential_probe": self._model_credential_available}
                    if current_execution_mode() is ExecutionMode.IN_PROCESS else {}),

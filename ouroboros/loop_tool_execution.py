@@ -354,6 +354,7 @@ def _truncate_tool_result(
     source_ref: Optional[Dict[str, Any]] = None,
     *,
     allowance_chars: Optional[int] = None,
+    result_selection: Optional[dict] = None,
 ) -> str:
     """Compatibility renderer: the whole text unless a measured allowance is given.
 
@@ -367,7 +368,7 @@ def _truncate_tool_result(
     if allowance_chars is None:
         return str(result)
     text = reader_text(result)
-    head, tail = split_allowance(int(allowance_chars), requested_result_view(tool_args), len(text))
+    head, tail = split_allowance(int(allowance_chars), requested_result_view(tool_args, selection=result_selection), len(text))
     return render_result_view(text, head_chars=head, tail_chars=tail, tool_name=tool_name, source_ref=source_ref)[0]
 
 
@@ -775,6 +776,7 @@ def _execute_single_tool(
         "trace_ref": trace_ref, "round_id": correlation.get("round_id"),
         "result_meta": result_meta,
         "tool_result": tool_result,
+        "result_selection": dict(tool_result.result_selection) if tool_result.result_selection is not None else None,
     }
 
 

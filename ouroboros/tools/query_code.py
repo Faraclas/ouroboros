@@ -490,5 +490,5 @@ def get_tools() -> List[ToolEntry]:
                 "limit": {"type": "integer", "default": 40},
                 "offset": {"type": "integer", "default": 0},
             }, "required": ["op"]},
-        }, _query_code, timeout_sec=120),
+        }, _query_code, timeout_sec=120, result_selection={"arguments": ["limit", "offset"]}),
     ]

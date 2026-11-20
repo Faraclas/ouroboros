@@ -4,11 +4,11 @@ Read the section for the change class in hand; it names the enforcing test or re
 
 ### Tool registration and guard surfaces
 
-- A new Tool: export it from `get_tools()` as a `ToolEntry` with one explicit safety policy, its `safety_policy` or an `ouroboros/safety.py::TOOL_POLICY` entry (which outranks it): `skip` for trusted built-ins, `check` for opaque/outward-facing ones. Declare its capability class in `ouroboros/tool_capabilities.py`. Without one it falls through to `DEFAULT_POLICY = POLICY_CHECK`: a light-model call per invocation. A child profile gets it only when that narrower principal should.
+- Export new tools from `get_tools()` as `ToolEntry`; declare capabilities in `tool_capabilities.py` and one safety policy: `safety_policy` or `safety.py::TOOL_POLICY` (table wins). Use `skip` for trusted builtins, `check` for opaque/outward tools. Missing policy costs a light-model call (`DEFAULT_POLICY = POLICY_CHECK`). Child profiles receive only appropriate tools.
 - A tool writing the repo working tree also joins `_ROOT_ARG_REPO_WRITE_TOOLS` and canonicalizes its target paths (`_PATH_NORMALIZED_TOOLS` for a top-level `path`; `_payload_write_paths` plus `protected_repo_write_paths` for payload-borne ones): visibility checks pass without the write guard, so tests exercise the real guard chain (ARCHITECTURE §6 "Tool capability and execution").
 - Forwarding host wrappers take their own arguments positional-only; never rename or denylist a public tool keyword to avoid collision (`tests/test_pause_forwarding_names.py`).
 - Read-only producers report admitted absent targets as typed misses only after query, confinement, runtime and protected-artifact checks; denials and bad content remain errors (`tests/test_discovery_miss_warnings.py`).
-- New memory/data files: decide in the same change whether they enter LLM context (`context.py`).
+- Readers declare chosen defaults/windows via `ToolEntry.result_selection` (§6); new data names its context consumer (`context.py`).
 
 Enforcement: CHECKLISTS items 11(g) and 13 (`tool_registration`); `tests/test_tool_api_v2_public_surface.py` pins the public schema/registry contract and `tests/test_safety_policy.py::test_tool_policy_covers_all_builtin_tools` one policy per tool; CHECKLISTS item 22 (`context_building`) backstops the context decision.
 

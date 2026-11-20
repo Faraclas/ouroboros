@@ -886,6 +886,7 @@ def get_tools() -> List[ToolEntry]:
                 ctx, project_id, limit, offset, snapshot, source,
             ),
             timeout_sec=15,
+            result_selection={"arguments": ["limit", "offset"]},
         ),
         ToolEntry(
             "workpad_read",

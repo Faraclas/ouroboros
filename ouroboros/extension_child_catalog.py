@@ -128,6 +128,11 @@ def _validate_child_tool_descriptor(skill_name: str, item: Dict[str, Any]) -> Di
     if not isinstance(item.get("schema", {}), dict):
         raise ExtensionRegistrationError(f"out-of-process tool {name!r} schema must be an object")
     item["schema"] = dict(item.get("schema") or {})
+    from ouroboros.tool_capabilities import result_selection_policy
+    try:
+        item["result_selection"] = result_selection_policy(item.get("result_selection"), item["schema"])
+    except ValueError as exc:
+        raise ExtensionRegistrationError(str(exc)) from exc
     item["description"] = str(item.get("description") or "")
     try:
         item["timeout_sec"] = max(1, int(item.get("timeout_sec") or 60))

@@ -355,7 +355,7 @@ def ui_translation_tool_entries() -> list:
                 "language": _language_param(),
                 "limit": {"type": "integer", "default": _DEFAULT_MATCHES, "minimum": 1, "maximum": _MAX_MATCHES},
             }, "required": ["query"], "additionalProperties": False},
-        }, _search_ui_translations, safety_policy="skip"),
+        }, _search_ui_translations, safety_policy="skip", result_selection={"arguments": ["limit"]}),
         ToolEntry("pin_ui_translation", {
             "name": "pin_ui_translation",
             "description": (

@@ -1323,7 +1323,7 @@ def get_tools() -> List[ToolEntry]:
                 "bucket": {"type": "string", "description": "Required only for root=skill_payload."},
                 "skill_name": {"type": "string", "description": "Required only for root=skill_payload."},
             }, "required": ["path"]},
-        }, _read_file),
+        }, _read_file, result_selection={"default": "chosen"}),
         ToolEntry("list_files", {
             "name": "list_files",
             "description": "List a directory, or use depth/include for a bounded live tree. Gaps make complete=false. "

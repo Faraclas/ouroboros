@@ -1183,7 +1183,7 @@ class ToolRegistry:
                 handoff["settled"] = (handoff.get("settled") is True
                     or handoff.get("local_extension_returned") is True
                     or handoff.get("mcp_call_returned") is True)
-                return typed
+                return replace(typed, result_selection=handoff.get("result_selection", {"view": None}))
         except OwnerPauseRefused as exc:
             from ouroboros.tools.tool_result import launch_refusal_result
 
@@ -1218,6 +1218,10 @@ class ToolRegistry:
             is_mcp = is_mcp_tool_name(name)
         else:
             is_mcp = False
+        if handoff is not None:
+            from ouroboros.tool_capabilities import declared_result_view
+            declaration = entry.result_selection if entry is not None else (ext_tool or {}).get("result_selection")
+            handoff["result_selection"] = declared_result_view(args, declaration)
         _resource_gate = registry_guards._capability_resource_guard_result(
             self._ctx, name, args, ext_tool, is_mcp)
         if _resource_gate is not None:
@@ -1327,7 +1331,10 @@ class ToolRegistry:
             miss = self._mcp_name_miss(name)
             if miss is not None:
                 return miss
-            return extension_dispatch._dispatch_mcp_tool_result(self._ctx, name, args)
+            result = extension_dispatch._dispatch_mcp_tool_result(self._ctx, name, args)
+            if handoff is not None and result.result_selection is not None:
+                handoff["result_selection"] = dict(result.result_selection)
+            return result
         if entry is None:
             if ext_tool and callable(ext_tool.get("handler")):
                 return extension_dispatch._dispatch_extension_tool_result(self._ctx, name, ext_tool, args, handoff=handoff)
@@ -1486,9 +1493,11 @@ class ToolRegistry:
     def execute_result(self, name: str, args: Dict[str, Any]) -> ToolResult:
         """Dispatch once and adapt only producers that still return legacy text."""
         result = self._execute_legacy_text(name, args)
-        if isinstance(result, ToolResult):
-            return result
-        return LegacyTextResultAdapter.from_text(name, result)
+        typed = result if isinstance(result, ToolResult) else LegacyTextResultAdapter.from_text(name, result)
+        if typed.result_selection is None:
+            from ouroboros.tool_capabilities import declared_result_view
+            typed = replace(typed, result_selection=declared_result_view(args))
+        return typed
 
     def execute(self, name: str, args: Dict[str, Any]) -> str:
         """Compatibility ABI: return the exact model-facing text projection."""

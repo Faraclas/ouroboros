@@ -398,11 +398,11 @@ def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry(name="ocr_pdf", schema=_pdf_text_schema("ocr_pdf", (
             "Extract the embedded text layer of a local PDF (historical alias of "
-            "extract_pdf_text).")), handler=_ocr_pdf, timeout_sec=120, alias_for="extract_pdf_text"),
+            "extract_pdf_text).")), handler=_ocr_pdf, timeout_sec=120, alias_for="extract_pdf_text", result_selection={"arguments": ["start_char"]}),
         # ocr_pdf's read-only skip lives in safety.TOOL_POLICY; one declaration per tool, never both.
         ToolEntry(name="extract_pdf_text", schema=_pdf_text_schema(
             "extract_pdf_text", "Extract the embedded text layer of a local PDF."),
-            handler=_ocr_pdf, timeout_sec=120, safety_policy="skip"),
+            handler=_ocr_pdf, timeout_sec=120, safety_policy="skip", result_selection={"arguments": ["start_char"]}),
         ToolEntry(
             name="youtube_transcript",
             schema={

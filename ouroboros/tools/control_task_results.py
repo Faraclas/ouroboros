@@ -253,7 +253,7 @@ def get_task_result_entry() -> ToolEntry:
             "view_head_chars": {"type": "integer", "minimum": 0, "description": "Chars of this answer's head to show in this turn when the complete answer cannot be delivered whole (pair with view_tail_chars). The complete answer is kept as an exact, readable source either way; this only shapes the first view and never changes source_start_char/source_end_char selection."},
             "view_tail_chars": {"type": "integer", "minimum": 0, "description": "Chars of this answer's tail to show in this turn (see view_head_chars)."},
         }},
-    }, _get_task_result)
+    }, _get_task_result, result_selection={"arguments": ["source_start_char", "source_end_char", "view", "authority_fields"]})
 
 
 @completed_local_read

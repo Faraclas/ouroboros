@@ -38,6 +38,7 @@ from ouroboros.secret_masking import (
 from ouroboros.mcp_headers import mask_headers, validate_headers
 from ouroboros.mcp_schema import filter_schema_literals, redact_metadata, tool_metadata
 from ouroboros.tools.tool_result import ToolResult
+from ouroboros.tool_capabilities import declared_result_view, legacy_result_selection
 from ouroboros.platform_layer import IS_WINDOWS
 from ouroboros.config import get_runtime_mode
 from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
@@ -1470,6 +1471,7 @@ class MCPManager:
             timeout = self._tool_timeout_sec
         if resolution.status != "callable":
             return resolution.refusal(prefixed_name)
+        selection = declared_result_view(arguments, legacy_result_selection(tool.schema))
         from ouroboros.tool_custody import external_handoff
         confirmed = external_handoff("mcp_transport")
         try:
@@ -1527,6 +1529,7 @@ class MCPManager:
             code=result.code,
             text=text,
             meta={**dict(result.meta), "dynamic_provider": True},
+            result_selection=selection,
         )
 
     def call_tool(self, prefixed_name: str, arguments: Dict[str, Any]) -> str:

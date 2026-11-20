@@ -10,7 +10,7 @@ with visible evidence.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from typing import Any, Callable, Collection, Dict, Iterable, Mapping, Tuple
@@ -42,6 +42,13 @@ class ToolEntry:
     # table. A ``safety.TOOL_POLICY`` entry outranks it, an invalid value is
     # checked, and extension/MCP dispatch passes none: their tools stay checked.
     safety_policy: str = ""
+    # Producer-owned result form: default chosen/automatic and optional window
+    # argument names. Empty means automatic, not a guess from path/ID spelling.
+    result_selection: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        from ouroboros.tool_capabilities import result_selection_policy
+        object.__setattr__(self, "result_selection", result_selection_policy(self.result_selection, self.schema))
 
 
 class DuplicateToolNameError(ValueError):

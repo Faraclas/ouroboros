@@ -1528,6 +1528,7 @@ def get_tools() -> List[ToolEntry]:
             handler=_handle_list_skills,
             is_code_tool=False,
             timeout_sec=30,
+            result_selection={"arguments": ["offset"]},
         ),
         ToolEntry(
             name="skill_review",
