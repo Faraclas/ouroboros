@@ -382,13 +382,62 @@ PAGEABLE_TOOL_RESULTS: frozenset[str] = frozenset({
 })
 
 
-def requested_result_view(tool_args: Any) -> Optional[tuple[Optional[int], Optional[int]]]:
+def result_selection_policy(value: Any, schema: Any) -> dict:
+    """Normalize the optional producer declaration against its public arguments."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or set(value) - {"default", "arguments"}:
+        raise ValueError("result_selection must declare only default and arguments")
+    default, arguments = value.get("default", "automatic"), value.get("arguments", [])
+    properties = (schema or {}).get("parameters", schema or {}).get("properties", {})
+    if default not in ("chosen", "automatic") or not isinstance(arguments, (list, tuple)):
+        raise ValueError("result_selection needs chosen/automatic default and argument names")
+    if any(not isinstance(name, str) or name not in properties for name in arguments):
+        raise ValueError("result_selection arguments must name public schema properties")
+    return {"default": default, "arguments": list(arguments)}
+
+
+def legacy_result_selection(schema: Any) -> dict:
+    """Adapt pre-declaration producers without adding their grammar to live policy."""
+    return {"arguments": sorted(EXPLICIT_RANGE_ARGS & (schema or {}).get("properties", {}).keys())}
+
+
+def declared_result_view(tool_args: Any, declaration: Any = None) -> dict:
+    """Resolve producer-declared forms once at dispatch; unknown producers are automatic.
+
+    ``default=chosen`` selects the producer's complete/default page. Otherwise
+    only its declared ``arguments`` select a window. Head/tail always wins.
+    No path, ID, text or tool-name inference belongs at this shared boundary.
+    """
+    args = tool_args if isinstance(tool_args, dict) else {}
+    policy = declaration if isinstance(declaration, dict) else {}
+    head, tail = args.get(RESULT_VIEW_HEAD_ARG), args.get(RESULT_VIEW_TAIL_ARG)
+    if head is not None or tail is not None:
+        view = [_view_chars(head), _view_chars(tail)]
+    elif policy.get("default") == "chosen" or set(policy.get("arguments") or ()) & args.keys():
+        view = [None, None]
+    else:
+        view = None
+    return {"view": view}
+
+
+def requested_result_view(tool_args: Any, *, selection: Any = None) -> Optional[tuple[Optional[int], Optional[int]]]:
     """What form the call asked its result to take: ``None`` when unsolicited.
 
     ``(head, tail)`` when the call named a head/tail view (either may be 0);
     ``(None, None)`` when it chose a range or page through other declared range
     parameters, so the produced form itself is the requested one.
     """
+    if selection is not None:
+        view = selection.get("view") if isinstance(selection, dict) else None
+        if isinstance(view, (list, tuple)) and len(view) == 2:
+            if view == [None, None] or view == (None, None):
+                return (None, None)
+            if all(type(value) is int and value >= 0 for value in view):
+                return tuple(view)
+        return None
+    # Unstamped historical rows retain their historical argument-only meaning.
+    # New dispatches always stamp a resolved selection, even for unknown tools.
     if not isinstance(tool_args, dict):
         return None
     head, tail = tool_args.get(RESULT_VIEW_HEAD_ARG), tool_args.get(RESULT_VIEW_TAIL_ARG)

@@ -13,11 +13,12 @@ from ouroboros.tool_result_record import (
 )
 
 
-def result_row(invocation_id="first", *, facts=None):
+def result_row(invocation_id="first", *, facts=None, selection=None):
     execution = {
         "invocation_id": invocation_id, "tool_call_id": "reused-provider-id",
         "execution_id": "execution", "round_id": "round", "task_attempt": 2,
         "trace_ref": {"manifest_ref": {"path": f"{invocation_id}.json", "sha256": invocation_id}},
+        "result_selection": selection,
     }
     text = "Identical producer text, no outcome to parse.\r\n"
     return {
@@ -34,7 +35,8 @@ def transcript():
                 "name": "read_file", "arguments": json.dumps({KEY: "ordinary user argument"}),
             },
         }], "reasoning_details": [{"type": "reasoning.text", "text": "Reasoning", KEY: "opaque reasoning"}]},
-        result_row(facts={"status": "error", "code": "PROCESS_EXIT_NONZERO", "is_error": True, "exit_code": 17}),
+        result_row(facts={"status": "error", "code": "PROCESS_EXIT_NONZERO", "is_error": True, "exit_code": 17},
+                   selection={"view": [None, None]}),
     ]
 
 
@@ -125,6 +127,7 @@ def test_actual_provider_builders_remove_only_host_row_metadata(monkeypatch, pro
         sent = payload["messages"]
     assert all(KEY not in row for row in sent)
     assert messages == original and read_tool_result_record(messages[-1])["facts"]["exit_code"] == 17
+    assert read_tool_result_record(messages[-1])["result_selection"] == {"view": [None, None]}
     if provider == "anthropic":
         assert sent[1]["content"][-1]["input"][KEY] == "ordinary user argument"
         assert sent[2]["content"][0]["content"] == messages[-1]["content"]

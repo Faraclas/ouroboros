@@ -27,7 +27,8 @@ from ouroboros.skill_token import SkillToken
 # refused a NEW PASS at issuance (``extension_new_pass_admission_error``).
 # 2.0 absorbs 1.4's presence capability (reviewed transport skills may submit
 # authenticated non-owner presence events through the Host Service ceiling).
-PLUGIN_API_VERSION = "2.0"
+# 2.1 adds optional producer-declared selected-result forms.
+PLUGIN_API_VERSION = "2.1"
 # The generation an extension WITHOUT the manifest field binds against —
 # "absent ≡ 1.3 by construction" (owner-ratified §6.1-Δ; deliberately NOT 1.4).
 LEGACY_PLUGIN_API_GENERATION = "1.3"
@@ -199,6 +200,7 @@ def plugin_api_surface_fingerprint() -> str:
 # bumped and the new fingerprint recorded here.
 PLUGIN_API_SURFACE_FINGERPRINTS: Dict[str, str] = {
     "2.0": "03fabdf4334e6b2bde217b4cb83a80faaebc773ddce870546dd2108b75de17ca",
+    "2.1": "a073e9bb33c323c1f8d46eadbdc7bf2627d5ec125ae9ddbc8e9b9a168d6dc2c9",
 }
 
 
@@ -339,9 +341,14 @@ class PluginAPI(Protocol):
         description: str,
         schema: Dict[str, Any],
         timeout_sec: int = 60,
+        result_selection: Dict[str, Any] | None = None,
     ) -> None:
         """Register a namespaced tool.
 
+        ``result_selection`` optionally declares ``default: chosen`` for a
+        complete exact read/default page, or ``arguments: [name, ...]`` for
+        caller-selected windows. Omitted means automatic/bulk. Head/tail choices
+        take precedence. This shapes delivery, never grants access or proves fit.
         ``name`` is alphanumeric/underscore and <=24 chars. Handlers may be sync
         or async; async handlers run on a helper-thread event loop with timeout.
         A JSON result may carry ``observed_effect: true`` only after the producer

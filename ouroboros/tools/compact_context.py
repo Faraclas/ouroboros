@@ -323,5 +323,6 @@ def get_tools() -> List[ToolEntry]:
             },
             handler=_compact_context,
             timeout_sec=15,
+            result_selection={"arguments": ["offset"]},
         ),
     ]

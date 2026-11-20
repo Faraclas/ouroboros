@@ -375,7 +375,7 @@ def get_tools() -> List[ToolEntry]:
                 "offset": {"type": "integer", "minimum": 0, "description": "Zero-based list offset."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Rows per list page (max 20; responses stay bounded)."},
             }, "required": ["action"], "additionalProperties": False},
-        }, _manage_schedules, timeout_sec=30),
+        }, _manage_schedules, timeout_sec=30, result_selection={"arguments": ["limit", "offset"]}),
     ]
 
 

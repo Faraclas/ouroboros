@@ -1135,7 +1135,7 @@ def chronicle_tools() -> List[ToolEntry]:
         ToolEntry("memory_read", schema(
             "memory_read",
             "Read memory by address, as text: a room's records and active marks (first line: room and head), one record with its stamp and corrections (node_id; an account also names each source's version, what changed in it since, and the accounts a record informs; revision= reads a record as of one revision), a room's chat rows verbatim (rows=true with from/to, task_id or period), or a retained source (source_ref). Every page fits one tool result and its second line names the continuation (next_after_seq, next: from=…, or next_start), older to newer; chat rows in stored order. Choose the depth yourself.",
-            read, []), _memory_read),
+            read, []), _memory_read, result_selection={"arguments": ["after_seq", "from", "start", "to", "node_id", "source_ref"]}),
         ToolEntry("memory_mark", schema(
             "memory_mark",
             "Mark what matters in my own words on one target: a chronicle record (node_id), a chat row (address), a task (task_id) or a retained source (source_ref); room or global scope; an optional quote is verified as an exact substring of the target; an optional anchor ties the mark to an action, so its words also meet me in that action's result. Change a mark's visible detail (mark_id, visibility full/meaning, reason) or release it (release_id, reason) when it no longer holds.",

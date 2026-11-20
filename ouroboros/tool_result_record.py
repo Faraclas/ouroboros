@@ -54,6 +54,8 @@ def make_tool_result_record(
         "content_sha256": hashlib.sha256(delivered_text.encode("utf-8")).hexdigest(),
         "invocation": copy.deepcopy(invocation_fields(dict(exec_result))),
         "facts": _facts(facts),
+        **({"result_selection": copy.deepcopy(exec_result["result_selection"])}
+           if exec_result.get("result_selection") is not None else {}),
         "trace_ref": copy.deepcopy(exec_result.get("trace_ref") or {}),
         "source_ref": copy.deepcopy(dict(source_ref or {})),
     }

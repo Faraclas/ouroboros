@@ -602,7 +602,7 @@ def get_tools() -> List[ToolEntry]:
     from ouroboros.tools.github_write import SCHEMA as WRITE_SCHEMA
 
     tools = [
-        ToolEntry("github_read", READ_SCHEMA, _github_read),
+        ToolEntry("github_read", READ_SCHEMA, _github_read, result_selection={"arguments": ["limit", "tail_lines"]}),
         ToolEntry("github_write", WRITE_SCHEMA, _github_write),
         ToolEntry("pr_merge", {
             "name": "pr_merge",

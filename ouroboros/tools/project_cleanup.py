@@ -72,4 +72,4 @@ def cleanup_tool_entries():
             'selections': {'type': 'array', 'items': {'type': 'string'}},
             'confirmations': {'type': 'object', 'additionalProperties': {'type': 'string'}},
         }, 'required': ['project_id'], 'additionalProperties': False},
-    }, _project_cleanup, safety_policy='check')]
+    }, _project_cleanup, safety_policy='check', result_selection={"arguments": ["limit", "offset"]})]

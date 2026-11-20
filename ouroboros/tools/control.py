@@ -265,7 +265,7 @@ def get_tools() -> List[ToolEntry]:
             "parameters": {"type": "object", "properties": {
                 "limit": {"type": "integer", "default": 50, "description": "Recent-project slice size (up to 200); ancestors are added."},
             }},
-        }, _list_projects),
+        }, _list_projects, result_selection={"arguments": ["limit"]}),
         ToolEntry("tell_task", {
             "name": "tell_task",
             "description": "Send a note to another work, with optional exact owner quotes selected from "
@@ -320,7 +320,7 @@ def get_tools() -> List[ToolEntry]:
                 "date_to": {"type": "string", "default": "", "description": "Inclusive ISO-8601 upper timestamp bound"},
                 "snapshot": {"type": "string", "default": "", "description": "Opaque snapshot returned by the first page; reuse it with offset to refuse shifted/mixed pages"},
             }, "required": [], "additionalProperties": False},
-        }, _chat_history),
+        }, _chat_history, result_selection={"arguments": ["offset"]}),
         ToolEntry("update_scratchpad", {
             "name": "update_scratchpad",
             "description": "Append a block to your working memory (scratchpad). Each call adds a "

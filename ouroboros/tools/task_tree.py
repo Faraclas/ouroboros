@@ -202,7 +202,7 @@ def get_tools() -> List[ToolEntry]:
             }},
         }, lambda ctx, limit=40, offset=0, snapshot="": _tree_read(
             ctx, limit, offset, snapshot,
-        ), timeout_sec=15),
+        ), timeout_sec=15, result_selection={"arguments": ["limit", "offset"]}),
     ]
 
 

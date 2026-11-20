@@ -615,6 +615,8 @@ class ToolResult:
     meta: Mapping[str, Any] = field(default_factory=dict)
     producer_text: str | None = None
     host_annotations: tuple[str, ...] = ()
+    # Delivery envelope, not part of the producer outcome's value equality. None is legacy.
+    result_selection: Mapping[str, Any] | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.code, str) or not _CODE_RE.fullmatch(self.code):
@@ -666,6 +668,8 @@ class ToolResult:
         if len(encoded.encode("utf-8")) > total_limit:
             raise ValueError("tool result host metadata exceeds its reserved overhead")
         object.__setattr__(self, "meta", MappingProxyType(json.loads(encoded)))
+        if self.result_selection is not None:
+            object.__setattr__(self, "result_selection", MappingProxyType(json.loads(json.dumps(dict(self.result_selection)))))
 
 
 def _replace_tool_result(
@@ -687,6 +691,7 @@ def _replace_tool_result(
         meta=meta,
         producer_text=result.producer_text,
         host_annotations=result.host_annotations,
+        result_selection=result.result_selection,
     )
 
 

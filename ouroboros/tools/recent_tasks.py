@@ -584,7 +584,7 @@ def get_tools() -> List[ToolEntry]:
                 },
                 "required": [],
             },
-        }, _handle_recent_tasks),
+        }, _handle_recent_tasks, result_selection={"arguments": ["limit", "offset"]}),
         ToolEntry("live_roots", {
             "name": "live_roots",
             "description": "Read the full paginated host-listed live-root catalogue, grouped by project in the same projection used for exact-live messaging.",
@@ -597,5 +597,5 @@ def get_tools() -> List[ToolEntry]:
                 },
                 "required": [],
             },
-        }, _handle_live_roots),
+        }, _handle_live_roots, result_selection={"arguments": ["limit", "offset"]}),
     ]

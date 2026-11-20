@@ -1,4 +1,4 @@
-"""Project Work Items PluginAPI 2.0 adapter; no controller or task-data reader."""
+"""Project Work Items PluginAPI 2.1 adapter; no controller or task-data reader."""
 from __future__ import annotations
 
 import asyncio
@@ -127,7 +127,10 @@ def register(api):
                 ("item_id", "text", "request_id"))),
     )
     for name, handler, description, tool_schema in tools:
-        api.register_tool(name, handler, description=description, schema=tool_schema, timeout_sec=30)
+        selection = ({"default": "chosen"} if name == "board_get" else
+                     {"arguments": ["offset", "limit"]} if name == "board_find" else {})
+        api.register_tool(name, handler, description=description, schema=tool_schema,
+                          timeout_sec=30, result_selection=selection)
 
     async def route_read(request, operation):
         def read():

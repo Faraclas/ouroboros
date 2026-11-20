@@ -338,4 +338,4 @@ def get_tools():
             "max_chars": {"type": "integer", "minimum": 0, "default": 0,
                           "description": "Rendered character limit; zero adds no limit beyond the history capture bound."},
         }},
-    }, _vcs_read, is_code_tool=True, safety_policy="skip")]
+    }, _vcs_read, is_code_tool=True, safety_policy="skip", result_selection={"arguments": ["max_chars"]})]

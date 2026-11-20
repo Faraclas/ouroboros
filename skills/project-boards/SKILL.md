@@ -1,9 +1,9 @@
 ---
 name: project-boards
 title: Project Work Items
-version: 0.1.2
+version: 0.1.3
 type: extension
-plugin_api: '2.0'
+plugin_api: '2.1'
 entry: plugin.py
 os: any
 permissions: [tool, route]

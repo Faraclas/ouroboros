@@ -54,6 +54,7 @@ def test_tool_descriptor_owner_facades_preserve_identity():
         ("mutates_worktree", False),
         ("alias_for", ""),
         ("safety_policy", ""),
+        ("result_selection", "factory:dict"),
     )
     assert field_contract(tool_context.ToolContext) == (
         ("repo_dir", "required"),

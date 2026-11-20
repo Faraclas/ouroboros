@@ -599,4 +599,5 @@ def get_tools():
             "save_as": {"type": "string", "description": "One plain immutable artifact filename in the CALLING task."},
             "format": {"type": "string", "enum": ["json", "text"], "default": "json"},
             **RESULT_VIEW_PARAMS,
-        }}}, _query_data, timeout_sec=30)]
+        }}}, _query_data, timeout_sec=30,
+        result_selection={"arguments": ["select", "max_rows", "max_bytes", "tail", "sha256"]})]

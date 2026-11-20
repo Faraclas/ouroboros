@@ -63,6 +63,7 @@ def test_tool_entry_is_shallow_frozen():
         "alias_for": str,
         # A built-in's own safety routing (tests/test_safety_policy.py).
         "safety_policy": str,
+        "result_selection": typing.Dict[str, typing.Any],
     }
     fields = {item.name: item for item in dataclasses.fields(ToolEntry)}
     assert fields["is_code_tool"].default is False
@@ -72,6 +73,8 @@ def test_tool_entry_is_shallow_frozen():
     assert fields["mutates_worktree"].default is False
     assert type(fields["mutates_worktree"].default) is bool
     assert fields["safety_policy"].default == ""
+    assert fields["result_selection"].default_factory() == {}
+    assert entry.result_selection == {"default": "automatic", "arguments": []}
 
     with pytest.raises(dataclasses.FrozenInstanceError):
         entry.name = "changed"

@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Sequen
 from ouroboros import context_compaction as compaction
 from ouroboros.context_budget import (HOST_CONTEXT_KIND_KEY, ContextReclaimRequest, ContextReclaimReceipt, _AtomicUnit,
                                       _Selection, bound_host_row, host_row_intact)
-from ouroboros.tool_result_record import read_tool_result_record
+from ouroboros.tool_result_record import TOOL_RESULT_RECORD_KEY, read_tool_result_record
 
 log = logging.getLogger(__name__)
 # The one record of superseded host state retired at a departure; a later record supersedes it.
@@ -245,7 +245,13 @@ def chosen_read_units(messages, units, *, usable_input=None, density=1.0):
             except (ValueError, TypeError):
                 continue
             row = results.get(str(call.get("id") or ""))
-            if row is None or requested_result_view(arguments) is None:
+            if row is None:
+                continue
+            record = read_tool_result_record(row)
+            selection = record.get("result_selection") if record["state"] == "recorded" else None
+            if TOOL_RESULT_RECORD_KEY in row and record["state"] != "recorded":
+                selection = {"view": None}  # changed/foreign facts never regain protection
+            if requested_result_view(arguments, selection=selection) is None:
                 continue
             cost = compaction._context_tokens_for_messages([row], density) - compaction._context_tokens_for_messages(
                 [{**row, "content": ""}], density)

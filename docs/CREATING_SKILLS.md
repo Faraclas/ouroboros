@@ -1520,25 +1520,20 @@ The recommended closed-loop workflow is:
 
 ## PluginAPI reference
 
-The frozen ABI is documented in
-[`ouroboros/contracts/plugin_api.py`](../ouroboros/contracts/plugin_api.py).
-This section shows the practical shape.
+The [frozen ABI](../ouroboros/contracts/plugin_api.py) owns signatures. Manifest
+`plugin_api: "2.1"` requires this major and at least this minor; 2.0 remains
+supported. The object form adds a closed, execution-mode-checked capability list:
+`plugin_api: {version: "2.1", capabilities: [register_tool, subscribe_event]}`.
+Absent means legacy 1.3: an existing hash-bound PASS still loads, but a new
+review, owner-attestation or install-basis acceptance requires the declaration.
 
-Extensions declare the PluginAPI generation they bind against in the manifest
-(PluginAPI 2.0, ABI 7.0):
-
-```yaml
-plugin_api: "2.0"            # major strict; minor = required minimum
-# or, with required capabilities (closed set, validated per execution mode):
-# plugin_api:
-#   version: "2.0"
-#   capabilities: [register_tool, subscribe_event]
-```
-
-A payload without the field binds the legacy "1.3" generation by
-construction: an already-reviewed payload keeps loading on its existing
-hash-bound review PASS, but a NEW review PASS (LLM review, owner attestation,
-or an install-basis acceptance) is refused until the field is declared.
+In 2.1, `register_tool(result_selection={"default": "chosen"})` marks an exact
+read/default page; `{"arguments": ["offset", "limit"]}` marks explicit windows
+using that producer's public schema. Omitted means automatic/bulk. Head/tail
+choices win. Selection affects delivery, never access or physical limits; declare
+2.1 when using this keyword. Pre-2.1 payloads retain their old schema-declared
+range-key behavior through a registration adapter; explicit policies override it.
+In-process and child catalogs carry the same resolved declaration.
 
 ```python
 def register(api):

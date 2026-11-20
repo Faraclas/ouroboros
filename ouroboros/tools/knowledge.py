@@ -269,7 +269,7 @@ def get_tools() -> List[ToolEntry]:
             "parameters": {"type": "object", "properties": {"topic": topic, "scope": scope,
                 "start_char": {"type": "integer", "description": "Optional half-open character range start in the exact complete note (omitted = 0). Use ranges to read a large source in parts."},
                 "end_char": {"type": "integer", "description": "Exclusive range end (omitted = the end; a value past the end is lowered to it); complete_chars and revision are returned with every view. Omit both bounds, or pass 0 and 0, for the full note."}}, "required": ["topic"]},
-        }, _knowledge_read),
+        }, _knowledge_read, result_selection={"default": "chosen"}),
         ToolEntry("knowledge_write", {
             "name": "knowledge_write",
             "description": "Create, revise, append or reversibly archive durable Markdown understanding. YAML carries type, optional title and an authored summary; unknown metadata survives. An active note's summary stays resident in the index; body text never replaces it. Archive hides default navigation rows while direct reads and explicit Presence topics remain available. Restore removes archive metadata, even malformed values in readable YAML, from CURRENT text including subsequent edits. Ordinary writes preserve the lifecycle-owned archive field. Legacy index prose stays until an authored global overview retires it.",
