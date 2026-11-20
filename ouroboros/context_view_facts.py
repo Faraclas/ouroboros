@@ -73,9 +73,19 @@ def window_projection(record):
     if record.retired_ack:
         stamp = str(record.retired_ack.get("ts") or "date unknown").replace("T", " ")[:16]
         text += f"; old confirmation {record.retired_ack['window_tokens']:,}, {stamp} — not used"
-    return dict(tokens=limit.tokens if limit else None, kind=limit.kind if limit else "unknown",
-                reserve=record.reserve, source=source, observed_at=observed, contradiction=contradiction,
-                retired_ack=record.retired_ack, usable=record.usable, boundary_tokens=record.boundary, text=text)
+    projection = dict(tokens=limit.tokens if limit else None, kind=limit.kind if limit else "unknown",
+                      reserve=record.reserve, source=source, observed_at=observed, contradiction=contradiction,
+                      retired_ack=record.retired_ack, usable=record.usable, boundary_tokens=record.boundary, text=text)
+    if record.catalog_details:
+        projection["catalog_details"] = dict(record.catalog_details)
+        projection["text"] += (f"; Copilot catalog API {record.catalog_details.get('version', 'unknown')}"
+                               " (inference uses no catalog version header; advertised, not a send guarantee)")
+    if record.pricing_tiers:
+        tiers = record.pricing_tiers
+        parts = [f"{name.replace('_', ' ')} ≤ {tiers[name]:,}" for name in ("default", "long_context") if name in tiers]
+        projection.update(pricing_tiers=dict(tiers), declared=[asdict(item) for item in record.declared])
+        projection["text"] += "; Copilot catalog pricing tiers: " + ", ".join(parts) + " input tokens (not hard limits)"
+    return projection
 
 
 def window_fact(plan, reserve):

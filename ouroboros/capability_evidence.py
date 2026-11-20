@@ -151,6 +151,10 @@ class CapabilityEvidence:
     window_kind: str = "total"  # metadata may explicitly state an input-only limit
     retired_ack: Dict[str, Any] = field(default_factory=dict)
     server_window: Dict[str, Any] = field(default_factory=dict)
+    declared_limits: List[Dict[str, Any]] = field(default_factory=list)
+    pricing_tiers: Dict[str, int] = field(default_factory=dict)
+    catalog_details: Dict[str, Any] = field(default_factory=dict)
+    metadata_scope: str = ""
 
     def to_json(self) -> Dict[str, Any]:
         return {
@@ -171,6 +175,10 @@ class CapabilityEvidence:
             "window_kind": self.window_kind,
             "retired_ack": self.retired_ack,
             "server_window": self.server_window,
+            "declared_limits": self.declared_limits,
+            "pricing_tiers": self.pricing_tiers,
+            "catalog_details": self.catalog_details,
+            "metadata_scope": self.metadata_scope,
         }
 
 
@@ -772,6 +780,10 @@ def _cached_evidence(record: Dict[str, Any], fp: str, model: str, provider: str,
         account_fingerprint=str(record.get("account_fingerprint") or ""),
         provenance=str(record.get("provenance") or ""),
         window_kind=str(record.get("window_kind") or "total"),
+        declared_limits=list(record.get("declared_limits") or []),
+        pricing_tiers=dict(record.get("pricing_tiers") or {}),
+        catalog_details=dict(record.get("catalog_details") or {}),
+        metadata_scope=str(record.get("metadata_scope") or ""),
     )
 
 
@@ -933,9 +945,9 @@ def _local_health_window(model: str) -> int:
 def _metadata_fetch_transport_failed(provider: str, model: str, use_local: bool) -> bool:
     """True only when a metadata fetch was ATTEMPTED and failed at transport level
     (provider unreachable) — distinct from a route that simply has no metadata source.
-    Only the OpenRouter /models fetch reports transport failure; the CW6 OpenAI-compatible
-    probe instead fails closed to a 0 window (-> unprobeable -> owner-ack), so a flaky
-    OpenAI-compatible endpoint reads as 'unknown', not as a hard connectivity error."""
+    Only the OpenRouter /models fetch reports transport failure here; the generic
+    CW6 OpenAI-compatible probe reads as unknown. The separate Copilot catalog
+    probe records its own read failure without interpreting the cause."""
     if use_local:
         return False  # local health is in-process; its absence is not an outage
     p = str(provider or "").strip().lower()
@@ -985,7 +997,17 @@ def _probe_window(
             ts=utc_now_iso(), detail="live serving window" if window > 0 else "serving window unknown",
         )
 
-    cached = data.get("probes", {}).get(fp)
+    from ouroboros.copilot_model_limits import metadata_scope
+    from ouroboros.copilot_responses import copilot_endpoint
+    copilot = provider == "openai-compatible" and copilot_endpoint(base_url)
+    scope = ""
+    if copilot:
+        api_key = _route_api_key(model) if api_key is None else api_key
+        scope = metadata_scope(base_url, api_key)
+    cache_key = f"{fp}:{scope}" if scope else fp
+    cached = data.get("probes", {}).get(cache_key)
+    if copilot and (not scope or (cached or {}).get("metadata_scope") != scope):
+        cached = None  # An old or another account's catalog says nothing about this send.
     if subscription and not account_bound and str((cached or {}).get("status") or "") in _KNOWN_STATUS:
         # Model-only legacy evidence cannot certify any subscription account.
         cached = None
@@ -1017,13 +1039,40 @@ def _probe_window(
         _store_evidence(drive_root, "probes", ev.route_fp, ev.to_json())
         return ev
 
-    window, observed_at = _provider_metadata_window(provider, model, base_url, allow_fetch=allow_fetch, api_key=api_key)
-    if window > 0:
-        ev = CapabilityEvidence(window, STATUS_CONFIRMED, SOURCE_PROVIDER_METADATA, fp, model, provider,
-                                ts=observed_at, stale=_age_seconds(observed_at) > _CONFIRMED_TTL_SEC,
-                                detail="provider metadata")
-        _store_evidence(drive_root, "probes", fp, ev.to_json())
-        return ev
+    copilot_failed = False
+    if copilot:
+        from ouroboros.copilot_model_limits import fetch_catalog_limits
+        from ouroboros.response_limits import record_metadata_limit
+        try:
+            facts = fetch_catalog_limits(model, base_url, api_key) if scope else None
+        except Exception:
+            facts = None
+            copilot_failed = True
+        if facts is not None:
+            observed_at = utc_now_iso()
+            if facts["output"]:
+                record_metadata_limit(drive_root, provider=provider, model=model, base_url=base_url, options=options,
+                    maximum=facts["output"], source="Copilot /models " + facts["version"],
+                    observed_at=observed_at, metadata_scope=scope,
+                    max_non_streaming_output_tokens=facts["non_streaming_output"])
+            declared = [{"kind": kind, "tokens": facts[kind]} for kind in ("input", "total") if facts[kind]]
+            window = facts["total"] or facts["input"]
+            if window:
+                ev = CapabilityEvidence(window, STATUS_CONFIRMED, SOURCE_PROVIDER_METADATA, fp, model, provider,
+                    ts=observed_at, detail="Copilot /models " + facts["version"],
+                    window_kind="total" if facts["total"] else "input", declared_limits=declared,
+                    pricing_tiers=facts["pricing_tiers"], metadata_scope=scope,
+                    catalog_details={key: facts[key] for key in ("version", "tokenizer", "preferred_tier", "non_streaming_output")})
+                _store_evidence(drive_root, "probes", cache_key, ev.to_json())
+                return ev
+    else:
+        window, observed_at = _provider_metadata_window(provider, model, base_url, allow_fetch=allow_fetch, api_key=api_key)
+        if window > 0:
+            ev = CapabilityEvidence(window, STATUS_CONFIRMED, SOURCE_PROVIDER_METADATA, fp, model, provider,
+                                    ts=observed_at, stale=_age_seconds(observed_at) > _CONFIRMED_TTL_SEC,
+                                    detail="provider metadata")
+            _store_evidence(drive_root, "probes", fp, ev.to_json())
+            return ev
 
     # window <= 0. A provider OUTAGE must NEVER erase a prior confirmed record
     # (the module invariant) — keep it, surfaced as stale, and do not overwrite the
@@ -1036,13 +1085,16 @@ def _probe_window(
     if prior is not None and prior_status in _KNOWN_STATUS and prior_win > 0:
         return _cached_evidence(prior, fp, model, provider, stale=True,
                                 detail="kept prior evidence (probe blip)")
-    if _metadata_fetch_transport_failed(provider, model, use_local):
+    if copilot_failed or _metadata_fetch_transport_failed(provider, model, use_local):
         ev = CapabilityEvidence(0, STATUS_FAILED, SOURCE_NONE, fp, model, provider, ts=utc_now_iso(),
-                                detail="provider unreachable during probe")
+                                detail="Copilot catalog read failed" if copilot_failed else "provider unreachable during probe")
     else:
         ev = CapabilityEvidence(0, STATUS_UNPROBEABLE, SOURCE_NONE, fp, model, provider, ts=utc_now_iso(),
                                 detail="no provider window metadata; sizing evidence is unknown")
-    _store_evidence(drive_root, "probes", fp, ev.to_json())
+    if not copilot or scope:
+        if copilot:
+            ev.metadata_scope = scope
+        _store_evidence(drive_root, "probes", cache_key, ev.to_json())
     return ev
 
 

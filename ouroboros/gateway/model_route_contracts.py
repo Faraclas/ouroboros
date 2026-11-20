@@ -53,6 +53,8 @@ class ResponseLimit(TypedDict):
     observed_at: str
     stale: bool
     route_fp: str
+    metadata_scope: str  # opaque account/endpoint/catalog-version binding, empty when unbound
+    max_non_streaming_output_tokens: int  # advertised only; 0 = unknown, not an automatic cap
 
 
 class ResponseLimitRoute(TypedDict):

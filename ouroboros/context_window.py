@@ -31,6 +31,8 @@ class WindowRecord:
     accepted_at: str = ""
     contradicted_by: Optional[WindowLimit] = None
     retired_ack: dict = field(default_factory=dict)
+    pricing_tiers: dict = field(default_factory=dict)
+    catalog_details: dict = field(default_factory=dict)
 
     @property
     def usable(self) -> Optional[int]:
@@ -144,10 +146,16 @@ def resolve_window(evidence, reserve: int, *, root=None, bound: bool = True,
     limits = ({limit.kind: limit for limit in captured.declared}
               if captured is not None and ce.is_known(evidence, require_fresh=True) else {})
     if captured is None and ce.is_known(evidence, require_fresh=True):
-        kind = str(getattr(evidence, "window_kind", "total") or "total")
-        limits[kind] = WindowLimit(int(evidence.window_tokens), kind,
-                                  str(getattr(evidence, "source", None) or getattr(evidence, "evidence_source", "metadata")),
-                                  str(getattr(evidence, "ts", "")))
+        source = str(getattr(evidence, "source", None) or getattr(evidence, "evidence_source", "metadata"))
+        timestamp = str(getattr(evidence, "ts", ""))
+        declared_limits = getattr(evidence, "declared_limits", []) if source == ce.SOURCE_PROVIDER_METADATA else []
+        for item in declared_limits:
+            tokens, kind = item.get("tokens"), item.get("kind")
+            if kind in {"input", "total"} and isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0:
+                limits[kind] = WindowLimit(tokens, kind, source, timestamp)
+        if not limits:
+            kind = str(getattr(evidence, "window_kind", "total") or "total")
+            limits[kind] = WindowLimit(int(evidence.window_tokens), kind, source, timestamp)
     declared = tuple(limits.values())
     server = getattr(evidence, "server_window", {})
     contradiction = WindowLimit(**server) if server else captured.contradicted_by if captured else None
@@ -158,7 +166,9 @@ def resolve_window(evidence, reserve: int, *, root=None, bound: bool = True,
     # Only a disproved stated limit yields to an accepted INPUT. An acceptance
     # below a stated total proves no reply room; without a statement capacity stays unknown.
     if any(accepted > limit.tokens for limit in limits.values()):
-        limits = {"input": WindowLimit(accepted, "input", "accepted", accepted_at)}
+        limits = {kind: limit for kind, limit in limits.items() if accepted <= limit.tokens}
+        if "input" not in limits:
+            limits["input"] = WindowLimit(accepted, "input", "accepted", accepted_at)
     for index in range(len(rows) - 1, -1, -1):
         row = rows[index]
         if row.get("refused"):
@@ -176,7 +186,11 @@ def resolve_window(evidence, reserve: int, *, root=None, bound: bool = True,
                         else captured.output if captured else None,
                         reserve=reserve, accepted=accepted, declared=declared, accepted_at=accepted_at,
                         contradicted_by=contradiction,
-                        retired_ack=getattr(evidence, "retired_ack", {}) or (captured.retired_ack if captured else {}))
+                        retired_ack=getattr(evidence, "retired_ack", {}) or (captured.retired_ack if captured else {}),
+                        pricing_tiers=(captured.pricing_tiers if captured else
+                            getattr(evidence, "pricing_tiers", {}) if not getattr(evidence, "stale", False) else {}),
+                        catalog_details=(captured.catalog_details if captured else
+                            getattr(evidence, "catalog_details", {}) if not getattr(evidence, "stale", False) else {}))
 
 
 def record_refusal(usage, plan) -> None:

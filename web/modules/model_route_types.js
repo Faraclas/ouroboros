@@ -36,6 +36,8 @@
  * @property {string} observed_at
  * @property {boolean} stale
  * @property {string} route_fp
+ * @property {string} metadata_scope Opaque account/endpoint/catalog-version binding, or empty.
+ * @property {number} max_non_streaming_output_tokens Advertised only; 0 = unknown, not an automatic cap.
  */
 
 /**

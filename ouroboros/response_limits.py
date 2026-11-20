@@ -17,6 +17,8 @@ class ResponseLimit:
     observed_at: str = ""
     stale: bool = False
     route_fp: str = ""
+    metadata_scope: str = ""
+    max_non_streaming_output_tokens: int = 0
 
     def ceiling(self, requested: int) -> int:
         return min(requested, self.max_output_tokens) if self.max_output_tokens > 0 and not self.stale else requested
@@ -71,20 +73,24 @@ def _response_fingerprint(*, provider, model, base_url="", options=None):
 
 
 def metadata_limit(*, provider, model, base_url="", options=None, maximum=0,
-                   source="provider_metadata", observed_at="") -> ResponseLimit:
+                   source="provider_metadata", observed_at="", metadata_scope="",
+                   max_non_streaming_output_tokens=0) -> ResponseLimit:
     from ouroboros.utils import utc_now_iso
 
     fp = _response_fingerprint(provider=provider, model=model, base_url=base_url, options=options)
     value = positive_limit(maximum)
-    return ResponseLimit(value, "confirmed" if value else "unprobeable", source,
-                         observed_at or utc_now_iso(), route_fp=fp)
+    non_streaming = positive_limit(max_non_streaming_output_tokens)
+    return ResponseLimit(value, "confirmed" if value or non_streaming else "unprobeable", source,
+                         observed_at or utc_now_iso(), route_fp=fp, metadata_scope=metadata_scope,
+                         max_non_streaming_output_tokens=non_streaming)
 
 
 def record_metadata_limit(drive_root, **observation) -> ResponseLimit:
     from ouroboros.capability_evidence import _store_evidence
 
     record = metadata_limit(**observation)
-    _store_evidence(drive_root, "response_limits", record.route_fp, asdict(record))
+    key = f"{record.route_fp}:{record.metadata_scope}" if record.metadata_scope else record.route_fp
+    _store_evidence(drive_root, "response_limits", key, asdict(record))
     return record
 
 
@@ -155,16 +161,36 @@ def resolve_response_limit(drive_root, *, provider, model, base_url="", options=
     ack = data.get("response_acks", {}).get(fp)
     if ack:
         return ResponseLimit(**ack)
-    cached = data.get("response_limits", {}).get(fp)
+    from ouroboros.copilot_responses import copilot_endpoint
+    copilot = provider == "openai-compatible" and copilot_endpoint(base_url)
+    scope = ""
+    if copilot:
+        from ouroboros.capability_evidence import _route_api_key
+        from ouroboros.copilot_model_limits import metadata_scope
+        api_key = _route_api_key(model) if api_key is None else api_key
+        scope = metadata_scope(base_url, api_key)
+    cache_key = f"{fp}:{scope}" if scope else fp
+    cached = data.get("response_limits", {}).get(cache_key)
+    if copilot and (not scope or (cached or {}).get("metadata_scope") != scope):
+        cached = None
     if cached:
-        ttl = _CONFIRMED_TTL_SEC if cached.get("max_output_tokens") else _FAILED_TTL_SEC
+        ttl = _CONFIRMED_TTL_SEC if (cached.get("max_output_tokens") or cached.get("max_non_streaming_output_tokens")) else _FAILED_TTL_SEC
         if _age_seconds(cached.get("observed_at", "")) <= ttl:
             return ResponseLimit(**cached)
-    failed_refresh = data.get("response_limit_refresh_failures", {}).get(fp, {})
+    failed_refresh = data.get("response_limit_refresh_failures", {}).get(cache_key, {})
+    if copilot and (not scope or failed_refresh.get("metadata_scope") != scope):
+        failed_refresh = {}
     if allow_fetch and _age_seconds(failed_refresh.get("observed_at", "")) > _FAILED_TTL_SEC:
         read = "no maximum observed for this route"
         try:
-            if provider in {"openai-compatible", "minimax"}:
+            if copilot:
+                from ouroboros.copilot_model_limits import fetch_catalog_limits
+                facts = fetch_catalog_limits(model, base_url, api_key) if scope else None
+                if facts is not None and facts["output"]:
+                    record_metadata_limit(drive_root, provider=provider, model=model, base_url=base_url, options=options,
+                        maximum=facts["output"], source="Copilot /models " + facts["version"], metadata_scope=scope,
+                        max_non_streaming_output_tokens=facts["non_streaming_output"])
+            elif provider in {"openai-compatible", "minimax"}:
                 _openai_compatible_metadata_window(model, base_url, True, api_key, provider=provider,
                                                   evidence_root=drive_root)
             elif provider == "openrouter":
@@ -185,23 +211,29 @@ def resolve_response_limit(drive_root, *, provider, model, base_url="", options=
                 read = ""  # No metadata source for this provider: nothing was read.
         except Exception:
             read = "metadata read failed"  # No inferred maximum after a failed metadata read.
-        cached = _read(drive_root).get("response_limits", {}).get(fp)
-        absent = not cached or (not cached.get("max_output_tokens")
+        cached = _read(drive_root).get("response_limits", {}).get(cache_key)
+        if copilot and (not scope or (cached or {}).get("metadata_scope") != scope):
+            cached = None
+        absent = not cached or (not (cached.get("max_output_tokens") or cached.get("max_non_streaming_output_tokens"))
                                 and _age_seconds(cached.get("observed_at", "")) > _FAILED_TTL_SEC)
         if read and absent:
             # Like an unprobeable window: the observed absence holds for the failed-evidence TTL,
             # so a route its catalog omits never re-reads that catalog per call. An absence never
             # erases a prior maximum; that one stays and reads stale.
+            if copilot and not scope:
+                return ResponseLimit(route_fp=fp)
             return record_metadata_limit(drive_root, provider=provider, model=model, base_url=base_url,
-                                         options=options, source=f"{provider} metadata: {read}")
+                                         options=options, source=f"{provider} metadata: {read}",
+                                         metadata_scope=scope if copilot else "")
         if read and cached and _age_seconds(cached.get("observed_at", "")) > _CONFIRMED_TTL_SEC:
             # A failed refresh (including a catalog omitting this route) must cool down
             # without renewing or erasing the prior maximum's independent observation.
             from ouroboros.capability_evidence import _store_evidence
             from ouroboros.utils import utc_now_iso
-            _store_evidence(drive_root, "response_limit_refresh_failures", fp, {"observed_at": utc_now_iso()})
+            _store_evidence(drive_root, "response_limit_refresh_failures", cache_key, {
+                "observed_at": utc_now_iso(), "metadata_scope": scope if copilot else ""})
     if cached:
-        ttl = _CONFIRMED_TTL_SEC if cached.get("max_output_tokens") else _FAILED_TTL_SEC
+        ttl = _CONFIRMED_TTL_SEC if (cached.get("max_output_tokens") or cached.get("max_non_streaming_output_tokens")) else _FAILED_TTL_SEC
         return ResponseLimit(**{**cached, "stale": _age_seconds(cached.get("observed_at", "")) > ttl})
     return ResponseLimit(route_fp=fp)
 
@@ -211,7 +243,8 @@ def response_limit_for_target(target: dict) -> ResponseLimit:
 
     return resolve_response_limit(canonical_evidence_root(), provider=target.get("provider", ""),
         model=target.get("requested_model") or target.get("usage_model") or target.get("model") or target.get("resolved_model", ""),
-        base_url=target.get("base_url", ""), options=target.get("capability_options"))
+        base_url=target.get("base_url", ""), options=target.get("capability_options"),
+        api_key=target.get("api_key"))
 
 
 def dispatch_target(model: str, settings: Any = None) -> dict:
