@@ -84,6 +84,65 @@ def test_root_combinator_failure_names_tool_and_keyword(keyword):
         assert_portable_tool_schemas(bad)
 
 
+def test_multitype_nonnull_failure_names_tool_and_path():
+    bad = [{
+        "type": "function",
+        "function": {
+            "name": "bad_multitype_tool",
+            "description": "bad",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "check": {"type": ["array", "string"], "items": {"type": "string"}},
+                    "title": {"type": ["integer", "string"]},
+                },
+            },
+        },
+    }]
+
+    with pytest.raises(
+        AssertionError,
+        match=r"bad_multitype_tool: non-portable multi-type list at bad_multitype_tool\.properties\.check",
+    ):
+        assert_portable_tool_schemas(bad)
+
+    bad_named_like_literal = [{
+        "type": "function",
+        "function": {
+            "name": "bad_literal_named_prop",
+            "description": "bad",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": ["integer", "string"]},
+                },
+            },
+        },
+    }]
+    with pytest.raises(
+        AssertionError,
+        match=r"bad_literal_named_prop: non-portable multi-type list at bad_literal_named_prop\.properties\.title",
+    ):
+        assert_portable_tool_schemas(bad_named_like_literal)
+
+
+def test_nullable_single_type_is_allowed_by_portable_contract():
+    nullable = [{
+        "type": "function",
+        "function": {
+            "name": "nullable_tool",
+            "description": "ok",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "authority_fields": {"type": ["array", "null"], "items": {"type": "string"}},
+                },
+            },
+        },
+    }]
+    assert_portable_tool_schemas(nullable)
+
+
 def test_every_physical_provider_projection_preserves_the_complete_name_set():
     from ouroboros.llm import LLMClient
     from ouroboros.openai_chat_custom import project_function_tools_to_openai_custom

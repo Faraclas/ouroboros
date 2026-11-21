@@ -926,7 +926,13 @@ def get_tools() -> List[ToolEntry]:
                 "criterion_basis": {"type": "string", "default": "", "description": "Optional line explaining why an agent_defined check sufficiently proves the task's requirement."},
                 "zero_run_decision": {"type": "string", "enum": list(_ZERO_RUN_DECISIONS), "description": "delegation_zero_run only: actor's typed decision when no selected physical leaf started."},
                 "zero_run_basis": {"type": "string", "description": "Required for delegation_zero_run: concise host-visible evidence/blocker, never inferred from final prose."},
-                "check": {"description": "Command as argv (['pytest','-q']) or shell one-liner. Required for visible_verifier/explicit_command/explicit_metric.", "type": ["array", "string"], "items": {"type": "string"}},
+                "check": {
+                    "description": "Command as argv (['pytest','-q']) or shell one-liner. Required for visible_verifier/explicit_command/explicit_metric.",
+                    "anyOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "string"},
+                    ],
+                },
                 "expected": {"type": "string", "default": "", "description": "Expected output substring/metric for explicit_command/explicit_metric."},
                 "expected_match": {"type": "string", "enum": list(_EXPECTED_MATCH_KINDS), "default": "substring", "description": "Match expected as substring (default), exact (whole stripped output), exact_line (one stripped output line), or json_equals (parsed JSON equality, ignoring key order). bytes_equal compares artifact_paths=[a, b] byte-for-byte after check, recording a bounded hexdump of the first divergence (golden files/migration parity). Prefer stricter matching for worked examples/exact output."},
                 "artifact_paths": {"type": "array", "items": {"type": "string"}, "description": "Deliverable paths. artifact_observation checks existence/size, never content, in the active workspace and the ACTIVE profile's readable resource roots. Orchestrating parents include subagent_projects/deliverables and can confirm child deliverables; child/readonly profiles lack those roots. Outside paths return non-fatal refused_out_of_scope. Run kinds (visible_verifier/explicit_command/explicit_metric) also check after execution that paths RELATIVE to cwd still exist; advisory artifact_lifecycle flags expose checks that delete their deliverables."},
