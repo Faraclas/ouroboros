@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 from decimal import Decimal, InvalidOperation
@@ -153,6 +154,140 @@ def row_ts_epoch(row: Any) -> Optional[float]:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=_dt.timezone.utc)
     return parsed.timestamp()
+
+
+DAILY_SPEND_TIMEZONE = "America/New_York"
+COPILOT_CREDIT_USD = 0.01
+NANO_AIU_PER_CREDIT = 1_000_000_000
+NANO_AIU_PER_USD = 100_000_000_000
+DAILY_SPEND_BASIS = (
+    "Provider-reported copilot_usage.total_nano_aiu only (no token estimation); "
+    "1 credit = $0.01 consumption value, not an invoice."
+)
+_NY_TZ = ZoneInfo(DAILY_SPEND_TIMEZONE)
+
+
+def ny_date_from_epoch(epoch: float) -> str:
+    """Calendar date (YYYY-MM-DD) in America/New_York (12:00 AM EST/EDT boundaries)."""
+    return _dt.datetime.fromtimestamp(float(epoch), tz=_NY_TZ).date().isoformat()
+
+
+def daily_spend_month(now: Optional[_dt.datetime] = None) -> str:
+    """Current calendar month (YYYY-MM) in America/New_York."""
+    moment = now.astimezone(_NY_TZ) if now is not None else _dt.datetime.now(tz=_NY_TZ)
+    return f"{moment.year:04d}-{moment.month:02d}"
+
+
+def copilot_usage_nano_aiu(row: Any) -> Optional[int]:
+    """Strictly provider-reported ``provider_usage.copilot_usage.total_nano_aiu`` (no token estimation)."""
+    if not isinstance(row, dict) or str(row.get("state") or "") == "released":
+        return None
+    provider_usage = row.get("provider_usage")
+    if not isinstance(provider_usage, dict):
+        return None
+    copilot_usage = provider_usage.get("copilot_usage")
+    if not isinstance(copilot_usage, dict):
+        return None
+    value = copilot_usage.get("total_nano_aiu")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        return None
+    return value if type(value) is int else int(round(value))
+
+
+def copilot_daily_delta(row: Any, *, epoch: Optional[float] = None) -> Optional[Tuple[str, int]]:
+    """``(America/New_York YYYY-MM-DD, nano_aiu)`` for one row carrying provider-reported Copilot credits."""
+    nano_aiu = copilot_usage_nano_aiu(row)
+    if nano_aiu is None:
+        return None
+    ts_epoch = epoch if (isinstance(epoch, (int, float)) and not isinstance(epoch, bool) and math.isfinite(epoch)) else row_ts_epoch(row)
+    if ts_epoch is None:
+        return None
+    return ny_date_from_epoch(ts_epoch), nano_aiu
+
+
+def render_daily_spend(
+    day_rows: Optional[Sequence[Tuple[str, int, int]]],
+    *,
+    now: Optional[_dt.datetime] = None,
+) -> Dict[str, Any]:
+    """Render Viper's cumulative daily Copilot credits for the current America/New_York calendar month.
+
+    Days before the first reported Viper day in the month and future days after ``today`` are omitted.
+    Zero-call days between the first reported day and ``today`` carry forward the cumulative total
+    with 0 daily credits (no estimation, no invented history). ``day_rows=None`` reports unavailable.
+    """
+    now_ny = now.astimezone(_NY_TZ) if now is not None else _dt.datetime.now(tz=_NY_TZ)
+    today = now_ny.date()
+    today_str = today.isoformat()
+    month = f"{today.year:04d}-{today.month:02d}"
+    base = {
+        "timezone": DAILY_SPEND_TIMEZONE,
+        "month": month,
+        "today": today_str,
+        "credit_usd": COPILOT_CREDIT_USD,
+        "nano_aiu_per_credit": NANO_AIU_PER_CREDIT,
+        "basis": DAILY_SPEND_BASIS,
+    }
+    if day_rows is None:
+        return {
+            **base,
+            "available": False,
+            "reason": "fold_pending",
+            "first_day": None,
+            "days": [],
+            "total_viper_credits": None,
+            "total_viper_usd": None,
+            "total_viper_calls": None,
+        }
+    prefix = month + "-"
+    by_day: Dict[str, Tuple[int, int]] = {}
+    for day, nano_aiu, calls in day_rows:
+        day_str = str(day or "")
+        if not day_str.startswith(prefix) or day_str > today_str or int(calls or 0) <= 0:
+            continue
+        try:
+            _dt.date.fromisoformat(day_str)
+        except ValueError:
+            continue
+        by_day[day_str] = (max(0, int(nano_aiu or 0)), int(calls))
+    if not by_day:
+        return {
+            **base,
+            "available": True,
+            "first_day": None,
+            "days": [],
+            "total_viper_credits": 0.0,
+            "total_viper_usd": 0.0,
+            "total_viper_calls": 0,
+        }
+    first_str = min(by_day)
+    cursor = _dt.date.fromisoformat(first_str)
+    cum_nano = 0
+    total_calls = 0
+    days = []
+    while cursor <= today:
+        day_str = cursor.isoformat()
+        daily_nano, daily_calls = by_day.get(day_str, (0, 0))
+        cum_nano += daily_nano
+        total_calls += daily_calls
+        days.append({
+            "date": day_str,
+            "viper_daily_credits": round(daily_nano / NANO_AIU_PER_CREDIT, 6),
+            "viper_cumulative_credits": round(cum_nano / NANO_AIU_PER_CREDIT, 6),
+            "viper_daily_usd": round(daily_nano / NANO_AIU_PER_USD, 6),
+            "viper_cumulative_usd": round(cum_nano / NANO_AIU_PER_USD, 6),
+            "viper_calls": daily_calls,
+        })
+        cursor += _dt.timedelta(days=1)
+    return {
+        **base,
+        "available": True,
+        "first_day": first_str,
+        "days": days,
+        "total_viper_credits": round(cum_nano / NANO_AIU_PER_CREDIT, 6),
+        "total_viper_usd": round(cum_nano / NANO_AIU_PER_USD, 6),
+        "total_viper_calls": total_calls,
+    }
 
 
 def _merge_processing_summary(total: dict, addition: dict) -> None:
@@ -584,7 +719,8 @@ class _Reads:
 
 
 def breakdown_read(txn: Any, *, root_task_id: str = "", task_id: str = "",
-                   include_owners: bool = False, include_extensions: bool = False) -> Callable[[bool], Dict[str, Any]]:
+                   include_owners: bool = False, include_extensions: bool = False,
+                   include_daily_spend: bool = False, daily_spend_now: Optional[_dt.datetime] = None) -> Callable[[bool], Dict[str, Any]]:
     """``breakdown_view``'s rows captured inside the caller's read in one step (``store_capture``); the returned
     ``render(degraded)`` decodes and renders after that read closed. The summary rows captured are the ones a
     dry run of the view asks for, so the capture and the view cannot disagree."""
@@ -601,12 +737,19 @@ def breakdown_read(txn: Any, *, root_task_id: str = "", task_id: str = "",
             raise usage_store.UsageAccountingError("extension summary fold pending at boot")
         wanted.buckets("extension")
     captured = txn.summary_rows(wanted.reads)
+    daily_captured = txn.daily_copilot_rows(daily_spend_month(daily_spend_now)) if include_daily_spend else None
 
     def render(degraded):
         rows = usage_store.SummaryRows(captured)
         result = breakdown_view(rows, degraded=degraded, **shape)
         if include_extensions:
             result["extension_callback_groups"] = rows.extension_callback_groups()
+        if include_daily_spend:
+            day_tuples = (
+                None if daily_captured is None
+                else [(r["day"], int(r["nano_aiu"]), int(r["calls"])) for r in daily_captured.rows()]
+            )
+            result["daily_spend"] = render_daily_spend(day_tuples, now=daily_spend_now)
         return result
 
     return render

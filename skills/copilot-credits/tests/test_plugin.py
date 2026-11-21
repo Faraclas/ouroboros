@@ -16,6 +16,7 @@ import os
 import socket
 import ssl
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -822,12 +823,13 @@ class TransportTests(unittest.TestCase):
 # ---------------------------------------------------------------- host glue
 
 class FakeApi:
-    def __init__(self, settings=None):
+    def __init__(self, settings=None, state_dir=None):
         self.routes = []
         self.unload = []
         self.logs = []
         self.other = []
         self.settings = settings if settings is not None else {}
+        self._state_dir = state_dir
 
     def register_route(self, name, handler=None, methods=None, **kw):
         self.routes.append((name, handler, tuple(methods or ()), kw))
@@ -840,6 +842,9 @@ class FakeApi:
 
     def log(self, level, message, **fields):
         self.logs.append((level, message, fields))
+
+    def get_state_dir(self):
+        return self._state_dir
 
     def __getattr__(self, name):  # any other registration is recorded as a failure
         def record(*a, **k):
@@ -859,14 +864,21 @@ def response_payload(tc, response):
 
 class HostGlueTests(unittest.TestCase):
     def test_register_only_usage_get_and_unload(self):
-        api = FakeApi()
-        P.register(api)
-        self.assertEqual([(r[0], r[2]) for r in api.routes], [("usage", ("GET",))])
-        self.assertEqual(len(api.unload), 1)
-        self.assertEqual(api.other, [])
-        payload = response_payload(self, api.routes[0][1](object()))  # no settings: no fetch
-        self.assertEqual(payload["error"]["code"], "no_credential")
-        api.unload[0]()  # clears without error
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(state_dir=tmp)
+            P.register(api)
+            self.assertEqual([(r[0], r[2]) for r in api.routes], [("usage", ("GET",)), ("history", ("GET",))])
+            self.assertEqual(len(api.unload), 1)
+            self.assertEqual(api.other, [])
+            payload = response_payload(self, api.routes[0][1](object()))  # no settings: no fetch
+            self.assertEqual(payload["error"]["code"], "no_credential")
+            hist_resp = api.routes[1][1](object())
+            self.assertEqual(hist_resp.status_code, 200)
+            self.assertEqual(hist_resp.headers.get("cache-control"), "no-store")
+            hist = json.loads(bytes(hist_resp.body).decode("utf-8"))
+            self.assertEqual(hist["status"], "ok")
+            self.assertEqual(hist["days"], [])
+            api.unload[0]()  # clears without error
 
     def test_register_wrong_origin_no_fetch(self):
         api = FakeApi({"OPENAI_COMPATIBLE_API_KEY": TOKEN_A,
@@ -892,6 +904,21 @@ class HostGlueTests(unittest.TestCase):
         import inspect
         handler = P.make_usage_handler(P.CreditsService(lambda: ("no_credential", None, None)))
         self.assertFalse(inspect.iscoroutinefunction(handler))
+        hist_handler = P.make_history_handler(P.CreditsService(lambda: ("no_credential", None, None)))
+        self.assertFalse(inspect.iscoroutinefunction(hist_handler))
+
+    def test_history_handler_sanitizes_service_exceptions(self):
+        class Exploding:
+            def get_history(self, month=None):
+                raise RuntimeError(EXC_TEXT + " " + TOKEN_A)
+        resp = P.make_history_handler(Exploding())(object())
+        self.assertEqual(resp.status_code, 200)
+        raw = bytes(resp.body).decode("utf-8")
+        for secret in SECRETS:
+            self.assertNotIn(secret, raw)
+        payload = json.loads(raw)
+        self.assertEqual(payload["status"], "unavailable")
+        self.assertEqual(payload["error"]["code"], "internal")
 
 
 # ---------------------------------------------------------------- examples

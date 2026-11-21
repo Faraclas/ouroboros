@@ -39,7 +39,7 @@ from ouroboros._usage_money import (
     render_cash, rounded_cash,
 )
 from ouroboros._usage_rows import (
-    REVIEW_ATTRIBUTION_KEYS, BindingIndex, Bucket, row_ts_epoch, summary_delta,
+    REVIEW_ATTRIBUTION_KEYS, BindingIndex, Bucket, copilot_daily_delta, row_ts_epoch, summary_delta,
 )
 from ouroboros.usage_origin import bind_root_attribution
 from ouroboros import store as _core
@@ -76,6 +76,10 @@ _TASK_CURSOR_SQL = "SELECT seq_first FROM attempts WHERE attempt_id=? AND task_i
 # allowance, ``consciousness_allowance``); a store an older body created gains it at the lifespan boot.
 ROOT_TIME_INDEX = "CREATE INDEX IF NOT EXISTS attempts_root_time ON attempts(root_task_id, ts_last_epoch)"
 DIRTY_REVISION_INDEX = "CREATE INDEX IF NOT EXISTS dirty_owners_revision ON dirty_owners(revision)"
+DAILY_COPILOT_DDL = (
+    "CREATE TABLE IF NOT EXISTS daily_copilot_credits "
+    "(day TEXT PRIMARY KEY, nano_aiu INTEGER NOT NULL, calls INTEGER NOT NULL) WITHOUT ROWID"
+)
 
 _SCHEMA = f"""
 CREATE TABLE attempts (
@@ -124,6 +128,7 @@ CREATE TABLE dirty_owners (owner_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)
 {DIRTY_REVISION_INDEX};
 CREATE TABLE one_shots (attempt_id TEXT PRIMARY KEY, kind TEXT, task_id TEXT, root_task_id TEXT,
   subscription_route TEXT, source TEXT, category TEXT, identity TEXT NOT NULL) WITHOUT ROWID;
+{DAILY_COPILOT_DDL};
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
 """
 
@@ -401,6 +406,7 @@ class Txn:
         self._buckets: Dict[Tuple[str, str], Bucket] = {}
         self._marker: Optional[list] = None
         self._receipt_tasks: set[str] = set()
+        self._has_daily_copilot: Optional[bool] = None
 
     # -- reads
     def attempt(self, attempt_id: str) -> Optional[Dict[str, Any]]:
@@ -445,6 +451,17 @@ class Txn:
                 params.append(scope)
         return capture(self.conn, f"SELECT {', '.join(_BUCKET_CAPTURE)} FROM summaries "
                        f"WHERE {' OR '.join(terms) or '0'}", params, _BUCKET_CAPTURE)
+
+    def daily_copilot_rows(self, month_prefix: str) -> Optional[Captured]:
+        """Current calendar month's provider-reported Copilot credits per America/New_York day (at most 31 rows)."""
+        if self.meta("daily_copilot_credits") is None:
+            return None
+        return capture(
+            self.conn,
+            "SELECT day, nano_aiu, calls FROM daily_copilot_credits WHERE day >= ? AND day <= ? ORDER BY day ASC",
+            (f"{month_prefix}-01", f"{month_prefix}-31"),
+            ("day", "nano_aiu", "calls"),
+        )
 
     def task_attempt_page(self, task_id: str, category: str, *, after: str = "",
                           limit: int) -> Optional[List[Dict[str, Any]]]:
@@ -654,6 +671,7 @@ class Txn:
                     f"VALUES ({','.join('?' * len(_SUMMARY_COLUMNS))})", _bucket_record(scope, key, bucket))
             else:
                 self.conn.execute("DELETE FROM summaries WHERE scope=? AND key=?", (scope, key))
+        self._update_daily_copilot(previous, stored)
         bind_root_attribution(self.conn, stored)
         for owner in dict.fromkeys((str(stored.get("task_id") or ""), str(stored.get("root_task_id") or ""))):
             if owner:
@@ -679,6 +697,31 @@ class Txn:
             self.bucket(scope, key).add(delta, sign, cap=cap if scope in {"root", "group"} else None)
             touched.add((scope, key))
         return touched
+
+    def _update_daily_copilot(self, previous: Optional[Dict[str, Any]], stored: Dict[str, Any]) -> None:
+        if self._has_daily_copilot is None:
+            self._has_daily_copilot = self.meta("daily_copilot_credits") is not None
+        if not self._has_daily_copilot:
+            return
+        old_delta, new_delta = copilot_daily_delta(previous), copilot_daily_delta(stored)
+        if old_delta == new_delta:
+            return
+        for delta, sign in ((old_delta, -1), (new_delta, 1)):
+            if delta is None:
+                continue
+            day, nano_aiu = delta
+            rec = self.conn.execute(
+                "SELECT nano_aiu, calls FROM daily_copilot_credits WHERE day=?", (day,),
+            ).fetchone()
+            next_nano = (int(rec["nano_aiu"]) if rec is not None else 0) + sign * nano_aiu
+            next_calls = (int(rec["calls"]) if rec is not None else 0) + sign
+            if next_calls > 0:
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO daily_copilot_credits (day, nano_aiu, calls) VALUES (?, ?, ?)",
+                    (day, max(0, next_nano), next_calls),
+                )
+            else:
+                self.conn.execute("DELETE FROM daily_copilot_credits WHERE day=?", (day,))
 
     def recorded_one_shot(self, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """The stored one-shot of ``row``'s id when its identity is identical;
@@ -958,6 +1001,7 @@ def migrate_from_journal(root: pathlib.Path | str, *, initialize_journal: bool =
                     report["window_index"] = _ensure_read_index(root, path, tier, "attempts_root_time", ROOT_TIME_INDEX)
                     report["dirty_owner_index"] = _ensure_read_index(root, path, tier, "dirty_owners_revision", DIRTY_REVISION_INDEX)
                     report["extension_summaries"] = _ensure_extension_summaries(root, path, tier)
+                    report["daily_copilot_credits"] = _ensure_daily_copilot_credits(root, path, tier)
             else:
                 tier = TIER_ENFORCED if kernel_file_locks_enforced(root / LOCK_REL) else TIER_NAME
                 report = _import(root, path, tier)
@@ -1016,6 +1060,47 @@ def _ensure_extension_summaries(root: pathlib.Path, path: pathlib.Path, tier: st
         return "folded"
     except (sqlite3.Error, _core.StoreError, UsageAccountingError) as exc:
         log.warning("usage store extension summaries deferred to the next boot: %s", exc)
+        return f"deferred: {type(exc).__name__}"
+
+
+def _ensure_daily_copilot_credits(root: pathlib.Path, path: pathlib.Path, tier: str) -> str:
+    """Daily provider-reported Copilot credits for stores created by an older body: folded once at lifespan boot."""
+    try:
+        with contextlib.ExitStack() as stack:
+            if tier == TIER_NAME:
+                stack.enter_context(_named_lock(root, LOCK_REL.name, timeout_sec=USAGE_LOCK_TIMEOUT_SEC, stale_sec=90.0))
+            conn = stack.enter_context(_core.connection(path, tier, wait_sec=USAGE_LOCK_TIMEOUT_SEC, opener=_connect))
+            if conn.execute("SELECT 1 FROM meta WHERE key='daily_copilot_credits'").fetchone():
+                return "present"
+            with _core.transaction(conn, write=True, commit_wait_sec=USAGE_LOCK_TIMEOUT_SEC):
+                conn.execute(DAILY_COPILOT_DDL)
+                buckets: Dict[str, List[int]] = {}
+                for record in conn.execute(
+                    "SELECT ts_last, ts_last_epoch, state, extra FROM attempts WHERE extra LIKE '%total_nano_aiu%'"
+                ):
+                    try:
+                        extra = json.loads(record["extra"])
+                    except ValueError:
+                        continue
+                    row = {"state": record["state"], "ts": record["ts_last"], "provider_usage": extra.get("provider_usage")}
+                    delta = copilot_daily_delta(row, epoch=record["ts_last_epoch"])
+                    if delta is not None:
+                        pair = buckets.setdefault(delta[0], [0, 0])
+                        pair[0] += delta[1]
+                        pair[1] += 1
+                conn.execute("DELETE FROM daily_copilot_credits")
+                if buckets:
+                    conn.executemany(
+                        "INSERT INTO daily_copilot_credits (day, nano_aiu, calls) VALUES (?, ?, ?)",
+                        [(day, pair[0], pair[1]) for day, pair in sorted(buckets.items())],
+                    )
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('daily_copilot_credits', ?)",
+                    (_json(len(buckets)),),
+                )
+        return "folded"
+    except (sqlite3.Error, _core.StoreError, UsageAccountingError) as exc:
+        log.warning("usage store daily copilot credits deferred to the next boot: %s", exc)
         return f"deferred: {type(exc).__name__}"
 
 
@@ -1094,6 +1179,7 @@ def _build(tmp: pathlib.Path, tier: str, records: Sequence[Dict[str, Any]], prov
         conn.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA)
         conn.execute(f"PRAGMA application_id = {_APPLICATION_ID[tier]}")
         buckets: Dict[Tuple[str, str], Bucket] = {}
+        daily_copilot: Dict[str, List[int]] = {}
         for attempt_id, row in sorted(last.items(), key=lambda item: int(item[1]["seq"])):
             materialized = durable_literals(row)
             columns = _encode(materialized)
@@ -1104,6 +1190,11 @@ def _build(tmp: pathlib.Path, tier: str, records: Sequence[Dict[str, Any]], prov
             delta = summary_delta(stored)
             for scope, key, cap in summary_keys(stored):
                 buckets.setdefault((scope, key), Bucket()).add(delta, cap=cap if scope in {"root", "group"} else None)
+            dc = copilot_daily_delta(stored)
+            if dc is not None:
+                pair = daily_copilot.setdefault(dc[0], [0, 0])
+                pair[0] += dc[1]
+                pair[1] += 1
             if is_one_shot_kind(str(stored.get("kind") or "")):
                 conn.execute("INSERT INTO one_shots VALUES (?,?,?,?,?,?,?,?)", (
                     attempt_id, *(str(stored.get(key) or "") for key in (
@@ -1112,6 +1203,11 @@ def _build(tmp: pathlib.Path, tier: str, records: Sequence[Dict[str, Any]], prov
         conn.executemany(f"INSERT INTO summaries ({','.join(_SUMMARY_COLUMNS)}) "
                          f"VALUES ({','.join('?' * len(_SUMMARY_COLUMNS))})",
                          [_bucket_record(scope, key, bucket) for (scope, key), bucket in buckets.items() if bucket.rows])
+        if daily_copilot:
+            conn.executemany(
+                "INSERT INTO daily_copilot_credits (day, nano_aiu, calls) VALUES (?, ?, ?)",
+                [(day, pair[0], pair[1]) for day, pair in sorted(daily_copilot.items())],
+            )
         bound = [(scope, key, _json(durable_literals(binding))) for scope, index in (
             ("root", bindings.roots), ("group", bindings.groups), ("consciousness", causes))
                  for key, binding in index.items()]
@@ -1127,7 +1223,7 @@ def _build(tmp: pathlib.Path, tier: str, records: Sequence[Dict[str, Any]], prov
                   "bindings": len(bound), "dirty_owners": len(owners), "epoch": epoch, "last_seq": last_seq}
         meta = {"schema_version": SCHEMA_VERSION, "lock_tier": tier, "publication_marker": [epoch, last_seq],
                 "import": {**provenance, "header": durable_literals(header) if header else None, "counts": counts},
-                "extension_summaries": True}
+                "extension_summaries": True, "daily_copilot_credits": True}
         conn.executemany("INSERT INTO meta (key, value) VALUES (?, ?)",
                          [(key, _json(value)) for key, value in meta.items()])
         _commit(conn)

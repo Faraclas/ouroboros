@@ -9,7 +9,14 @@ import {
     taskCostProjection,
 } from '../modules/chat.js';
 import { costPresentationDetail, costPresentationMeta, renderLiveCardMeta } from '../modules/chat_activity.js';
-import { costBucketPresentation, costDashboardPresentation, extensionActivityPresentation } from '../modules/costs.js';
+import {
+    costBucketPresentation,
+    costDashboardPresentation,
+    extensionActivityPresentation,
+    formatSpendValue,
+    monthlySpendSeries,
+    monthlySpendSvg,
+} from '../modules/costs.js';
 import { summarizeLogEvent } from '../modules/log_events.js';
 import {
     accountedUpperBound,
@@ -592,4 +599,87 @@ test('unknown legacy descendant rollup cannot retain a narrower own zero', () =>
     // The unreadable-ledger phrase is reserved for the status flag.
     assert.deepEqual(taskCostMeta({ cost_accounting_status: 'unavailable', cost_presentation: null }),
         ['cost unavailable']);
+});
+
+test('monthly spend series merges Viper credits and forward-only Copilot snapshots without inventing history', () => {
+    const dailySpend = {
+        available: true,
+        timezone: 'America/New_York',
+        month: '2026-11',
+        today: '2026-11-21',
+        credit_usd: 0.01,
+        days: [
+            { date: '2026-11-06', viper_daily_credits: 200, viper_cumulative_credits: 200, viper_calls: 10 },
+            { date: '2026-11-07', viper_daily_credits: 0, viper_cumulative_credits: 200, viper_calls: 0 },
+            { date: '2026-11-20', viper_daily_credits: 1000, viper_cumulative_credits: 3000, viper_calls: 40 },
+            { date: '2026-11-21', viper_daily_credits: 210.5, viper_cumulative_credits: 3210.5, viper_calls: 12 },
+        ],
+    };
+    const history = {
+        schema_version: 1,
+        status: 'ok',
+        month: '2026-11',
+        today: '2026-11-21',
+        credit_usd: 0.01,
+        days: [
+            { date: '2026-11-20', credits_used: 11500, entitlement: 12600, observed_at: '2026-11-20T22:00:00Z' },
+        ],
+    };
+    const liveFresh = {
+        schema_version: 1,
+        status: 'fresh',
+        observed_at: '2026-11-21T15:00:00Z', // 2026-11-21 10:00 EST
+        premium: { credits_used: 11796.365, entitlement: 12600, used_percentage: 93.6, unlimited: false },
+    };
+    const model = monthlySpendSeries(dailySpend, history, liveFresh);
+    assert.equal(model.state, 'available');
+    assert.equal(model.month, '2026-11');
+    assert.equal(model.days[0].date, '2026-11-06');
+    assert.equal(model.days[model.days.length - 1].date, '2026-11-21');
+    // Pre-snapshot days (Nov 6-19) have null Total and Everyone else (never invented as 0).
+    assert.equal(model.days[0].viperCredits, 200);
+    assert.equal(model.days[0].totalCredits, null);
+    assert.equal(model.days[0].othersCredits, null);
+    // Nov 20 and Nov 21 compute Everyone else = Total - Viper.
+    const nov20 = model.days.find(d => d.date === '2026-11-20');
+    const nov21 = model.days.find(d => d.date === '2026-11-21');
+    assert.equal(nov20.totalCredits, 11500);
+    assert.equal(nov20.othersCredits, 8500);
+    assert.equal(nov20.othersUsd, 85);
+    assert.equal(nov21.totalCredits, 11796.365);
+    assert.equal(nov21.othersCredits, 8585.865);
+    assert.equal(nov21.viperUsd, 32.105);
+    assert.equal(model.latest.total.date, '2026-11-21');
+    assert.equal(model.latest.others.credits, 8585.865);
+
+    // SVG output has all 3 series, both unit modes, and zero inline style attributes.
+    const crSvg = monthlySpendSvg(model, 'credits', model.days.length - 1);
+    const usdSvg = monthlySpendSvg(model, 'usd', model.days.length - 1);
+    assert.doesNotMatch(crSvg.svgHtml, /\bstyle=/);
+    assert.doesNotMatch(usdSvg.svgHtml, /\bstyle=/);
+    assert.match(crSvg.svgHtml, /costs-spend-line--viper/);
+    assert.match(crSvg.svgHtml, /costs-spend-line--total/);
+    assert.match(crSvg.svgHtml, /costs-spend-line--others/);
+    assert.match(crSvg.ariaLabel, /Copilot credits/);
+    assert.match(usdSvg.ariaLabel, /consumption USD/);
+    assert.equal(formatSpendValue(1200, 'credits'), '1,200 cr');
+    assert.equal(formatSpendValue(12, 'usd'), '$12.00');
+    assert.equal(formatSpendValue(null, 'credits'), '—');
+});
+
+test('monthly spend series keeps Everyone else null when Viper ledger is unavailable and renders isolated Day-1 dots', () => {
+    const history = {
+        status: 'ok', month: '2026-11', today: '2026-11-21', credit_usd: 0.01,
+        days: [{ date: '2026-11-21', credits_used: 11796.365, entitlement: 12600, observed_at: '2026-11-21T15:00:00Z' }],
+    };
+    const noViper = monthlySpendSeries({ available: false, month: '2026-11', today: '2026-11-21', days: [] }, history);
+    assert.equal(noViper.state, 'available');
+    assert.equal(noViper.days.length, 1);
+    assert.equal(noViper.days[0].totalCredits, 11796.365);
+    assert.equal(noViper.days[0].viperCredits, null);
+    assert.equal(noViper.days[0].othersCredits, null);
+    const svg = monthlySpendSvg(noViper, 'credits', 0);
+    assert.match(svg.svgHtml, /costs-spend-halo--total/);
+    assert.match(svg.svgHtml, /costs-spend-dot--total/);
+    assert.equal(monthlySpendSeries(null, null).state, 'unavailable');
 });

@@ -3,6 +3,7 @@
 import { apiFetch } from './api_client.js';
 
 export const USAGE_URL = '/api/extensions/copilot-credits/usage';
+export const HISTORY_URL = '/api/extensions/copilot-credits/history';
 const MIN_REFRESH_MS = 60_000;
 const REQUEST_MS = 15_000;
 const MAX_SNAPSHOT_MS = 24 * 60 * 60_000;
@@ -156,7 +157,7 @@ export function copilotDetailsHtml() {
     </section>`;
 }
 
-export function bindCopilotCosts(page, { state, store = copilotUsage, win = window } = {}) {
+export function bindCopilotCosts(page, { state, store = copilotUsage, win = window, onSnapshot = null } = {}) {
     const section = page.querySelector('.copilot-credits-card');
     let release = null, destroyed = false;
     const fields = Object.fromEntries([...section.querySelectorAll('[data-copilot-field]')].map(e => [e.dataset.copilotField, e]));
@@ -186,6 +187,7 @@ export function bindCopilotCosts(page, { state, store = copilotUsage, win = wind
         fields.source.textContent = data.source ? `Source: ${data.source}` : '';
         fields.error.textContent = text(data.error?.message) || (data.status === 'stale' ? 'This snapshot is stale. Refresh will retry automatically.' : '');
         fields.error.hidden = !fields.error.textContent;
+        onSnapshot?.(data);
     }
     function sync() {
         const shown = state.activePage === 'dashboard' && state.dashboardActiveSubtab === 'costs';

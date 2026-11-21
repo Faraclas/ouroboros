@@ -159,8 +159,9 @@ def make_cost_breakdown_endpoint(data_dir: pathlib.Path):
             # Display read: the store's summary rows; contention past the short display
             # wait reports accounting unavailable (503), never a zero. Capture extension and total
             # summaries in the SAME snapshot; decode and render only after releasing it.
-            breakdown = usage_breakdown(data_dir, allow_stale=True, include_extensions=True)
+            breakdown = usage_breakdown(data_dir, allow_stale=True, include_extensions=True, include_daily_spend=True)
             extension_groups = breakdown.pop("extension_callback_groups")
+            daily_spend = breakdown.pop("daily_spend", None)
             unattributed = dict(breakdown.get("unattributed") or {})
             by_model_raw = dict(breakdown.get("by_model") or {})
             try:
@@ -222,6 +223,7 @@ def make_cost_breakdown_endpoint(data_dir: pathlib.Path):
                 **tables,
                 "accounting": accounting,
                 "unattributed": unattributed,
+                "daily_spend": daily_spend,
             })
         except Exception:
             log.exception("Physical-attempt accounting unavailable")

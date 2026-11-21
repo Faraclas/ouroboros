@@ -4,13 +4,15 @@ A read-only Ouroboros extension that serves the owner's GitHub Copilot
 **premium credit usage** to the Viper header:
 
 ```
-GET /api/extensions/copilot-credits/usage   ->  HTTP 200 JSON, schema_version 1 (API.md)
+GET /api/extensions/copilot-credits/usage    ->  HTTP 200 JSON, schema_version 1 (API.md)
+GET /api/extensions/copilot-credits/history  ->  HTTP 200 JSON, schema_version 1 (API.md)
 ```
 
 It reads one fixed upstream endpoint, `GET https://api.github.com/copilot_internal/user`,
 and returns a sanitized projection of its `quota_snapshots.premium_interactions` bucket.
 It registers no tools, adds no model context, runs no timers, daemons or companions,
-and writes nothing. `API.md` is the frozen contract shared with the UI
+and writes only sanitized daily snapshots (`daily_snapshots.json`) inside its private
+state directory on fresh upstream fetches. `API.md` is the frozen contract shared with the UI
 (`copilot_usage.js`); examples live in `examples/`.
 
 ## Files

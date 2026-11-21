@@ -1003,6 +1003,7 @@ class CostBreakdownResponse(TypedDict, total=False):
     by_task_category: Dict[str, Any]
     accounting: Required[Dict[str, Any]]
     unattributed: Dict[str, Any]
+    daily_spend: Dict[str, Any]
 
 
 __all__ = [

@@ -802,6 +802,7 @@
  * @property {Object=} by_task_category
  * @property {Object} accounting
  * @property {Object=} unattributed
+ * @property {Object=} daily_spend
  */
 
 /**

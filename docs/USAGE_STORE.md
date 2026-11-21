@@ -52,6 +52,7 @@ owner succeeds; no failure authorizes unsafe WAL continuation.
 | `bindings` | the earliest root/group cap binding (`BindingIndex` semantics: carried, `legacy_live`, `legacy_default`, explicit unlimited `None`). |
 | `dirty_owners` | task/root projection debt, indexed by its dirty revision; one entry per owner, removed with acknowledged debt. |
 | `one_shots` | the identity of single-row kinds (external dispatch, subscription session, legacy rows). |
+| `daily_copilot_credits` | `(day, nano_aiu, calls)` `WITHOUT ROWID`: per-`America/New_York`-day sum of provider-reported `provider_usage.copilot_usage.total_nano_aiu` and call count, maintained transactionally in `Txn.write` (`_update_daily_copilot`) and seeded in `_build`. |
 | `meta` | `schema_version`, `lock_tier`, the import provenance and the publication marker. |
 
 Scopes: `global`; `root` and `group` (with the cap multiset); `task`; `kind`;
@@ -453,6 +454,11 @@ operator's separate authorization; installation alone changes no old money.
   snapshot. Older stores fold once at boot (`extension_summaries`); absent completion
   makes the split unavailable, not partial. Attempt rows stay unchanged; unproven
   dispatches remain unattributed rather than becoming known model calls.
+- Daily provider-reported Copilot credit totals (`daily_copilot_credits`, keyed by
+  `America/New_York` calendar date) are maintained in `Txn.write` (`_update_daily_copilot`)
+  and folded once at boot for older stores (`_ensure_daily_copilot_credits`, meta key
+  `daily_copilot_credits`); absent completion leaves `daily_spend.available=False`
+  with `fold_pending=True` rather than scanning `attempts` on `/api/cost-breakdown`.
 
 - Durability on a name-tier mount is best effort, as it was for the journal:
   the store relies on the mount's own write and rename semantics.

@@ -557,6 +557,6 @@ def test_cost_breakdown_endpoint_reads_the_ledger_off_the_event_loop(data_root, 
 
     loop_thread, response = asyncio.run(call())
     assert seen["thread"] != loop_thread, "the ledger read ran on the asyncio loop thread"
-    assert seen["kwargs"] == {"allow_stale": True, "include_extensions": True}
+    assert seen["kwargs"] == {"allow_stale": True, "include_extensions": True, "include_daily_spend": True}
     assert response.status_code == 200
     assert json.loads(response.body)["total_cost"] == pytest.approx(0.25)

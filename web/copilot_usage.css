@@ -61,3 +61,259 @@
 .copilot-app-budget > summary { cursor: pointer; color: var(--text-secondary); padding: var(--space-3) 0; font-size: var(--type-body); }
 .copilot-app-budget .costs-budget-card { margin-bottom: 0; }
 .copilot-app-budget-note { color: var(--text-secondary); font-size: var(--type-meta); margin: 0 0 var(--space-3); }
+
+/* Monthly cumulative spend chart (Viper avatar palette: violet, jade, olive-earth). */
+.costs-monthly-spend-card {
+    margin-top: var(--space-5);
+    padding: var(--space-5);
+    border-radius: var(--radius-object);
+    background: var(--surface-object);
+    box-shadow: var(--elev-rest);
+    min-width: 0;
+}
+.costs-spend-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+}
+.costs-spend-title-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2) var(--space-3);
+    min-width: 0;
+}
+.costs-spend-title {
+    margin: 0;
+    font-size: var(--type-section);
+    line-height: var(--line-title);
+    color: var(--text-primary);
+}
+.costs-spend-period {
+    font-size: var(--type-meta);
+    line-height: var(--line-meta);
+    color: var(--text-meta);
+}
+.costs-spend-toggle {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    padding: var(--space-1);
+    border-radius: 10px;
+    background: var(--surface-control);
+    border: 1px solid var(--surface-border);
+}
+.costs-spend-unit-btn {
+    border: 0;
+    border-radius: 6px;
+    padding: var(--space-1) var(--space-3);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: var(--type-meta);
+    line-height: var(--line-meta);
+    font-weight: 500;
+    cursor: pointer;
+}
+.costs-spend-unit-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+.costs-spend-unit-btn.is-active {
+    background: var(--tone-crimson);
+    color: var(--tone-crimson-ink);
+    font-weight: 600;
+}
+.costs-spend-unit-btn:focus-visible {
+    outline: 2px solid var(--focus-accent-border);
+    outline-offset: 2px;
+}
+.costs-spend-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-5);
+    margin-bottom: var(--space-3);
+}
+.costs-spend-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--type-meta);
+    line-height: var(--line-meta);
+    min-width: 0;
+}
+.costs-spend-legend-name {
+    color: var(--text-secondary);
+}
+.costs-spend-legend-val {
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+.costs-spend-swatch {
+    display: inline-block;
+    width: 14px;
+    height: 3px;
+    border-radius: 2px;
+    flex: 0 0 auto;
+}
+.costs-spend-swatch--viper {
+    background: var(--chart-series-1);
+}
+.costs-spend-swatch--total {
+    background: var(--accent);
+}
+.costs-spend-swatch--others {
+    background: repeating-linear-gradient(
+        90deg,
+        var(--user-sender) 0 5px,
+        transparent 5px 8px
+    );
+}
+.costs-spend-readout {
+    min-height: 18px;
+    margin-bottom: var(--space-2);
+    font-size: var(--type-meta);
+    line-height: var(--line-meta);
+    color: var(--text-meta);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+}
+.costs-spend-canvas {
+    width: 100%;
+    min-width: 0;
+    margin-bottom: var(--space-3);
+}
+.costs-spend-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+.costs-spend-svg[hidden] {
+    display: none;
+}
+.costs-spend-grid-line {
+    stroke: var(--chart-grid);
+    stroke-width: 1;
+}
+.costs-spend-guide {
+    stroke: var(--surface-border);
+    stroke-width: 1.5;
+    stroke-dasharray: 3 3;
+}
+.costs-spend-axis-label {
+    fill: var(--chart-text);
+    font-size: var(--type-meta);
+    font-variant-numeric: tabular-nums;
+}
+.costs-spend-line {
+    fill: none;
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.costs-spend-line--viper {
+    stroke: var(--chart-series-1);
+}
+.costs-spend-line--total {
+    stroke: var(--accent);
+}
+.costs-spend-line--others {
+    stroke: var(--user-sender);
+    stroke-dasharray: 6 4;
+}
+.costs-spend-dot {
+    stroke: var(--surface-object);
+    stroke-width: 1.5;
+}
+.costs-spend-dot--viper {
+    fill: var(--chart-series-1);
+}
+.costs-spend-dot--total {
+    fill: var(--accent);
+}
+.costs-spend-dot--others {
+    fill: var(--user-sender);
+}
+.costs-spend-halo {
+    fill: none;
+    stroke-width: 1.75;
+    opacity: 0.45;
+}
+.costs-spend-halo--viper {
+    stroke: var(--chart-series-1);
+}
+.costs-spend-halo--total {
+    stroke: var(--accent);
+}
+.costs-spend-halo--others {
+    stroke: var(--user-sender);
+}
+.costs-spend-hit {
+    fill: transparent;
+    cursor: pointer;
+}
+.costs-spend-hit:focus-visible {
+    outline: 2px solid var(--focus-accent-border);
+    outline-offset: -2px;
+}
+.costs-spend-empty {
+    margin: var(--space-4) 0;
+    color: var(--text-meta);
+    font-size: var(--type-body);
+    text-align: center;
+}
+.costs-spend-empty[hidden] {
+    display: none;
+}
+.costs-spend-table-disclosure {
+    margin: var(--space-3) 0;
+}
+.costs-spend-table-summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: var(--type-meta);
+    line-height: var(--line-meta);
+    padding: var(--space-1) 0;
+}
+.costs-spend-table-summary:focus-visible {
+    outline: 2px solid var(--focus-accent-border);
+    outline-offset: 2px;
+}
+.costs-spend-table-wrap {
+    overflow-x: auto;
+    margin-top: var(--space-2);
+    max-width: 100%;
+}
+.costs-spend-table th[scope="row"] {
+    font-weight: 500;
+    color: var(--text-primary);
+    text-align: left;
+}
+.costs-spend-table th.cost-cell-right {
+    text-align: right;
+}
+.costs-spend-table td {
+    font-variant-numeric: tabular-nums;
+}
+.costs-spend-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+.costs-spend-note {
+    margin: var(--space-3) 0 0;
+    color: var(--text-secondary);
+    font-size: var(--type-meta);
+    line-height: var(--line-body);
+}
+.costs-spend-note code {
+    font-size: var(--type-meta);
+    color: var(--text-meta);
+}

@@ -1,9 +1,14 @@
-"""copilot-credits: read-only GitHub Copilot premium credit usage for the owner's header.
+"""copilot-credits: read-only GitHub Copilot premium credit usage for the owner's header and monthly spend chart.
 
-One route, ``GET /api/extensions/copilot-credits/usage``, answers a sanitized
-JSON projection (schema_version 1, see API.md) of the account's own
-``premium_interactions`` quota bucket from the fixed GitHub endpoint
-``https://api.github.com/copilot_internal/user``.
+Two GET routes:
+* ``GET /api/extensions/copilot-credits/usage`` answers a sanitized JSON
+  projection (schema_version 1, see API.md) of the account's own
+  ``premium_interactions`` quota bucket from the fixed GitHub endpoint
+  ``https://api.github.com/copilot_internal/user``.
+* ``GET /api/extensions/copilot-credits/history`` serves persisted daily account
+  snapshots (``credits_used``, ``entitlement``, ``observed_at``, ``login``)
+  keyed by ``America/New_York`` calendar date from
+  ``<state_dir>/daily_snapshots.json``, recorded only on fresh upstream fetches.
 
 Design rules (rationale in README.md):
 * The credential is read from current granted settings on EVERY request
@@ -39,6 +44,7 @@ import socket
 import ssl
 import threading
 import time
+from zoneinfo import ZoneInfo
 from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -71,7 +77,11 @@ MAX_BODY_BYTES = 512 * 1024
 MAX_TOKEN_CHARS = 1024
 CREDIT_USD = 0.01
 NOMINAL_BASIS = "1 credit = $0.01 consumption value; not an invoice"
-USER_AGENT = "Viper-copilot-credits/1.0 (read-only)"
+USER_AGENT = "Viper-copilot-credits/1.1 (read-only)"
+SNAPSHOT_TIMEZONE = "America/New_York"
+_NY_TZ = ZoneInfo(SNAPSHOT_TIMEZONE)
+SNAPSHOT_FILENAME = "daily_snapshots.json"
+MAX_SNAPSHOT_DAYS = 400
 
 ERROR_MESSAGES: Dict[str, str] = {
     "no_credential": "No Copilot credential is available to this extension (missing or not granted).",
@@ -90,6 +100,8 @@ ERROR_MESSAGES: Dict[str, str] = {
     "unrecognized_response": "The usage response did not contain a coherent premium credit quota.",
     "credential_changed": "The credential changed during the refresh; the next read uses the new one.",
     "pending": "A usage refresh is still in progress.",
+    "history_unreadable": "Saved daily snapshots could not be read.",
+    "snapshot_write_failed": "Daily snapshot could not be persisted.",
     "internal": "The usage read failed inside the extension.",
 }
 
@@ -97,6 +109,8 @@ _LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 _PLAN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _TOKEN_RE = re.compile(r"^[\x21-\x7e]+$")  # printable ASCII, no whitespace/CR/LF
 _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$")
+_DATE_RE = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$")
+_MONTH_RE = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])$")
 
 
 class UpstreamError(Exception):
@@ -374,6 +388,169 @@ def _iso_from_wall(ts: Optional[float]) -> Optional[str]:
     return _dt.datetime.fromtimestamp(ts, _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _ny_date_from_wall(ts: float) -> str:
+    return _dt.datetime.fromtimestamp(float(ts), _NY_TZ).date().isoformat()
+
+
+def history_unavailable_payload(code: str, *, month: Optional[str] = None,
+                                today: Optional[str] = None) -> Dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "status": "unavailable",
+        "source": SOURCE,
+        "timezone": SNAPSHOT_TIMEZONE,
+        "month": month,
+        "today": today,
+        "credit_usd": CREDIT_USD,
+        "basis": NOMINAL_BASIS,
+        "days": [],
+        "error": _error_obj(code),
+    }
+
+
+class DailySnapshotStore:
+    """Atomic per-day (America/New_York) snapshot store in the extension's private state dir.
+
+    Stores sanitized numeric counters and optional login only — never tokens or raw bodies.
+    """
+
+    def __init__(self, state_dir: Optional[str], *, log: Optional[Callable[[str], None]] = None) -> None:
+        self._state_dir = str(state_dir) if state_dir else None
+        self._path = os.path.join(self._state_dir, SNAPSHOT_FILENAME) if self._state_dir else None
+        self._log = log
+        self._lock = threading.Lock()
+
+    def _load_locked(self) -> Tuple[Optional[str], Dict[str, Dict[str, Any]]]:
+        if self._path is None or not os.path.exists(self._path):
+            return None, {}
+        try:
+            with open(self._path, "r", encoding="utf-8") as handle:
+                raw = json.load(handle)
+        except (OSError, ValueError, RecursionError):
+            return "history_unreadable", {}
+        if not isinstance(raw, dict):
+            return "history_unreadable", {}
+        items = raw.get("snapshots")
+        if not isinstance(items, dict):
+            return "history_unreadable", {}
+        clean: Dict[str, Dict[str, Any]] = {}
+        for day, entry in items.items():
+            if not isinstance(day, str) or not _DATE_RE.match(day) or not isinstance(entry, dict):
+                continue
+            credits_used = _num(entry.get("credits_used"))
+            if credits_used is None or credits_used < 0:
+                continue
+            entitlement = _num(entry.get("entitlement"))
+            if entitlement is not None and entitlement < 0:
+                entitlement = None
+            observed_at = _iso_utc(entry.get("observed_at"))
+            login = entry.get("login")
+            clean[day] = {
+                "credits_used": credits_used,
+                "entitlement": entitlement,
+                "observed_at": observed_at,
+                "login": login if isinstance(login, str) and _LOGIN_RE.match(login) else None,
+            }
+        return None, clean
+
+    def record(self, snapshot: Dict[str, Any], wall_ts: float) -> None:
+        if self._path is None or self._state_dir is None:
+            return
+        premium = snapshot.get("premium") if isinstance(snapshot, dict) else None
+        if not isinstance(premium, dict):
+            return
+        credits_used = _num(premium.get("credits_used"))
+        if credits_used is None or credits_used < 0:
+            return
+        entitlement = _num(premium.get("entitlement"))
+        if entitlement is not None and entitlement < 0:
+            entitlement = None
+        account = snapshot.get("account") if isinstance(snapshot, dict) else None
+        login = account.get("login") if isinstance(account, dict) else None
+        day = _ny_date_from_wall(wall_ts)
+        entry = {
+            "credits_used": credits_used,
+            "entitlement": entitlement,
+            "observed_at": _iso_from_wall(wall_ts),
+            "login": login if isinstance(login, str) and _LOGIN_RE.match(login) else None,
+        }
+        with self._lock:
+            _err, snapshots = self._load_locked()
+            existing = snapshots.get(day)
+            # If the monthly billing counter reset earlier on this same NY calendar day
+            # (e.g. 00:00 UTC = 19:00 EST on the last day of the month), keep the higher
+            # pre-reset snapshot for the closing day rather than overwriting with ~0.
+            if existing is not None and credits_used < existing["credits_used"]:
+                reset_at = snapshot.get("reset_at")
+                if isinstance(reset_at, str) and _ISO_RE.match(reset_at):
+                    try:
+                        reset_dt = _dt.datetime.fromisoformat(reset_at.replace("Z", "+00:00"))
+                        if reset_dt.astimezone(_NY_TZ).strftime("%Y-%m-%d") == day:
+                            return
+                    except ValueError:
+                        pass
+            snapshots[day] = entry
+            if len(snapshots) > MAX_SNAPSHOT_DAYS:
+                kept = sorted(snapshots)[-MAX_SNAPSHOT_DAYS:]
+                snapshots = {k: snapshots[k] for k in kept}
+            doc = {
+                "schema_version": SCHEMA_VERSION,
+                "timezone": SNAPSHOT_TIMEZONE,
+                "snapshots": dict(sorted(snapshots.items())),
+            }
+            tmp = f"{self._path}.tmp.{os.getpid()}.{threading.get_ident()}"
+            try:
+                os.makedirs(self._state_dir, exist_ok=True)
+                with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+                    json.dump(doc, handle, indent=2, sort_keys=True)
+                    handle.write("\n")
+                os.replace(tmp, self._path)
+            except OSError:
+                try:
+                    if os.path.exists(tmp):
+                        os.unlink(tmp)
+                except OSError:
+                    pass
+                if self._log is not None:
+                    try:
+                        self._log("snapshot_write_failed")
+                    except Exception:
+                        pass
+
+    def read_month(self, month: Optional[str], *, now_wall: float) -> Dict[str, Any]:
+        today = _ny_date_from_wall(now_wall)
+        selected = month if (isinstance(month, str) and _MONTH_RE.match(month)) else today[:7]
+        with self._lock:
+            err, snapshots = self._load_locked()
+        if err is not None:
+            return history_unavailable_payload(err, month=selected, today=today)
+        prefix = selected + "-"
+        days = []
+        for day in sorted(snapshots):
+            if not day.startswith(prefix) or day > today:
+                continue
+            entry = snapshots[day]
+            days.append({
+                "date": day,
+                "credits_used": entry["credits_used"],
+                "entitlement": entry["entitlement"],
+                "observed_at": entry["observed_at"],
+                "login": entry["login"],
+            })
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "source": SOURCE,
+            "timezone": SNAPSHOT_TIMEZONE,
+            "month": selected,
+            "today": today,
+            "credit_usd": CREDIT_USD,
+            "basis": NOMINAL_BASIS,
+            "days": days,
+            "error": None,
+        }
+
+
 def _error_obj(code: str, http_status: Optional[int] = None,
                retry_after_s: Optional[int] = None) -> Dict[str, Any]:
     code = code if code in ERROR_MESSAGES else "internal"
@@ -405,12 +582,14 @@ class CreditsService:
                  fetch: Callable[[str], Tuple[int, Optional[str], bytes]] = https_get, *,
                  wall: Callable[[], float] = time.time,
                  monotonic: Callable[[], float] = time.monotonic,
-                 log: Optional[Callable[[str], None]] = None) -> None:
+                 log: Optional[Callable[[str], None]] = None,
+                 state_dir: Optional[str] = None) -> None:
         self._get_credential = get_credential
         self._fetch = fetch
         self._wall = wall
         self._mono = monotonic
         self._log = log
+        self._snapshots = DailySnapshotStore(state_dir, log=log)
         self._salt = os.urandom(32)
         self._lock = threading.Lock()
         self._reset_locked(None)
@@ -508,6 +687,7 @@ class CreditsService:
         # credential means this result belongs to a credential that is no
         # longer configured, so it is discarded rather than cached.
         current_fp = self._current_fingerprint()
+        to_persist: Optional[Tuple[Dict[str, Any], float]] = None
         with self._lock:
             try:
                 if generation != self._generation:
@@ -516,11 +696,19 @@ class CreditsService:
                     self._reset_locked(current_fp)
                     return unavailable_payload("credential_changed")
                 self._apply_locked(outcome)
-                return self._render_locked()
+                if isinstance(outcome, dict) and self._snap_wall is not None:
+                    to_persist = (json.loads(json.dumps(outcome)), self._snap_wall)
+                payload = self._render_locked()
             finally:
                 if self._inflight is event:
                     self._inflight = None
                 event.set()
+        if to_persist is not None:
+            self._snapshots.record(to_persist[0], to_persist[1])
+        return payload
+
+    def get_history(self, month: Optional[str] = None) -> Dict[str, Any]:
+        return self._snapshots.read_month(month, now_wall=self._wall())
 
     def _current_fingerprint(self) -> Optional[str]:
         try:
@@ -584,6 +772,18 @@ def make_usage_handler(service: CreditsService) -> Callable[[Any], Any]:
     return usage
 
 
+def make_history_handler(service: CreditsService) -> Callable[[Any], Any]:
+    def history(request: Any) -> Any:  # sync: the host runs it on a worker thread
+        try:
+            params = getattr(request, "query_params", None)
+            month = params.get("month") if hasattr(params, "get") else None
+            payload = service.get_history(month=month)
+        except Exception:
+            payload = history_unavailable_payload("internal")
+        return _json_response(payload)
+    return history
+
+
 def register(api: Any) -> None:
     def credential() -> Tuple[Optional[str], Optional[str], Optional[str]]:
         return read_credential(api.get_settings)
@@ -591,6 +791,9 @@ def register(api: Any) -> None:
     def log(code: str) -> None:
         api.log("warning", "copilot-credits usage refresh failed", code=code)
 
-    service = CreditsService(credential, log=log)
+    get_state_dir = getattr(api, "get_state_dir", None)
+    state_dir = get_state_dir() if callable(get_state_dir) else None
+    service = CreditsService(credential, log=log, state_dir=state_dir)
     api.register_route("usage", handler=make_usage_handler(service), methods=("GET",))
+    api.register_route("history", handler=make_history_handler(service), methods=("GET",))
     api.on_unload(service.clear)

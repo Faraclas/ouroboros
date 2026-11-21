@@ -1,8 +1,8 @@
 ---
 name: copilot-credits
 title: Copilot credits
-description: Read-only GitHub Copilot premium credit usage for the owner's header (one GET route, no tools).
-version: 1.0.1
+description: Read-only GitHub Copilot premium credit usage and daily account snapshots (two GET routes, no tools).
+version: 1.1.0
 type: extension
 plugin_api: "2.0"
 entry: plugin.py
@@ -12,16 +12,21 @@ env_from_settings: [OPENAI_COMPATIBLE_API_KEY, OPENAI_COMPATIBLE_BASE_URL]
 timeout_sec: 30
 when_to_use: The built-in header or the owner wants the account's current Copilot premium credit usage.
 model_experience:
-  what_model_sees: Nothing; the skill registers no tools and adds no context. It only serves GET /api/extensions/copilot-credits/usage.
+  what_model_sees: Nothing; the skill registers no tools and adds no context. It only serves GET /api/extensions/copilot-credits/usage and GET /api/extensions/copilot-credits/history.
   token_effect: None.
 ---
 
 # Copilot credits
 
-Serves `GET /api/extensions/copilot-credits/usage`: a sanitized JSON projection
-(schema_version 1, full contract in `API.md`) of the owner's own GitHub Copilot
-`premium_interactions` quota, read from the fixed endpoint
-`https://api.github.com/copilot_internal/user`.
+Serves two GET routes (schema_version 1, full contract in `API.md`):
+- `GET /api/extensions/copilot-credits/usage`: a sanitized JSON projection of the
+  owner's own GitHub Copilot `premium_interactions` quota, read from the fixed
+  endpoint `https://api.github.com/copilot_internal/user`.
+- `GET /api/extensions/copilot-credits/history`: daily account snapshots
+  (`credits_used`, `entitlement`, `observed_at`, `login`) keyed by
+  `America/New_York` calendar date, persisted atomically to
+  `<state_dir>/daily_snapshots.json` on fresh upstream fetches (no invented
+  history, no tokens or raw provider bodies persisted).
 
 - Credential: current granted `OPENAI_COMPATIBLE_API_KEY`, read on every request,
   sent ONLY when the paired `OPENAI_COMPATIBLE_BASE_URL` is an exact GitHub Copilot
@@ -39,6 +44,7 @@ Serves `GET /api/extensions/copilot-credits/usage`: a sanitized JSON projection
   or raw provider body. Percentages come from the provider's `percent_remaining`, never
   from `credits_used / entitlement`.
 - Nominal USD (1 credit = $0.01) is a consumption equivalent, never an invoice.
-- No tools, timers, daemons, companions, page modules or writes.
+- No tools, timers, daemons, companions or page modules; the only disk write is
+  the sanitized daily snapshot file inside the extension's private state dir.
 
 Bundled source follows normal built-in source trust, admission, grants and enablement. It does not import an external installation or its state.
