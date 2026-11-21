@@ -649,6 +649,7 @@ def _run_supervisor(settings: dict) -> None:
         BOOT.step_started("supervisor")  # tasks_ready is this generation's; its sub-steps follow
         # Watch startup stalls; even a failed watchdog start publishes an init outcome.
         from ouroboros.server_liveness import loop_phase_facts, note_supervisor_ready, run_startup_phase
+        from supervisor.event_observation import attach_event_q_wake, clear_event_q_wake, wait_event_q_wake
         _loop_liveness = [time.monotonic(), {}, time.thread_time(), None]  # slots: server_liveness.py
         _loop_liveness[1], _loop_liveness[0] = loop_phase_facts(_loop_liveness, "startup", new_tick=True), time.monotonic()
         _start_supervisor_liveness_watchdog(_loop_liveness, _watchdog_stop)
@@ -674,7 +675,7 @@ def _run_supervisor(settings: dict) -> None:
             queue_deep_self_review_task, sort_pending,
         )
         from supervisor.workers import (
-            init as workers_init, get_event_q, WORKERS, PENDING, RUNNING,
+            init as workers_init, get_event_q, get_event_q_wake, WORKERS, PENDING, RUNNING,
             spawn_workers, kill_workers, assign_tasks, ensure_workers_healthy,
             handle_chat_direct, auto_resume_after_restart,
         )
@@ -683,10 +684,8 @@ def _run_supervisor(settings: dict) -> None:
 
         # Managed manifest branch defaults must drive worker commit/restart flows too.
         _workers_branch_dev, _workers_branch_stable = _runtime_branch_defaults()
-        workers_init(
-            repo_dir=REPO_DIR, drive_root=DATA_DIR, max_workers=max_workers,
-            branch_dev=_workers_branch_dev, branch_stable=_workers_branch_stable,
-        )
+        workers_init(repo_dir=REPO_DIR, drive_root=DATA_DIR, max_workers=max_workers,
+                     branch_dev=_workers_branch_dev, branch_stable=_workers_branch_stable)
 
         from supervisor.message_bus import send_with_budget
         from ouroboros.consciousness import BackgroundConsciousness
@@ -699,8 +698,7 @@ def _run_supervisor(settings: dict) -> None:
         kill_workers(preserve_pending=True)
         spawn_workers()
         from ouroboros.server_process import record_applied_restart_settings
-        record_applied_restart_settings({"OUROBOROS_MAX_WORKERS": max_workers,
-                                        "OUROBOROS_SKILLS_REPO_PATH": settings.get("OUROBOROS_SKILLS_REPO_PATH", "")})
+        record_applied_restart_settings({"OUROBOROS_MAX_WORKERS": max_workers, "OUROBOROS_SKILLS_REPO_PATH": settings.get("OUROBOROS_SKILLS_REPO_PATH", "")})
         persist_queue_snapshot(reason="startup")
         try:
             from ouroboros.delegate_recovery import pre_adopt_planned_handoffs
@@ -806,7 +804,7 @@ def _run_supervisor(settings: dict) -> None:
     _supervisor_init_done.set()
     BOOT.step_ended("supervisor")
     note_supervisor_ready()
-
+    wake_event = attach_event_q_wake(bridge, get_event_q, get_event_q_wake)
     offset = 0
     crash_count = 0
     _last_custody_reap = [0.0]  # recovered checking copies become eligible off-loop after readiness
@@ -829,6 +827,7 @@ def _run_supervisor(settings: dict) -> None:
 
             # One BOUNDED events batch (count + time; the remainder waits for the next
             # turn), so a producer that keeps the queue non-empty cannot hide intake.
+            clear_event_q_wake(wake_event)
             backlog = drain_worker_events(
                 get_event_q(), _event_ctx, _loop_liveness, on_restart=_handle_restart_in_supervisor,
             )
@@ -880,8 +879,8 @@ def _run_supervisor(settings: dict) -> None:
 
             crash_count = 0
             publish_supervisor_load(get_event_q(), DATA_DIR)  # one row a minute, never under Q; never raises
-            if not backlog:
-                time.sleep(0.5)  # a turn that hit its events bound drains the backlog at full speed
+            if not backlog:  # a turn that hit its events bound drains the backlog at full speed
+                wait_event_q_wake(wake_event, 0.5, _restart_requested, _supervisor_stop, _exit_signalled, sleep_fn=time.sleep)
 
         except Exception as exc:
             if _supervisor_stop.is_set() or _restart_requested.is_set() or _exit_signalled.is_set():
@@ -1252,6 +1251,8 @@ async def lifespan(app):
         yield
     finally:
         _supervisor_stop.set()  # first: the loop must know a teardown owns what follows
+        from supervisor.workers import wake_event_q
+        wake_event_q()
         body_stop.set()  # the body runtime and the boot coordinator stop with the generation
         from ouroboros.delegate_collection import stop_body_runtime
         stop_body_runtime(lifespan_drive_root, wait=False)

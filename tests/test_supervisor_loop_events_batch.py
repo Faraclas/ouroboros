@@ -225,12 +225,13 @@ def _ticks(monkeypatch, tmp_path, backlogs, *, queued=(), real_sleep=False):
     """Run the REAL ``server._run_supervisor`` (its collaborators stubbed by the shutdown suite's
     harness) for one tick per scripted drain verdict; returns the bridge and the idle sleeps."""
     import server
-    from supervisor import message_bus as bus_mod
+    from supervisor import message_bus as bus_mod, workers as workers_mod
     from tests.test_server_shutdown import _run, _supervisor_harness
 
     intake = server._process_bridge_updates
     rec = _supervisor_harness(monkeypatch, tmp_path, ["ok"] * (len(backlogs) - 1) + ["stop"])
     bridge, verdicts, sleeps = _InboxBridge(queued), list(backlogs), []
+    monkeypatch.setattr(workers_mod, "get_event_q_wake", lambda: None)
     monkeypatch.setattr(bus_mod, "LocalChatBridge", lambda _settings: bridge)
     monkeypatch.setattr(server, "_dialogue_bridge", None)
     monkeypatch.setattr(server, "_process_bridge_updates", intake)
@@ -260,3 +261,117 @@ def test_an_idle_loop_waits_on_its_inbox_without_spinning(monkeypatch, tmp_path)
     assert [call[0] for call in bridge.calls] == [1, 1] and sleeps == [0.5, 0.5]
     assert wall1 - wall0 >= 1.4, "the idle wait and the idle sleep both ran"
     assert cpu1 - cpu0 < 0.5, f"an idle tick burned {cpu1 - cpu0:.3f}s of CPU in {wall1 - wall0:.3f}s"
+
+
+def test_control_lane_event_wakes_idle_loop_and_telemetry_does_not(monkeypatch, tmp_path):
+    """A CONTROL_LANE put wakes ObservedEventQueue's wake event; TELEMETRY_LANE does not.
+    In the real supervisor loop, a control event arriving during the idle intake wait
+    wakes the loop and dispatches without waiting out the 1.5 s idle cadence."""
+    import threading
+    import server
+    from supervisor import message_bus as bus_mod, workers as workers_mod
+    from supervisor.event_observation import ObservedEventQueue
+    from tests.test_server_shutdown import _run, _supervisor_harness
+
+    wake = threading.Event()
+    bus = ObservedEventQueue(wake_event=wake)
+
+    bus.put({"type": "task_heartbeat", "task_id": "t1"})
+    assert wake.is_set() is False, "telemetry must not wake the idle loop"
+    bus.get_nowait()
+
+    bus.put({"type": "typing_start", "task_id": "t1"})
+    assert wake.is_set() is False, "non-routed control telemetry/UI status must not wake the idle loop"
+    bus.get_nowait()
+
+    bus.put({"type": "steer_task", "task_id": "t1"})
+    assert wake.is_set() is True, "control-lane event must wake the idle loop"
+    bus.get_nowait()
+    wake.clear()
+
+    # LocalChatBridge: wakes on control event (returns []) and on enqueue() (returns msg),
+    # and enqueue() survives a failing wake.set().
+    bridge = bus_mod.LocalChatBridge({})
+    bridge.set_wake_event(wake)
+    t = threading.Timer(0.03, lambda: bus.put({"type": "steer_task", "task_id": "t2"}))
+    t.start()
+    t0 = time.monotonic()
+    updates = bridge.get_updates(0, timeout=1)
+    dt = time.monotonic() - t0
+    t.join()
+    assert updates == [] and dt < 0.75, f"control wake took {dt:.3f}s"
+    bus.get_nowait()
+    wake.clear()
+
+    bridge.enqueue_local_message("hello", chat_id=1, user_id=1)
+    assert wake.is_set() is True
+    got = bridge.get_updates(0, timeout=1)
+    assert len(got) == 1 and got[0]["message"]["text"] == "hello"
+
+    class _BrokenWake:
+        def set(self):
+            raise RuntimeError("boom")
+
+        def wait(self, timeout=None):
+            return False
+
+    bridge.set_wake_event(_BrokenWake())
+    bridge.enqueue_local_message("still queued", chat_id=1, user_id=1)
+    assert len(bridge.get_updates(1, timeout=0)) == 1
+
+    # End-to-end in server._run_supervisor with real _process_bridge_updates + LocalChatBridge + ObservedEventQueue
+    wake2 = threading.Event()
+    real_q = ObservedEventQueue(wake_event=wake2)
+    real_bridge = bus_mod.LocalChatBridge({})
+    dispatched = []
+    emit_at = []
+    dispatch_at = []
+    intake = server._process_bridge_updates
+    rec = _supervisor_harness(monkeypatch, tmp_path, ["ok", "ok", "stop"])
+    monkeypatch.setattr(server, "_process_bridge_updates", intake)
+    monkeypatch.setattr(workers_mod, "get_event_q", lambda *, create=True: real_q)
+    monkeypatch.setattr(workers_mod, "get_event_q_wake", lambda: wake2, raising=False)
+    monkeypatch.setattr(bus_mod, "LocalChatBridge", lambda _settings: real_bridge)
+    monkeypatch.setattr(server, "_dialogue_bridge", None)
+    from supervisor import events as events_mod
+    monkeypatch.setattr(events_mod, "dispatch_event",
+                        lambda evt, _ctx: (dispatched.append(evt["type"]), dispatch_at.append(time.monotonic())))
+
+    def _emit():
+        emit_at.append(time.monotonic())
+        real_q.put({"type": "steer_task", "task_id": "t3"})
+
+    t_emit = threading.Timer(0.05, _emit)
+    t_emit.start()
+    _run(rec, server)
+    t_emit.join()
+    assert dispatched == ["steer_task"]
+    assert emit_at and dispatch_at
+    dispatch_dt = dispatch_at[0] - emit_at[0]
+    assert dispatch_dt < 0.75, f"wakeable supervisor loop took {dispatch_dt:.3f}s to dispatch"
+
+
+def test_sync_manager_event_queue_wakes_cross_process():
+    """Real EventQueueManager + mp.Event wakes on CONTROL_LANE put across processes."""
+    import multiprocessing as mp
+    import sys
+    from supervisor.event_observation import EventQueueManager, set_manager_wake_event
+
+    ctx = mp.get_context("forkserver" if sys.platform.startswith("linux") else "spawn")
+    wake = ctx.Event()
+    mgr = EventQueueManager(ctx=ctx)
+    mgr.start(initializer=set_manager_wake_event, initargs=(wake,))
+    try:
+        q = mgr.Queue()
+        q.put_nowait({"type": "task_heartbeat", "task_id": "t1"})
+        assert wake.wait(timeout=0.05) is False
+        q.get_nowait()
+
+        t0 = time.monotonic()
+        q.put_nowait({"type": "steer_task", "task_id": "t1"})
+        assert wake.wait(timeout=1.0) is True
+        assert time.monotonic() - t0 < 0.75
+        assert q.get_nowait()["type"] == "steer_task"
+    finally:
+        mgr.shutdown()
+

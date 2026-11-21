@@ -126,6 +126,12 @@ def _request_restart_exit(owner: bool = False) -> None:
     if owner:
         _owner_restart_requested.set()
     _restart_requested.set()
+    try:
+        from supervisor.workers import wake_event_q
+
+        wake_event_q()
+    except Exception:
+        pass
 
 
 _BOUND_SERVICES = frozenset({"main", "host_service", "local_model"})

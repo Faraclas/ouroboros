@@ -102,10 +102,30 @@ class Worker:
 
 _EVENT_Q = None
 _EVENT_Q_MANAGER = None
+_EVENT_Q_WAKE = None
 _EVENT_Q_GENERATION = ""
 _EVENT_Q_LOCK = threading.Lock()
 _EVENT_Q_SHUTDOWN = False
 _WORKER_POOL_DISABLED_REASON = ""
+
+
+def get_event_q_wake():
+    """Return the supervisor loop's wake event if the manager bus created one, else None."""
+    if _EVENT_Q_SHUTDOWN:
+        return None
+    return _EVENT_Q_WAKE
+
+
+def wake_event_q() -> None:
+    """Best-effort wake for the supervisor idle wait from non-signal threads."""
+    if _EVENT_Q_SHUTDOWN:
+        return
+    wake = _EVENT_Q_WAKE
+    if wake is not None:
+        try:
+            wake.set()
+        except Exception:
+            pass
 
 
 def get_event_q(*, create: bool = True):
@@ -118,7 +138,7 @@ def get_event_q(*, create: bool = True):
     Producers without an injected endpoint may read the existing server bus
     with ``create=False``; they never create an undrained child-local bus.
     """
-    global _EVENT_Q, _EVENT_Q_MANAGER, _EVENT_Q_GENERATION
+    global _EVENT_Q, _EVENT_Q_MANAGER, _EVENT_Q_WAKE, _EVENT_Q_GENERATION
     with _EVENT_Q_LOCK:
         if _EVENT_Q_SHUTDOWN:
             raise RuntimeError("supervisor event bus is shutting down")
@@ -130,10 +150,13 @@ def get_event_q(*, create: bool = True):
             # A manager-backed queue serializes synchronously in the producer
             # and isolates each producer connection, so replacing/killing a
             # worker generation cannot wedge the process-lifetime bus.
-            from supervisor.event_observation import EventQueueManager
+            from supervisor.event_observation import EventQueueManager, set_manager_wake_event
 
-            _EVENT_Q_MANAGER = EventQueueManager(ctx=_get_ctx())
-            _EVENT_Q_MANAGER.start()
+            ctx = _get_ctx()
+            wake = ctx.Event()
+            _EVENT_Q_MANAGER = EventQueueManager(ctx=ctx)
+            _EVENT_Q_MANAGER.start(initializer=set_manager_wake_event, initargs=(wake,))
+            _EVENT_Q_WAKE = wake
             _EVENT_Q = _EVENT_Q_MANAGER.Queue()
             _EVENT_Q_GENERATION = f"{os.getpid()}:{uuid.uuid4().hex[:12]}"
             try:
@@ -170,13 +193,20 @@ def get_event_q(*, create: bool = True):
 
 def shutdown_event_q() -> None:
     """Stop the manager on graceful exit; custody reaps it after a hard exit."""
-    global _EVENT_Q, _EVENT_Q_MANAGER, _EVENT_Q_GENERATION, _EVENT_Q_SHUTDOWN
+    global _EVENT_Q, _EVENT_Q_MANAGER, _EVENT_Q_WAKE, _EVENT_Q_GENERATION, _EVENT_Q_SHUTDOWN
     with _EVENT_Q_LOCK:
         _EVENT_Q_SHUTDOWN = True
+        wake = _EVENT_Q_WAKE
         manager = _EVENT_Q_MANAGER
         _EVENT_Q = None
         _EVENT_Q_MANAGER = None
+        _EVENT_Q_WAKE = None
         _EVENT_Q_GENERATION = ""
+    if wake is not None:
+        try:
+            wake.set()
+        except Exception:
+            pass
     if manager is not None:
         try:
             manager.shutdown()

@@ -77,8 +77,63 @@ def outstanding_delivery_id(event: Any) -> str:
     return ""
 
 
+_WAKE_EVENT: Any = None
+_WAKE_CONTROL_TYPES = frozenset({
+    "steer_task",
+    "promote_chat_to_task",
+    "ensure_project_scope",
+    "restart_request",
+    "cancel_task",
+    "task_done",
+    "mind_task_control",
+    "budget_resume_child",
+})
+
+
+def set_manager_wake_event(event: Any) -> None:
+    """Process-local wake handle installed in the SyncManager child at startup."""
+    global _WAKE_EVENT
+    _WAKE_EVENT = event
+
+
+def attach_event_q_wake(bridge: Any, get_event_q_fn: Any, get_wake_fn: Any) -> Any:
+    """Ensure the supervisor bus exists and attach its wake event to ``bridge``."""
+    try:
+        get_event_q_fn()
+        wake = get_wake_fn()
+    except Exception:
+        return None
+    if wake is not None and hasattr(bridge, "set_wake_event"):
+        bridge.set_wake_event(wake)
+    return wake
+
+
+def clear_event_q_wake(wake: Any) -> None:
+    if wake is not None:
+        try:
+            wake.clear()
+        except Exception:
+            pass
+
+
+def wait_event_q_wake(wake: Any, timeout: float, *stops: Any, sleep_fn: Any = time.sleep) -> None:
+    if wake is None:
+        sleep_fn(timeout)
+        return
+    if any(s.is_set() for s in stops):
+        return
+    try:
+        wake.wait(timeout)
+    except Exception:
+        sleep_fn(timeout)
+
+
 class ObservedEventQueue(queue.Queue):
     """The manager's ordinary FIFO with two lanes and two indexes, not another bus."""
+
+    def __init__(self, maxsize: int = 0, wake_event: Any = None) -> None:
+        super().__init__(maxsize=maxsize)
+        self._wake_event = wake_event
 
     def _init(self, maxsize: int) -> None:
         self._lanes: dict[str, deque] = {CONTROL_LANE: deque(), TELEMETRY_LANE: deque()}
@@ -92,11 +147,19 @@ class ObservedEventQueue(queue.Queue):
         addresses = idle_input_addresses(item)
         # Retain the addresses by value: an in-process producer may keep or
         # mutate its original dict, while the manager transport copies it.
-        self._lanes[event_lane(item)].append((item, addresses, time.monotonic()))
+        lane = event_lane(item)
+        self._lanes[lane].append((item, addresses, time.monotonic()))
         self._pending.update(addresses)
         delivery_id = outstanding_delivery_id(item)
         if delivery_id:
             self._outstanding[delivery_id] += 1
+        if lane == CONTROL_LANE and isinstance(item, dict) and str(item.get("type") or "") in _WAKE_CONTROL_TYPES:
+            wake = self._wake_event if self._wake_event is not None else _WAKE_EVENT
+            if wake is not None:
+                try:
+                    wake.set()
+                except Exception:
+                    pass
 
     def _get(self) -> Any:
         lane = self._lanes[CONTROL_LANE] or self._lanes[TELEMETRY_LANE]

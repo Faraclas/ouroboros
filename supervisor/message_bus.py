@@ -179,6 +179,7 @@ class LocalChatBridge:
 
         self.panic = PanicIngress()  # server binds the existing emergency owner
         self._inbox = queue.Queue()   # user -> agent
+        self._wake_event = None
         # Updates the consumer handed back unprocessed (``requeue_updates``); memory only.
         self._replay: List[Dict[str, Any]] = []
         self._replay_lock = threading.Lock()
@@ -199,6 +200,10 @@ class LocalChatBridge:
         if self._broadcast_fn:
             self._broadcast_fn(payload)
 
+    def set_wake_event(self, event: Any) -> None:
+        """Attach a shared wake event so intake wakes on control-lane events too."""
+        self._wake_event = event
+
     def get_updates(self, offset: int, timeout: int = 10) -> List[Dict[str, Any]]:
         """Return the waiting message and a bounded snapshot of its queued peers.
 
@@ -214,9 +219,22 @@ class LocalChatBridge:
                 replay, self._replay = self._replay, []
                 return replay
         try:
-            first = self._inbox.get(timeout=timeout)
+            first = self._inbox.get_nowait()
         except queue.Empty:
-            return []
+            if timeout <= 0:
+                return []
+            wake = self._wake_event
+            if wake is None:
+                try:
+                    first = self._inbox.get(timeout=timeout)
+                except queue.Empty:
+                    return []
+            else:
+                wake.wait(timeout=timeout)
+                try:
+                    first = self._inbox.get_nowait()
+                except queue.Empty:
+                    return []
         updates: List[Dict[str, Any]] = []
         for index in range(1 + self._inbox.qsize()):
             try:
@@ -403,6 +421,12 @@ class LocalChatBridge:
             "accepted_source_row": dict(accepted_source_row or {}),
             "received_at": received_at,
         })
+        wake = self._wake_event
+        if wake is not None:
+            try:
+                wake.set()
+            except Exception:
+                pass
 
     def send_message(
         self,
