@@ -849,12 +849,15 @@ def build_code_inventory(
     path_allowed: Callable[[pathlib.Path], bool] | None = None,
     parse: bool = True,
     name: str = "",
+    seed_drive_root: pathlib.Path | None = None,
     _relevance: bool = False,
 ) -> CodeInventory:
     """Current facts; parse=False lists paths, name skips provably absent outlines.
 
     Private _relevance views defer call/import objects (None), not validity.
     Only query_code's relevance renderer consumes them; cache writes stay rich.
+    seed_drive_root is a read-only reuse source when drive_root holds no loadable
+    cache (a pooled task's fresh drive): reuse still requires current-byte hashes.
     """
     root = pathlib.Path(repo_root).resolve(strict=False)
     deadline = time.monotonic() + _MAX_ENUMERATION_SECONDS
@@ -878,10 +881,13 @@ def build_code_inventory(
     file_scope = scoped != pathlib.PurePosixPath(".") and (not paths or paths == [root / scoped])
     cached, sources = None, {}
     if drive_root is not None and parse and not file_scope:
-        if _relevance:
-            cached, sources = _load_cached_inventory(root, drive_root, _relevance=True)
-        else:
-            cached = load_cached_inventory(root, drive_root)
+        for source_root in (drive_root, seed_drive_root):
+            if cached is not None or source_root is None:
+                continue
+            if _relevance:
+                cached, sources = _load_cached_inventory(root, source_root, _relevance=True)
+            else:
+                cached = load_cached_inventory(root, source_root)
 
     def full(file):
         # Identity, not path: duplicate cached paths keep distinct tail records.
@@ -950,7 +956,7 @@ def build_code_inventory(
             if any(f is None for f in stored.files):
                 return build_code_inventory(root, scope=scope, drive_root=drive_root, persist=persist,
                                             exclude_paths=excluded_paths, path_allowed=path_allowed,
-                                            parse=parse, name=name)
+                                            parse=parse, name=name, seed_drive_root=seed_drive_root)
         atomic_write_json(inventory_cache_path(root, pathlib.Path(drive_root)), stored.to_json(), trailing_newline=True)
         from ouroboros.maintenance_retirement import artifact_changed
         artifact_changed(drive_root)

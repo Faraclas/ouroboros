@@ -362,6 +362,7 @@ def _query_code(
         """This resource view's inventory; every inventory consumer shares its admission."""
         from ouroboros.code_intelligence import build_code_inventory
         from ouroboros.protected_artifacts import protected_artifact_paths
+        from ouroboros.tool_access_paths import canonical_data_root
         from ouroboros.tools.core_secret_paths import is_restricted_subagent_profile
 
         exclude_paths: list[pathlib.Path] = list(protected_artifact_paths(ctx, binding))
@@ -369,9 +370,14 @@ def _query_code(
         # live code-intel cache. Cache writes retain their existing actor/mode
         # contract independently of file visibility; Cyber acting tasks may persist.
         persist = not (exclude_paths or normalized_root == "user_files" or is_restricted_subagent_profile(ctx))
+        # A pooled task's private drive starts without a cache; the canonical drive's
+        # inventory is a read-only reuse source, never written from here.
+        own_drive = pathlib.Path(ctx.drive_root).resolve(strict=False)
+        canonical = canonical_data_root(ctx)
         inventory = build_code_inventory(
-            repo_root, drive_root=pathlib.Path(ctx.drive_root), persist=persist, exclude_paths=exclude_paths,
+            repo_root, drive_root=own_drive, persist=persist, exclude_paths=exclude_paths,
             scope=scope, path_allowed=admitted, parse=parse, name=name,
+            seed_drive_root=None if canonical == own_drive else canonical,
             **({"_relevance": True} if op == "relevant_files" else {}),
         )
         inventory.files = [

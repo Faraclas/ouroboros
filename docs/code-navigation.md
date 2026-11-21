@@ -207,4 +207,9 @@ Public cache loads and other operations remain rich. Normal equality/writeback
 materializes complete records, including unvisited bounded-refresh tails; a
 light view cannot erase sibling evidence or trigger spurious warm writes.
 A complete refresh removes deletions; scoped/restricted views never replace the
-full cache. Retention/reset: [PERSISTENCE](PERSISTENCE.md).
+full cache. A pooled task's own drive starts empty and its cache is dropped at
+terminal adoption, so when the own drive holds no loadable inventory, `query_code`
+reads the canonical data root's same-key inventory as a read-only reuse source:
+every reused fact still passes current admission and current-byte SHA-256, and
+writes stay on the own drive under the rules above. Body-candidate checkouts key
+a different path and still start cold. Retention/reset: [PERSISTENCE](PERSISTENCE.md).
