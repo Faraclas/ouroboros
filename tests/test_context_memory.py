@@ -217,3 +217,47 @@ def test_installed_skills_section_qualifies_extension_liveness_process(tmp_path,
     section = _build_installed_skills_section(FakeEnv())
 
     assert "Live (worker): no (load_error)" in section
+
+
+def test_installed_skills_section_includes_bucket_source_when_present(tmp_path, monkeypatch):
+    from ouroboros.context import _build_installed_skills_section
+
+    class FakeEnv:
+        drive_root = tmp_path
+
+    monkeypatch.setattr(
+        "ouroboros.skill_loader.summarize_skills",
+        lambda _root, _skills=None: {
+            "skills": [
+                {
+                    "name": "ui_design",
+                    "type": "instruction",
+                    "source": "native",
+                    "location": "native",
+                    "version": "2.0.0",
+                    "enabled": True,
+                    "review_status": "pending",
+                    "executable_review": True,
+                    "review_stale": False,
+                    "description": "Design playbook",
+                },
+                {
+                    "name": "my_custom_skill",
+                    "type": "instruction",
+                    "source": "self_authored",
+                    "location": "external",
+                    "version": "0.1.0",
+                    "enabled": True,
+                    "review_status": "clean",
+                    "executable_review": True,
+                    "review_stale": False,
+                    "description": "Custom skill",
+                },
+            ],
+        },
+    )
+
+    section = _build_installed_skills_section(FakeEnv())
+    assert "bucket=native" in section
+    assert "bucket=external" in section
+    assert "bucket=self_authored" not in section

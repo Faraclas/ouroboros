@@ -48,7 +48,7 @@ from ouroboros.tools.commit_gate import (
     _current_review_tool_name,
     _invalidate_advisory,  # noqa: F401
     _record_commit_attempt,
-    record_bound_commit_success, prepare_author_commit_request, exact_open_peer,
+    record_bound_commit_success, prepare_author_commit_request, reuse_reviewed_message, exact_open_peer,
     record_commit_gate_refusal, name_review_record,
     check_identical_verdict_refusal,
     check_review_cycles_ceiling,
@@ -1157,6 +1157,8 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
             commit_message = source.commit_message
         except ValueError as exc:
             return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=str(exc)))
+    elif not commit_message.strip() and review_reference is not None and author_disposition is not None:
+        commit_message = reuse_reviewed_message(ctx, review_reference, author_disposition) or commit_message
     # A managed marker authorizes exactly one reviewed two-parent resolution.
     from supervisor.update_merge import managed_assisted_tx_for
     _managed_tx, _managed_block = managed_assisted_tx_for(getattr(ctx, "task_id", ""), getattr(ctx, "task_metadata", None))
@@ -1462,7 +1464,7 @@ def get_tools() -> List[ToolEntry]:
         "wake_on": wake_on_schema(),
         **widening_properties(),
         "root": {"type": "string", "enum": ["system_repo"], "default": "system_repo", "description": "The reviewed commit lands in Ouroboros's own body only; review any other root with review_change and commit it with ordinary git."},
-        "commit_message": {"type": "string"},
+        "commit_message": {"type": "string", "description": "Commit message (required for new commits; when omitted with review_reference, defaults to the referenced attempt's message)."},
         "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional subset of task-attributed paths. Omitted computes candidates; empty never stages the whole tree."},
         "skip_tests": {"type": "boolean", "default": False, "description": "Skip pre-commit tests."},
         "review_rebuttal": {"type": "string", "default": "", "description": "A NEW content-hashed counter-argument buys one paid re-review within capacity; repeating it is free-refused."},

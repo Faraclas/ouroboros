@@ -129,7 +129,7 @@ def get_tools() -> List[ToolEntry]:
                 # The bound is enforced by the validator; sourcing maxLength from ITS
                 # constant keeps the schema from becoming a false promise on drift.
                 "text": {"type": "string", "maxLength": _MAX_TEXT_CHARS,
-                         "description": f"Short coordination text (<={_MAX_TEXT_CHARS} chars)."},
+                         "description": f"Short coordination text (<={_MAX_TEXT_CHARS} chars; <=500 chars when payload.type='child_result_disposition')."},
                 "needs_parent_attention": {"type": "boolean", "default": False, "description": "Force a parent early-wait return (implied by blocker/question/interface_contract/review_requested)."},
                 "payload": {
                     "type": "object",
@@ -139,10 +139,10 @@ def get_tools() -> List[ToolEntry]:
                         "and never starts a reviewer. If the parent launches a check, it carries "
                         "that hash into the existing accounting/dedup path. Required for "
                         "delegation_constraint. For a parent "
-                        "decision about a direct child result, set type=child_result_disposition, "
+                        "decision about a direct child result, set kind='decision', type=child_result_disposition, "
                         "child_task_id, disposition, and the exact SHA-256 shown by child evidence; "
                         "tree_note text is the rationale (<=500 chars for a "
-                        "child_result_disposition). To disposition MANY children in one call, "
+                        "child_result_disposition; not a payload key). To disposition MANY children in one call, "
                         "set type=child_result_disposition and a children array of "
                         "{child_task_id, disposition, child_result_sha256} entries (one shared "
                         "rationale; each entry is validated exactly like the single form)."

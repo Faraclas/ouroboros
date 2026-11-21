@@ -228,3 +228,13 @@ def test_continuation_envelope_and_projection_digests_have_distinct_names_and_re
     result, unchanged = _read(ctx, **{k: v for k, v in arguments.items() if k != "task_id"})
     assert result.status == "ok" and unchanged["status"] == "available"
     assert unchanged["authority_projection_sha256"] == metadata["authority_projection_sha256"]
+
+
+def test_unknown_authority_fields_error_lists_available_keys(tmp_path):
+    ctx = _ctx(tmp_path)
+    _write(ctx, task_contract={"objective": "check available keys"})
+    result, _ = _read(ctx, authority_fields=["task_contract", "nonexistent_field"])
+    assert result.status == "error" and result.code == "TOOL_ARG_ERROR"
+    assert "unknown authority_fields" in result.text
+    assert "available:" in result.text
+    assert "task_contract" in result.text

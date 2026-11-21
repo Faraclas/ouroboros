@@ -41,6 +41,28 @@ def test_empty_commit_message_is_an_argument_refusal_before_git(producer, monkey
     assert result.text == "⚠️ ERROR: commit_message must be non-empty."
 
 
+def test_author_continuation_reuses_reviewed_commit_message_when_omitted(monkeypatch):
+    from ouroboros.tools import commit_gate, git
+
+    monkeypatch.setattr(git, "_reset_commit_review_state", lambda _ctx: None)
+    monkeypatch.setattr(commit_gate, "resolve_commit_review_reference",
+                        lambda _ctx, _ref: SimpleNamespace(commit_message="Reviewed commit subject"))
+    called = {}
+    monkeypatch.setattr(git, "prepare_author_commit_request", lambda *_a: None)
+    monkeypatch.setattr(git, "_check_overlapping_review_attempt", lambda _ctx: None)
+    monkeypatch.setattr(git, "_commit_request_refusals", lambda *_a, **kw: called.setdefault("goal", kw.get("goal")) and ({}, "stop-before-git"))
+
+    ctx = SimpleNamespace(drive_root=".", repo_dir=".")
+    result = _call(
+        ctx, git._repo_commit_push, "",
+        review_reference={"record_id": "rl-1"},
+        author_disposition={"disposition": "accepted", "rationale": "ok"},
+    )
+    assert result.code == "TOOL_ARG_ERROR"
+    assert "stop-before-git" in result.text
+    assert called["goal"] == "Reviewed commit subject"
+
+
 @pytest.mark.parametrize("stored,code", [
     ({}, "LEGACY_UNAVAILABLE"),
     ({"status": "completed"}, "LEGACY_BLOCKED"),

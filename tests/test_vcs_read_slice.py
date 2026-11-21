@@ -523,3 +523,27 @@ def test_registered_log_and_show_do_not_invoke_signature_verifier(world, tmp_pat
         assert result.status == "ok" and result.code != "GIT_ERROR", result
         assert "signed" in result.text
     assert not marker.exists()
+
+
+def test_vcs_read_show_supports_stat_and_name_only_and_names_invalid_args(world):
+    registry, _ctx, _system, project = world
+    (project / "alpha.txt").write_text("one\ntwo\n", encoding="utf-8")
+    git(project, "add", "alpha.txt")
+    git(project, "commit", "-qm", "add alpha")
+
+    stat_res = registry.execute_result("vcs_read", {"action": "show", "stat": True})
+    assert stat_res.status == "ok", stat_res
+    assert "alpha.txt" in stat_res.text and "1 file changed" in stat_res.text
+
+    name_res = registry.execute_result("vcs_read", {"action": "show", "stat": True, "name_only": True})
+    assert name_res.status == "ok", name_res
+    assert "alpha.txt" in name_res.text and "1 file changed" not in name_res.text
+
+    bad_staged = registry.execute_result("vcs_read", {"action": "show", "staged": True})
+    assert bad_staged.code == "TOOL_ARG_ERROR" and "staged=true requires action=diff" in bad_staged.text
+
+    bad_stat = registry.execute_result("vcs_read", {"action": "log", "stat": True})
+    assert bad_stat.code == "TOOL_ARG_ERROR" and "stat/name_only require action=diff or show" in bad_stat.text
+
+    bad_ref = registry.execute_result("vcs_read", {"action": "diff", "ref": "HEAD"})
+    assert bad_ref.code == "TOOL_ARG_ERROR" and "ref is not supported for action=diff" in bad_ref.text

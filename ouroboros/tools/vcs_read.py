@@ -233,15 +233,21 @@ def _vcs_read(
     """Read Git objects using only the prepared repository and path binding."""
     max_count, max_chars = (int(value) if isinstance(value, str) and value.strip().isdigit() else value
                             for value in (max_count, max_chars))
-    if (action not in _ACTIONS or not isinstance(max_count, int)
-            or not isinstance(max_chars, int) or not 1 <= max_count <= 200 or max_chars < 0
-            or (path and action not in {"status", "diff", "log", "show", "file", "blame"})
-            or ((base or head) and action not in {"merge_base", "diff"})
-            or ((staged or stat or name_only) and action != "diff")
-            or (ref and action in {"merge_base", "identity", "status", "diff"})):
+    arg_error = (
+        f"invalid action {action!r}" if action not in _ACTIONS else
+        "max_count must be an integer between 1 and 200" if not isinstance(max_count, int) or not 1 <= max_count <= 200 else
+        "max_chars must be a non-negative integer" if not isinstance(max_chars, int) or max_chars < 0 else
+        f"path is not supported for action={action}" if path and action not in {"status", "diff", "log", "show", "file", "blame"} else
+        "base/head are only supported for action=diff or merge_base" if (base or head) and action not in {"merge_base", "diff"} else
+        "staged=true requires action=diff" if staged and action != "diff" else
+        "stat/name_only require action=diff or show" if (stat or name_only) and action not in {"diff", "show"} else
+        f"ref is not supported for action={action} (use base/head for diff)" if ref and action in {"merge_base", "identity", "status", "diff"} else
+        ""
+    )
+    if arg_error:
         return _publish_tool_result(ctx, ToolResult(
             status="error", code="TOOL_ARG_ERROR",
-            text="⚠️ TOOL_ARG_ERROR (vcs_read): invalid action, limit, or argument for this action.",
+            text=f"⚠️ TOOL_ARG_ERROR (vcs_read): {arg_error}.",
             meta={"operation_outcome": "completed_no_effect"},
         ))
     try:
@@ -284,7 +290,12 @@ def _vcs_read(
                     cmd.extend(["--", f":(literal){literal}"])
                 output = _run_read_git(repo, cmd)
             elif action == "show":
-                cmd = ["show", "--no-ext-diff", "--no-textconv", "--no-color", "--format=fuller", _object(repo, ref or "HEAD", "commit")]
+                cmd = ["show", "--no-ext-diff", "--no-textconv", "--no-color", "--format=fuller"]
+                if name_only:
+                    cmd.append("--name-only")
+                elif stat:
+                    cmd.append("--stat")
+                cmd.append(_object(repo, ref or "HEAD", "commit"))
                 if literal:
                     cmd.extend(["--", f":(literal){literal}"])
                 output = _run_read_git(repo, cmd)
@@ -331,8 +342,8 @@ def get_tools():
             "base": {"type": "string", "default": "", "description": "First revision for merge_base, or diff base resolved once to a tree."},
             "head": {"type": "string", "default": "", "description": "Second revision for merge_base or diff; diff requires base and staged=false."},
             "staged": {"type": "boolean", "default": False, "description": "Diff the index (--staged)."},
-            "stat": {"type": "boolean", "default": False, "description": "Diff summary (--stat)."},
-            "name_only": {"type": "boolean", "default": False, "description": "Diff file names only; takes precedence over stat."},
+            "stat": {"type": "boolean", "default": False, "description": "Diff/show summary (--stat)."},
+            "name_only": {"type": "boolean", "default": False, "description": "Diff/show file names only; takes precedence over stat."},
             "max_count": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20,
                           "description": "Maximum commits returned by log."},
             "max_chars": {"type": "integer", "minimum": 0, "default": 0,

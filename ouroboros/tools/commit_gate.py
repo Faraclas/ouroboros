@@ -1341,6 +1341,17 @@ def prepare_author_commit_request(ctx: ToolContext, review_reference: Any, autho
     return None
 
 
+def reuse_reviewed_message(ctx: ToolContext, review_reference: Any, author_disposition: Any) -> str:
+    """Return the original commit_message when an author continuation omits it."""
+    if review_reference is None or author_disposition is None:
+        return ""
+    try:
+        source = resolve_commit_review_reference(ctx, review_reference)
+        return str(getattr(source, "commit_message", "") or "")
+    except (OSError, ValueError):
+        return ""
+
+
 # ---- Review ledger hook (ARCHITECTURE §6 "Review ledger record") ------------
 
 def _review_preflight_facts(ctx: ToolContext) -> Dict[str, Any]:

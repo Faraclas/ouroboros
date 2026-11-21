@@ -101,7 +101,8 @@ def authority_selection(authority: Dict[str, Any], task_id: str, fields: Any, *,
     keys = sorted(authority) if fields is None else fields
     missing = [key for key in keys if key not in authority]
     if missing:
-        raise ValueError("unknown authority_fields: " + json_dumps(missing, ensure_ascii=False))
+        raise ValueError("unknown authority_fields: " + json_dumps(missing, ensure_ascii=False)
+                         + "; available: " + json_dumps(sorted(authority), ensure_ascii=False))
     arguments: Dict[str, Any] = {"task_id": task_id, "source_only": True,
                                  "authority_projection_sha256": projection_sha}
     arguments.update({"include_authority": True} if fields is None else {"authority_fields": list(keys)})

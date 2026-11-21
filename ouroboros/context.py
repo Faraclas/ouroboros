@@ -950,13 +950,14 @@ def _build_installed_skills_section(env: Any, *, max_lines: int = 100, skills: O
         if not name:
             continue
         kind = _field(skill.get("type") or "skill", 40)
+        location = _field(skill.get("location"), 40)
         version = _field(skill.get("version"), 40)
         review_status = _field(skill.get("review_status"), 40)
         description = _field(skill.get("description"), 260)
         when = _field(skill.get("when_to_use"), 260)
         surfaces = [_field(item.get("name"), 100) for item in (skill.get("tool_surfaces") or [])
                     if isinstance(item, dict) and item.get("name")]
-        meta = f"{kind}{', v' + version if version else ''}{', ' + review_status if review_status else ''}"
+        meta = f"{kind}{', bucket=' + location if location else ''}{', v' + version if version else ''}{', ' + review_status if review_status else ''}"
         lines.append(f"- {name} ({meta}): {description or 'No description.'}")
         if skill.get("review_gate", {}).get("author_accepted"):
             lines.append("  Current payload accepted by author under Advisory; reviewer evidence remains at its original hash.")
