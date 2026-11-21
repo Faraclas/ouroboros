@@ -74,3 +74,74 @@ def test_costs_callback_separation_and_unavailable(subscription_ui, tmp_path, mo
     assert page.locator('#cost-by-extension tbody').inner_text() == 'Unavailable'
     assert page.locator('#cost-extension-calls').inner_text() == '—'
     assert not ui['posts'], 'the view must not save settings or send messages'
+
+
+@pytest.mark.parametrize('theme,width,height', [
+    ('dark', 1360, 1000),
+    ('light', 1360, 1000),
+    ('dark', 1024, 1000),
+    ('dark', 2711, 1623),
+])
+def test_costs_model_names_and_amounts_unclipped_on_desktop(subscription_ui, theme, width, height):
+    ui = subscription_ui
+    models = {
+        'openai-compatible/claude-opus-5.5': {'calls': 10291, 'cost': 0.0, 'unknown_unmetered': 10292, 'cost_final': False},
+        'openai-compatible/claude-sonnet-5.5': {'calls': 4593, 'cost': 0.0, 'unknown_unmetered': 4593, 'cost_final': False},
+        'openai-compatible/gemini-4-hydrogen': {'calls': 427, 'cost': 0.0, 'unknown_unmetered': 427, 'cost_final': False},
+        'openai-compatible/gpt-6.2-sol': {'calls': 43812, 'cost': 0.0, 'unknown_unmetered': 43812, 'cost_final': False},
+        'openai/gpt-5.6-terra': {'calls': 4, 'cost': 0.0, 'unknown_unmetered': 4, 'cost_final': False},
+    }
+    payload = {
+        'accounting': {
+            'available': True,
+            'settled_usd': 0.0,
+            'confirmed_usd': 0.0,
+            'estimated_usd': 0.0,
+            'reserved_usd': 0.0,
+            'unresolved_upper_bound_usd': 0.0,
+            'unknown_unmetered': 67713,
+            'limit_usd': 20000.0,
+            'cost_final': False,
+            'non_final_rows': 0,
+        },
+        'total_calls': 67713,
+        'total_cost': 0.0,
+        'by_model': models,
+        'by_api_key': {
+            'openai': {'calls': 8, 'cost': 0.0, 'unknown_unmetered': 8, 'cost_final': False},
+            'openai-compatible': {'calls': 67705, 'cost': 0.0, 'unknown_unmetered': 67705, 'cost_final': False},
+        },
+        'by_model_category': {'flagship': {'calls': 14884, 'cost': 0.0, 'unknown_unmetered': 14884, 'cost_final': False}},
+        'by_task_category': {'task': {'calls': 67713, 'cost': 0.0, 'unknown_unmetered': 67713, 'cost_final': False}},
+        'extension_activity': {'calls': 0, 'by_extension': {}, 'cost_note': ''},
+    }
+    page = ui['new_page'](viewport={'width': width, 'height': height}, color_scheme=theme)
+    page.add_init_script(f"localStorage.setItem('ouroboros.theme', {json.dumps(theme)})")
+    page.route('**/api/cost-breakdown', lambda route: route.fulfill(
+        status=200, content_type='application/json', body=json.dumps(payload),
+    ))
+    page.goto(ui['url'] + '/')
+    page.wait_for_selector('#page-chat')
+    page.locator('[data-nav-page="dashboard"]').click()
+    page.locator('[data-dashboard-tab="costs"]').click()
+    page.wait_for_function("document.querySelectorAll('#cost-by-model tbody tr').length === 5")
+
+    name_cells = page.locator('#cost-by-model tbody td.cost-cell-name')
+    assert name_cells.count() == len(models)
+    for idx, expected_name in enumerate(models):
+        cell = name_cells.nth(idx)
+        assert cell.inner_text() == expected_name
+        metrics = cell.evaluate('(el) => ({ sw: el.scrollWidth, cw: el.clientWidth, to: getComputedStyle(el).textOverflow })')
+        assert metrics['to'] != 'ellipsis', metrics
+        assert metrics['sw'] <= metrics['cw'] + 1, (expected_name, metrics)
+
+    for wrapper in page.locator('.costs-tables-grid > div').all():
+        box = wrapper.evaluate('(el) => ({ sw: el.scrollWidth, cw: el.clientWidth })')
+        assert box['sw'] <= box['cw'] + 1, (width, box)
+
+    shots = os.environ.get('OUROBOROS_UI_EVIDENCE_DIR')
+    if shots:
+        Path(shots).mkdir(parents=True, exist_ok=True)
+        page.locator('#cost-by-model').scroll_into_view_if_needed()
+        page.screenshot(path=str(Path(shots) / f'costs-models-{theme}-{width}.png'))
+    assert not ui['posts'], 'the view must not save settings or send messages'

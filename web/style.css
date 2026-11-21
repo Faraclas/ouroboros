@@ -5643,14 +5643,14 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 }
 .costs-tables-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 580px), 1fr));
     gap: 20px;
 }
 .costs-stats-grid > *, .costs-tables-grid > * { min-width: 0; }
 .costs-tables-grid > * { overflow-x: auto; }
 .costs-stats-grid .value { overflow-wrap: anywhere; }
 .costs-table-label { font-size: 14px; color: var(--text-secondary); margin: 0 0 8px; }
-.cost-cell-name { font-size: 12px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cost-cell-name { font-size: 12px; white-space: nowrap; }
 .cost-cell-right { text-align: right; }
 .cost-top-model { font-size: 12px; }
 .cost-bar-cell { width: 60px; }
