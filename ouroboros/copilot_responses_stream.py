@@ -8,8 +8,23 @@ from __future__ import annotations
 import json
 from functools import partial
 
+from ouroboros._usage_response import provider_usage_fields
 from ouroboros.llm_stream import _SSEFrames
 from ouroboros.llm_observability import native_output_reader, observe_model_output
+
+
+def _merge_outer_usage(body, envelope):
+    """Preserve recognized outer usage fields onto a shallow copy without overwriting inner keys."""
+    outer = provider_usage_fields(envelope)
+    if not outer:
+        return body
+    merged = None
+    for key, val in outer.items():
+        if key not in body:
+            if merged is None:
+                merged = dict(body)
+            merged[key] = val
+    return body if merged is None else merged
 
 
 def _receiving_output(kind, value):
@@ -58,7 +73,10 @@ class ResponsesStream:
                 if not isinstance(value, dict):
                     raise CopilotPendingResponse({"stream": "event is not an object"})
                 if isinstance(value.get("response"), dict):
-                    self.pending_response = value["response"]
+                    self.pending_response = _merge_outer_usage(value["response"], value)
+                elif provider_usage_fields(value):
+                    base = self.pending_response if isinstance(self.pending_response, dict) else {}
+                    self.pending_response = _merge_outer_usage(base, value)
                 kind = value.get("type") or event
                 if not isinstance(kind, str):
                     raise CopilotPendingResponse({"stream": "event type is not a string"})
@@ -72,6 +90,7 @@ class ResponsesStream:
                             body["error"] = {"type": "error"}
                     if not isinstance(body, dict):
                         raise CopilotRejectedResponse(value, "Copilot Responses terminal is not an object")
+                    body = _merge_outer_usage(body, value)
                     expected = kind.removeprefix("response.") if kind != "error" else "failed"
                     if body.get("status") != expected:
                         raise CopilotRejectedResponse(body, "Copilot Responses terminal status disagrees with event")
@@ -112,7 +131,6 @@ class ResponsesStream:
         return json.dumps(self.terminal).encode("utf-8")
 
     def preserve_claims(self, error):
-        from ouroboros._usage_response import provider_usage_fields
         error.provider_claims = provider_usage_fields(self.pending_response)
 
 

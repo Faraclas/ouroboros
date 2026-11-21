@@ -313,3 +313,77 @@ def test_invalid_event_type_is_protocol_unknown(kind):
     from ouroboros.copilot_responses_stream import ResponsesStream
     with pytest.raises(nt.CopilotPendingResponse):
         ResponsesStream().feed(event(kind))
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_outer_copilot_usage_preserved_on_terminal_and_inner_wins(monkeypatch, isolated, asynchronous):
+    outer_usage = {
+        "total_nano_aiu": 4_250_000_000,
+        "token_details": [{"token_type": "input", "token_count": 100, "model": "gpt-6.2-sol"}],
+    }
+    body = native(output=[message("OUTER_OK")])
+    body["usage"] = {"input_tokens": 100, "output_tokens": 12}
+    body["reasoning"] = {"effort": "high"}
+    wire = (
+        event("response.output_text.delta", delta="OUTER_OK")
+        + event(
+            "response.completed",
+            sequence_number=4,
+            response=body,
+            copilot_usage=outer_usage,
+            prompt_cache_retention="24h",
+            reasoning={"effort": "low"},
+        )
+    )
+    (msg, usage), *_ = exchange(monkeypatch, isolated, [wire], asynchronous=asynchronous)
+    assert msg["content"] == "OUTER_OK"
+    expected = {
+        "source": "provider_response",
+        "copilot_usage": outer_usage,
+        "prompt_cache_retention": "24h",
+        "reasoning_effort": "high",
+    }
+    assert usage.get("provider_usage") == expected
+    rows = ledger_rows(isolated)
+    assert len(rows) == 1 and rows[0]["state"] == "settled"
+    assert rows[0]["provider_usage"] == expected
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("case", ["failed", "incomplete_filter", "cancelled", "pending_eof", "pending_no_response"])
+def test_outer_copilot_usage_preserved_on_failures_and_pending(monkeypatch, isolated, asynchronous, case):
+    outer_usage = {"total_nano_aiu": 900_000_000}
+    if case == "failed":
+        chunks = [event("response.failed", response=native("failed", error={"code": "fixture"}), copilot_usage=outer_usage)]
+        exc_type, expected_state = nt.CopilotRejectedResponse, "settled"
+    elif case == "incomplete_filter":
+        body = {**native("incomplete"), "incomplete_details": {"reason": "content_filter"}}
+        chunks = [event("response.incomplete", response=body, copilot_usage=outer_usage)]
+        exc_type, expected_state = nt.CopilotRejectedResponse, "settled"
+    elif case == "cancelled":
+        chunks = [event("response.cancelled", response=native("cancelled"), copilot_usage=outer_usage)]
+        exc_type, expected_state = nt.CopilotRejectedResponse, "settled"
+    elif case == "pending_eof":
+        chunks = [event("response.in_progress", response={"status": "in_progress"}, copilot_usage=outer_usage)]
+        exc_type, expected_state = nt.CopilotPendingResponse, "unresolved"
+    else:
+        chunks = [
+            event("response.in_progress", response={"status": "in_progress"}),
+            event("response.usage", copilot_usage=outer_usage),
+        ]
+        exc_type, expected_state = nt.CopilotPendingResponse, "unresolved"
+
+    with pytest.raises(exc_type):
+        exchange(monkeypatch, isolated, chunks, asynchronous=asynchronous)
+    rows = ledger_rows(isolated)
+    assert len(rows) == 1 and rows[0]["state"] == expected_state
+    assert rows[0]["provider_usage"] == {"source": "provider_response", "copilot_usage": outer_usage}
+
+
+def test_text_delta_terminal_message_without_content_key_does_not_raise():
+    from ouroboros.copilot_responses_stream import ResponsesStream
+    state = ResponsesStream()
+    state.feed(event("response.output_text.delta", delta="partial"))
+    body = native(output=[{"type": "message"}])
+    assert state.feed(terminal(body)) is True
+    assert state.facts["text_delta_terminal_disagreement"] is True

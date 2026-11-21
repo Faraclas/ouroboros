@@ -6,6 +6,8 @@ import datetime as _dt
 import json
 import sqlite3
 
+import pytest
+
 from ouroboros import usage_accounting as ua
 from ouroboros import usage_store
 from ouroboros._usage_rows import copilot_daily_delta, copilot_usage_nano_aiu, render_daily_spend
@@ -181,3 +183,94 @@ def test_render_daily_spend_empty_and_unavailable():
     empty = render_daily_spend([], now=now)
     assert empty["available"] is True and empty["first_day"] is None and empty["days"] == []
     assert empty["total_viper_credits"] == 0.0 and empty["total_viper_usd"] == 0.0
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_streaming_responses_outer_copilot_usage_flows_to_daily_spend_endpoint(tmp_path, monkeypatch, asynchronous):
+    import openai
+    from ouroboros import net_transport as nt
+    from ouroboros.gateway.cost_breakdown import make_cost_breakdown_endpoint
+    from ouroboros.llm import LLMClient
+    from ouroboros.response_cleanup import protect_httpx_client
+
+    root = _data_root(tmp_path, monkeypatch)
+    usage_store.migrate_from_journal(root, initialize_journal=True)
+
+    hm = nt._openai_httpx_module()
+    host = "https://api.business.githubcopilot.com"
+    outer_usage = {
+        "total_nano_aiu": 12_500_000_000,
+        "token_details": [
+            {"token_type": "input", "token_count": 500, "model": "gpt-6.2-sol"},
+            {"token_type": "output", "token_count": 40, "model": "gpt-6.2-sol"},
+        ],
+    }
+    sse_envelope = {
+        "type": "response.completed",
+        "sequence_number": 3,
+        "copilot_usage": outer_usage,
+        "response": {
+            "id": "resp-daily-spend-e2e",
+            "status": "completed",
+            "model": "gpt-6.2-sol",
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "E2E_OK"}],
+            }],
+            "usage": {"input_tokens": 500, "output_tokens": 40},
+        },
+    }
+    sse_bytes = ("data: " + json.dumps(sse_envelope) + "\n\n").encode("utf-8")
+
+    def respond(request):
+        assert request.url.path.endswith("/responses")
+        return hm.Response(200, content=sse_bytes, headers={"content-type": "text/event-stream"})
+
+    monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "offline-fixture")
+    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", host)
+    http = (hm.AsyncClient if asynchronous else hm.Client)(transport=hm.MockTransport(respond))
+    sdk = (openai.AsyncOpenAI if asynchronous else openai.OpenAI)(
+        api_key="offline-fixture", base_url=host, max_retries=0, http_client=http
+    )
+    protect_httpx_client(http, asynchronous=asynchronous)
+    nt.attach_copilot_client(sdk)
+    client = LLMClient()
+    monkeypatch.setattr(client, "_get_async_remote_client" if asynchronous else "_get_remote_client", lambda *a, **k: sdk)
+
+    scope = ua.UsageScope(drive_root=root, task_id="daily-e2e", root_task_id="daily-e2e")
+    with ua.usage_scope(scope):
+        if asynchronous:
+            async def _run():
+                try:
+                    return await client.chat_async(
+                        messages=[{"role": "user", "content": "hi"}],
+                        model="openai-compatible::gpt-6.2-sol",
+                        stream=True,
+                        max_tokens=128,
+                    )
+                finally:
+                    await sdk.close()
+            msg, usage = asyncio.run(_run())
+        else:
+            try:
+                msg, usage = client.chat(
+                    messages=[{"role": "user", "content": "hi"}],
+                    model="openai-compatible::gpt-6.2-sol",
+                    stream=True,
+                    max_tokens=128,
+                )
+            finally:
+                sdk.close()
+
+    assert msg["content"] == "E2E_OK"
+    assert usage["provider_usage"]["copilot_usage"] == outer_usage
+
+    resp = asyncio.run(make_cost_breakdown_endpoint(root)(None))
+    assert resp.status_code == 200
+    data = json.loads(resp.body)
+    assert data["daily_spend"]["available"] is True
+    assert data["daily_spend"]["total_viper_credits"] == 12.5
+    assert data["daily_spend"]["total_viper_usd"] == 0.125
+    assert data["daily_spend"]["total_viper_calls"] == 1

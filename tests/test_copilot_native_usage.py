@@ -321,3 +321,51 @@ def test_real_settlement_journal_import_and_reopened_store_preserve_claims(tmp_p
     with hold(restored) as view: imported = view.attempt(reservation.attempt_id)
     assert imported['provider_usage'] == evidence(body) and imported['cost_usd'] == .25
     assert imported['prompt_tokens'] == 564 and imported['cache_write_tokens'] is None
+
+
+@pytest.mark.parametrize('asynchronous', [False, True])
+def test_streaming_responses_outer_envelope_copilot_usage_reaches_ledger(native_wire, monkeypatch, asynchronous):
+    invoke, sent, root, task = native_wire
+    hm = nt._openai_httpx_module()
+    inner_body = response('gpt-6.1-sol')
+    outer_copilot_usage = inner_body.pop('copilot_usage')
+    outer_retention = inner_body.pop('prompt_cache_retention')
+
+    def handle(self, request):
+        sent.append(json.loads(request.read()))
+        assert request.url.path.endswith('/responses')
+        envelope = {
+            'type': 'response.completed',
+            'sequence_number': 7,
+            'response': copy.deepcopy(inner_body),
+            'copilot_usage': copy.deepcopy(outer_copilot_usage),
+            'prompt_cache_retention': outer_retention,
+            'reasoning': {'effort': 'low'},  # inner reasoning.effort='high' must win
+        }
+        return hm.Response(
+            200,
+            content=('data: ' + json.dumps(envelope) + '\n\n').encode(),
+            headers={'content-type': 'text/event-stream'},
+        )
+
+    async def ahandle(self, request):
+        return handle(self, request)
+
+    monkeypatch.setattr(hm.HTTPTransport, 'handle_request', handle)
+    monkeypatch.setattr(hm.AsyncHTTPTransport, 'handle_async_request', ahandle)
+    message, usage = invoke('gpt-6.1-sol', inner_body, asynchronous=asynchronous, stream=True)
+    assert message['content'] == 'ok' and len(sent) == 1
+    expected = {
+        'source': 'provider_response',
+        'copilot_usage': outer_copilot_usage,
+        'prompt_cache_retention': outer_retention,
+        'reasoning_effort': 'high',
+    }
+    assert usage.get('provider_usage') == expected
+    assert usage['prompt_tokens'] == 564 and usage['completion_tokens'] == 26
+    assert usage.get('cache_write_tokens') is None and usage['cost'] is None
+    with hold(root) as view:
+        row = view.attempt(usage['ledger_attempt_ids'][0])
+    assert row['state'] == 'settled' and row.get('provider_usage') == expected
+    assert row['prompt_tokens'] == 564 and row['completion_tokens'] == 26
+    assert row['cache_write_tokens'] is None and row['cost_usd'] is None
