@@ -867,7 +867,7 @@ SCHEMA: Dict[str, Any] = {
         "kind": {"type": "string", "enum": list(KINDS),
                  "description": "Object kind for get/list/search: issue, pr, discussion, comment (conversation), review_comment "
                                 "(inline code review), review, notification, release, label, run, artifact"},
-        "target": {"type": ["integer", "string"], "default": "",
+        "target": {"anyOf": [{"type": "integer"}, {"type": "string"}], "default": "",
                    "description": "issue/PR/discussion number; comment id (get kind=comment|review_comment); release tag; label name; "
                                   "PR number or 40-hex commit SHA for checks; run id for get run/list artifact, artifact id for download"},
         "include": {"type": "array", "items": {"type": "string", "enum": list(FACETS)}, "default": [],

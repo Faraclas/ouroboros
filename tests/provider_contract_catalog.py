@@ -20,6 +20,25 @@ from jsonschema import validators
 
 
 ROOT_SCHEMA_COMBINATORS = ("anyOf", "oneOf", "allOf")
+_LITERAL_SCHEMA_KEYS = frozenset({
+    "$comment",
+    "const",
+    "default",
+    "deprecated",
+    "description",
+    "enum",
+    "examples",
+    "readOnly",
+    "title",
+    "writeOnly",
+})
+_SUBSCHEMA_MAP_KEYS = frozenset({
+    "$defs",
+    "definitions",
+    "dependentSchemas",
+    "patternProperties",
+    "properties",
+})
 
 
 def shipped_builtin_tool_schemas() -> list[dict[str, Any]]:
@@ -66,6 +85,50 @@ def _assert_no_blank_enum(node: Any, *, tool_name: str, path: str) -> None:
             )
 
 
+def _assert_no_multitype_nonnull(node: Any, *, tool_name: str, path: str) -> None:
+    if isinstance(node, Mapping):
+        raw_type = node.get("type")
+        if isinstance(raw_type, Sequence) and not isinstance(raw_type, (str, bytes, bytearray)):
+            non_null = [t for t in raw_type if t != "null"]
+            if len(non_null) >= 2:
+                raise AssertionError(
+                    f"{tool_name}: non-portable multi-type list at {path}: {raw_type!r}"
+                )
+        for key, value in node.items():
+            key_str = str(key)
+            if key_str in _LITERAL_SCHEMA_KEYS:
+                continue
+            if key_str in _SUBSCHEMA_MAP_KEYS and isinstance(value, Mapping):
+                for sub_k, sub_v in value.items():
+                    _assert_no_multitype_nonnull(
+                        sub_v,
+                        tool_name=tool_name,
+                        path=f"{path}.{key_str}.{sub_k}",
+                    )
+                continue
+            if key_str == "dependencies" and isinstance(value, Mapping):
+                for dep_k, dep_v in value.items():
+                    if isinstance(dep_v, Mapping):
+                        _assert_no_multitype_nonnull(
+                            dep_v,
+                            tool_name=tool_name,
+                            path=f"{path}.dependencies.{dep_k}",
+                        )
+                continue
+            _assert_no_multitype_nonnull(
+                value,
+                tool_name=tool_name,
+                path=f"{path}.{key_str}",
+            )
+    elif isinstance(node, Sequence) and not isinstance(node, (str, bytes, bytearray)):
+        for index, value in enumerate(node):
+            _assert_no_multitype_nonnull(
+                value,
+                tool_name=tool_name,
+                path=f"{path}[{index}]",
+            )
+
+
 def assert_portable_tool_schemas(schemas: Sequence[Mapping[str, Any]]) -> None:
     """Apply the free complete-registry JSON Schema portability contract."""
     for tool in schemas:
@@ -91,3 +154,4 @@ def assert_portable_tool_schemas(schemas: Sequence[Mapping[str, Any]]) -> None:
                     f"{tool_name}: root schema keyword {keyword!r} is not portable"
                 )
         _assert_no_blank_enum(parameters, tool_name=tool_name, path=tool_name)
+        _assert_no_multitype_nonnull(parameters, tool_name=tool_name, path=tool_name)

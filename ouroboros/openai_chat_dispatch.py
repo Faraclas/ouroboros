@@ -11,9 +11,13 @@ from __future__ import annotations
 import copy
 import json
 import re
-from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from ouroboros.openai_chat_custom import (
+    _SCHEMA_ARRAY_KEYWORDS,
+    _SCHEMA_MAP_KEYWORDS,
+    _SCHEMA_PROSE_KEYS,
+    _SCHEMA_VALUE_KEYWORDS,
     CustomToolProjectionError,
     custom_receipts_prove_wire_acceptance,
     normalize_openai_custom_tool_calls,
@@ -66,6 +70,178 @@ _HISTORY_ERROR_MARKERS = (
 )
 
 
+_LITERAL_VALUE_KEYS = _SCHEMA_PROSE_KEYS | frozenset({"enum"})
+_TYPE_SPECIFIC_KEYWORDS: Dict[str, frozenset[str]] = {
+    "array": frozenset({
+        "additionalItems",
+        "contains",
+        "items",
+        "maxContains",
+        "maxItems",
+        "minContains",
+        "minItems",
+        "prefixItems",
+        "unevaluatedItems",
+        "uniqueItems",
+    }),
+    "string": frozenset({
+        "contentEncoding",
+        "contentMediaType",
+        "contentSchema",
+        "format",
+        "maxLength",
+        "minLength",
+        "pattern",
+    }),
+    "number": frozenset({
+        "exclusiveMaximum",
+        "exclusiveMinimum",
+        "maximum",
+        "minimum",
+        "multipleOf",
+    }),
+    "integer": frozenset({
+        "exclusiveMaximum",
+        "exclusiveMinimum",
+        "maximum",
+        "minimum",
+        "multipleOf",
+    }),
+    "object": frozenset({
+        "additionalProperties",
+        "dependencies",
+        "dependentRequired",
+        "dependentSchemas",
+        "maxProperties",
+        "minProperties",
+        "patternProperties",
+        "properties",
+        "propertyNames",
+        "required",
+        "unevaluatedProperties",
+    }),
+}
+
+
+def _matches_json_type(value: Any, json_type: str) -> bool:
+    if json_type == "null":
+        return value is None
+    if json_type == "boolean":
+        return isinstance(value, bool)
+    if json_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if json_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if json_type == "string":
+        return isinstance(value, str)
+    if json_type == "array":
+        return isinstance(value, list)
+    if json_type == "object":
+        return isinstance(value, Mapping)
+    return True
+
+
+def _normalize_schema_multitypes(node: Any) -> Any:
+    """Recursively normalize >=2 non-null ``type`` lists into portable ``anyOf``."""
+    if isinstance(node, bool):
+        return node
+    if not isinstance(node, Mapping):
+        return copy.deepcopy(node)
+
+    normalized: Dict[str, Any] = {}
+    for key, value in node.items():
+        key_str = str(key)
+        if key_str in _LITERAL_VALUE_KEYS:
+            normalized[key_str] = copy.deepcopy(value)
+        elif key_str in _SCHEMA_VALUE_KEYWORDS:
+            normalized[key_str] = _normalize_schema_multitypes(value)
+        elif key_str in _SCHEMA_ARRAY_KEYWORDS and isinstance(value, list):
+            normalized[key_str] = [_normalize_schema_multitypes(item) for item in value]
+        elif key_str in _SCHEMA_MAP_KEYWORDS and isinstance(value, Mapping):
+            normalized[key_str] = {
+                str(k): _normalize_schema_multitypes(v) for k, v in value.items()
+            }
+        elif key_str == "items":
+            if isinstance(value, list):
+                normalized[key_str] = [_normalize_schema_multitypes(item) for item in value]
+            else:
+                normalized[key_str] = _normalize_schema_multitypes(value)
+        elif key_str == "dependencies" and isinstance(value, Mapping):
+            normalized[key_str] = {
+                str(k): (
+                    _normalize_schema_multitypes(v)
+                    if isinstance(v, (Mapping, bool))
+                    else copy.deepcopy(v)
+                )
+                for k, v in value.items()
+            }
+        else:
+            normalized[key_str] = copy.deepcopy(value)
+
+    raw_type = normalized.get("type")
+    if (
+        isinstance(raw_type, Sequence)
+        and not isinstance(raw_type, (str, bytes, bytearray))
+    ):
+        seen_types: List[str] = []
+        for item in raw_type:
+            if isinstance(item, str) and item not in seen_types:
+                seen_types.append(item)
+        non_null = [t for t in seen_types if t != "null"]
+        has_null = "null" in seen_types
+        if len(non_null) >= 2:
+            branch_types = list(non_null) + (["null"] if has_null else [])
+            raw_enum = normalized.get("enum")
+            has_enum = isinstance(raw_enum, list)
+            moved_keywords: set[str] = set()
+            branches: List[Dict[str, Any]] = []
+            for branch_type in branch_types:
+                branch: Dict[str, Any] = {"type": branch_type}
+                for kw in _TYPE_SPECIFIC_KEYWORDS.get(branch_type, ()):
+                    if kw in normalized:
+                        branch[kw] = copy.deepcopy(normalized[kw])
+                        moved_keywords.add(kw)
+                if has_enum:
+                    matching_enum = [
+                        copy.deepcopy(v)
+                        for v in raw_enum
+                        if _matches_json_type(v, branch_type)
+                    ]
+                    if matching_enum:
+                        branch["enum"] = matching_enum
+                    else:
+                        continue
+                branches.append(branch)
+
+            if has_enum and branches:
+                normalized.pop("enum", None)
+            elif has_enum and not branches:
+                branches = [{"type": t} for t in branch_types]
+                for branch in branches:
+                    for kw in _TYPE_SPECIFIC_KEYWORDS.get(branch["type"], ()):
+                        if kw in normalized:
+                            branch[kw] = copy.deepcopy(normalized[kw])
+                            moved_keywords.add(kw)
+
+            normalized.pop("type", None)
+            for kw in moved_keywords:
+                normalized.pop(kw, None)
+
+            if "anyOf" not in normalized:
+                normalized["anyOf"] = branches
+            else:
+                existing_anyof = normalized.pop("anyOf")
+                all_of = (
+                    list(normalized["allOf"])
+                    if isinstance(normalized.get("allOf"), list)
+                    else []
+                )
+                all_of.extend([{"anyOf": existing_anyof}, {"anyOf": branches}])
+                normalized["allOf"] = all_of
+
+    return normalized
+
+
 def sanitize_function_tools(
     tools: Optional[Sequence[Mapping[str, Any]]],
     *,
@@ -98,8 +274,11 @@ def sanitize_function_tools(
         function_copy["description"] = description_normalizer(
             function_copy.get("description")
         )
-        if not isinstance(function_copy.get("parameters"), dict):
+        params = function_copy.get("parameters")
+        if not isinstance(params, Mapping):
             function_copy["parameters"] = {"type": "object", "properties": {}}
+        else:
+            function_copy["parameters"] = _normalize_schema_multitypes(params)
         tool_copy = dict(tool)
         tool_copy["function"] = function_copy
         prepared.append(tool_copy)

@@ -552,7 +552,7 @@ SCHEMA: Dict[str, Any] = {
                    "description": "comment | create_issue | create_pr | update | review | resolve_thread | api"},
         "kind": {"type": "string", "enum": ["issue", "pr", "discussion"],
                  "description": "comment: 'discussion' targets a discussion number; issue and pr share one conversation route"},
-        "target": {"type": ["integer", "string"], "default": "",
+        "target": {"anyOf": [{"type": "integer"}, {"type": "string"}], "default": "",
                    "description": "issue/PR/discussion number; for resolve_thread the review thread node id"},
         "body": {"type": "string", "description": "Markdown body; PR update: omitted leaves it, empty clears it"},
         "title": {"type": "string", "description": "create_issue / create_pr / update: the title"},
@@ -570,7 +570,7 @@ SCHEMA: Dict[str, Any] = {
             "side": {"type": "string", "enum": ["LEFT", "RIGHT"]}, "start_line": {"type": "integer"},
             "start_side": {"type": "string", "enum": ["LEFT", "RIGHT"]}}, "required": ["path", "body"]},
                      "description": "review: inline comments on the diff"},
-        "reply_to": {"type": ["integer", "string"], "default": "",
+        "reply_to": {"anyOf": [{"type": "integer"}, {"type": "string"}], "default": "",
                      "description": "comment: review comment id to answer inline (PR), or discussion comment node id"},
         "expect": {"type": "object", "default": {}, "properties": {
             "head_sha": {"type": "string"}, "base_sha": {"type": "string"}, "state": {"type": "string"}, "updated_at": {"type": "string"}},
