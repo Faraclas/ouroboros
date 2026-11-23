@@ -26,6 +26,12 @@ from ouroboros.utils import utc_now_iso
 from ouroboros import project_cleanup_context as custody
 from ouroboros.project_cleanup_context import MANAGED_PROJECT_IDS
 MODES = frozenset({'complete', 'reopen_friendly'})
+INTERNAL_TASK_SOURCES = frozenset({
+    'task.artifacts',
+    'task.child_drive_root',
+    'task.headless_child_drive_root',
+    'task.workspace_root',
+})
 
 
 def _hash(value):
@@ -72,7 +78,7 @@ def _risk(path, identity, cached=None):
     return risk, warning
 
 
-def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=None, risk_cache=None, *, page=None, selected_ids=None, inspect_bulk=False):
+def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=None, risk_cache=None, *, page=None, selected_ids=None, inspect_bulk=False, omit_internal=False):
     if mode not in MODES:
         raise ProjectManagementError('invalid_cleanup', 'mode must be complete or reopen_friendly')
     project = next((p for p in projects if p['id'] == project_id), None)
@@ -140,16 +146,35 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
             group['access_denial'] = denied
             group['identity'] = observed
     fixed_identities = [(identity(str(p)), inside) for p, inside in custody.fixed_roots(drive_root, system_repo_dir)]
+    drive_root_identity = identity(str(pathlib.Path(drive_root).expanduser().resolve()))
+    drive_root_parts = parts(drive_root_identity['resolved_path'])
+    def is_internal_runtime(item):
+        if item['access_denial']:
+            return False
+        sources_set = {s.get('source') for s in item['sources']}
+        return (bool(sources_set) and sources_set <= INTERNAL_TASK_SOURCES
+                and parts(item['path'])[:len(drive_root_parts)] == drive_root_parts
+                and overlap(item['identity'], drive_root_identity) in {'same', 'inside'})
     copy_identities = [(copy, identity(copy['path'])) for copy in facts_context['copies']]
     workspace_identities = [identity(p) for p in facts_context['workspaces']]
     cwd_parts = [parts(cwd) for cwd in facts_context['process_cwds']]
+    omitted_internal_total = 0
+    internal_target_ids = set()
+    active_items = []
+    for item in grouped.values():
+        internal = is_internal_runtime(item)
+        if internal:
+            omitted_internal_total += 1
+            internal_target_ids.add('cleanup:' + _hash(item['path']))
+        if not (omit_internal and internal):
+            active_items.append(item)
     inspected_paths = None
     if page is not None:
         offset, limit, query = page
-        matches = [item['path'] for item in grouped.values() if query.casefold() in item['path'].casefold()]
+        matches = [item['path'] for item in active_items if query.casefold() in item['path'].casefold()]
         inspected_paths = set(matches[offset:offset + limit])
     targets = []
-    for item in grouped.values():
+    for item in active_items:
         path, observed, sources = pathlib.Path(item['path']), item['identity'], item['sources']
         origins = {s.get('origin', 'unknown') for s in sources}
         sources_set = {s.get('source') for s in sources}
@@ -247,13 +272,17 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
                         'action': 'already_absent' if exists is False and not retain_reason else 'retain' if retain_reason else 'remove_if_selected'})
     return {'project_id': project_id, 'mode': mode, 'lifecycle': project['lifecycle'],
             'targets': targets, 'gaps': [*generated['gaps'], *(['Some recorded targets are retained without loss inspection because caller access is denied.'] if any(t['access_denial'] for t in targets) else [])],
+            'omitted_internal_total': omitted_internal_total,
+            '_internal_target_ids': frozenset(internal_target_ids),
             'coverage': 'Recorded targets only. No container inventory or backup verification. Remote refs are local knowledge, not a live push check.'}
 
 
 def cleanup_plan(drive_root, project_id, mode='complete', system_repo_dir=None, *, authorize=None, selected_ids=None):
     """Read-only explicit inspection. Association alone never selects deletion."""
-    return _plan(drive_root, project_id, mode, system_repo_dir,
+    plan = _plan(drive_root, project_id, mode, system_repo_dir,
                  registry._load(drive_root, strict=True)['projects'], authorize, selected_ids=selected_ids)
+    plan.pop('_internal_target_ids', None)
+    return plan
 
 
 def _target_facts(targets):
@@ -278,11 +307,12 @@ def cleanup_plan_page(drive_root, project_id, mode='complete', system_repo_dir=N
         raise ProjectManagementError('invalid_cleanup', 'offset >=0, limit 1..100 and query <=2000 characters are required')
     plan = _plan(drive_root, project_id, mode, system_repo_dir,
                  registry._load(drive_root, strict=True)['projects'], authorize,
-                 page=(offset, limit, query), inspect_bulk=inspect_bulk)
+                 page=(offset, limit, query), inspect_bulk=inspect_bulk, omit_internal=True)
+    plan.pop('_internal_target_ids', None)
     targets = plan['targets']
     bulk = inspect_bulk and mode == 'complete'
     targets_digest = _bulk_digest(project_id, mode, targets) if bulk else ''
-    digest = _hash([plan['lifecycle'], targets_digest]) if bulk else _hash([project_id, mode, plan['lifecycle'], _target_facts(targets)])
+    digest = _hash([plan['lifecycle'], targets_digest]) if bulk else _hash([project_id, mode, plan['lifecycle'], _target_facts(targets), plan['omitted_internal_total']])
     if plan_sha256 and plan_sha256 != digest:
         raise ProjectManagementError('cleanup_plan_changed', 'Cleanup facts changed; refresh inspection before continuing', 409)
     matches = [t for t in targets if query.casefold() in t['path'].casefold()]
@@ -344,7 +374,8 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
         inspected = _plan(drive_root, project_id, mode, system_repo_dir,
                           registry._load(drive_root, strict=True)['projects'], read_authorize,
                           page=(0, 0, ''), selected_ids=effective_selections, inspect_bulk=True)
-        if _bulk_digest(project_id, mode, inspected['targets']) != targets_sha256:
+        visible_inspected = [t for t in inspected['targets'] if t['id'] not in inspected['_internal_target_ids']]
+        if _bulk_digest(project_id, mode, visible_inspected) != targets_sha256:
             raise ProjectManagementError('cleanup_plan_changed', 'Cleanup facts changed; refresh inspection before continuing', 409)
         excluded = set(excluded_ids)
         bulk_tokens = {t['id']: t['selection_token'] for t in inspected['targets'] if t['eligible'] and t['id'] not in excluded}
@@ -369,7 +400,8 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
             raise ProjectManagementError('cleanup_in_progress', 'The saved Close cleanup is pending; wait for its outcome or POST action=clear_pending to the cleanup endpoint', 409)
         plan = _plan(drive_root, project_id, mode, system_repo_dir, data['projects'], read_authorize, risk_cache)
         targets = {t['id']: t for t in plan['targets']}
-        if select_all_eligible and _bulk_digest(project_id, mode, plan['targets']) != targets_sha256:
+        visible_plan = [t for t in plan['targets'] if t['id'] not in plan['_internal_target_ids']]
+        if select_all_eligible and _bulk_digest(project_id, mode, visible_plan) != targets_sha256:
             raise ProjectManagementError('cleanup_plan_changed', 'Cleanup facts changed; refresh inspection before continuing', 409)
         if effective_selections - targets.keys():
             raise ProjectManagementError('cleanup_plan_changed', 'Unknown target id; refresh the cleanup plan', 409)
@@ -484,7 +516,7 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
                 outcome['history_error'] = history_error
         result = {'id': operation, 'phase': 'finished', 'at': utc_now_iso(), 'project_id': project_id,
                   'mode': mode, 'decided_by': 'agent-confirmed' if decided_by == 'agent' else decided_by, 'results': results,
-                  'unselected_retained_count': len(targets) - len(effective_selections),
+                  'unselected_retained_count': sum(1 for tid in targets if tid not in effective_selections and tid not in plan['_internal_target_ids']),
                   **({'error': 'Cleanup history publication failed: ' + history_error} if history_error else {})}
         with registry._file_write_lock(registry._registry_path(drive_root)):
             saved = registry._load(drive_root, strict=True)

@@ -24,7 +24,7 @@ const retainedExplanation = reason => ({
     new_target_requires_inspection: 'Pending loss inspection.',
 }[reason] || readable(reason));
 
-export function openProjectCleanup({ project, closing = true, signal } = {}) {
+export function openProjectCleanup({ project, closing = true, signal, onStorage } = {}) {
     if (signal?.aborted) return Promise.resolve(null);
     return new Promise(resolve => {
         const backdrop = el('div', 'marketplace-modal-backdrop confirm-dialog-backdrop');
@@ -88,6 +88,7 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
             const alreadyGoneTotal = plan?.already_gone_total ?? 0;
             const needsConfTotal = plan?.needs_confirmation_total ?? 0;
             const totalTargets = plan?.total ?? 0;
+            const omittedInternalTotal = plan?.omitted_internal_total ?? 0;
             selectAll.disabled = !plan || eligibleTotal === 0;
             selectAll.checked = Boolean(plan && eligibleTotal > 0 && selectAllEligible && excludedIds.size === 0);
             selectAll.indeterminate = Boolean(plan && eligibleTotal > 0 && selectAllEligible && excludedIds.size > 0 && excludedIds.size < eligibleTotal);
@@ -110,7 +111,8 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
             const inspectionScope = plan?.uninspected_total ? ` ${plan.uninspected_total} not yet inspected for loss or Git restrictions; review their pages to classify them.` : '';
             const pageScope = ` This page: ${pageSelectable} selectable, ${pageUnavailable} unavailable.`;
             const unseenNote = selectedWarnings - confirmed > unconfirmed ? ' Unconfirmed targets on other pages will stay unless you review and confirm them separately.' : '';
-            const guidance = !totalSelected ? (closing ? ' Nothing selected: closing will keep all local material.' : (page.length && pageUnavailable === page.length ? ' Nothing selectable on this page. Read the reasons below; try another page or path filter.' : (page.length ? ' Select material to clean up.' : ' No recorded paths match this filter.'))) : '';
+            const emptyGuidance = query ? ' No recorded paths match this filter.' : (omittedInternalTotal > 0 ? ' No external project files to clean up.' : ' No recorded project files found.');
+            const guidance = !totalSelected ? (closing ? ' Nothing selected: closing will keep all local material.' : (page.length && pageUnavailable === page.length ? ' Nothing selectable on this page. Read the reasons below; try another page or path filter.' : (page.length ? ' Select material to clean up.' : emptyGuidance))) : '';
             summary.textContent = projectScope + inspectionScope + pageScope + unseenNote + guidance + (unconfirmed ? ` Extra confirmation is still required for ${unconfirmed} selected target(s).` : '');
         }
         selectAll.onchange = () => {
@@ -217,6 +219,19 @@ export function openProjectCleanup({ project, closing = true, signal } = {}) {
                     if (target.reconstruction) row.append(el('p', 'pm-note', `Before removal, retain reconstruction: ${target.reconstruction.remote_url} · ${target.reconstruction.branch} · ${target.reconstruction.head}`));
                     rowControls.push({ target, check, confirm, status: statusNode });
                     targets.append(row);
+                }
+                const omittedInternalTotal = plan.omitted_internal_total || 0;
+                if (omittedInternalTotal > 0) {
+                    const footer = el('div', 'pm-cleanup-internal-footer');
+                    const noun = omittedInternalTotal === 1 ? 'internal runtime or task-artifact path is' : 'internal runtime and task-artifact paths are';
+                    footer.append(el('p', 'pm-note', `${omittedInternalTotal.toLocaleString('en-US')} ${noun} managed separately and omitted here. Review or free runtime storage in Dashboard → Storage → Temporary space.`));
+                    if (typeof onStorage === 'function') {
+                        const storageBtn = el('button', 'btn btn-default pm-cleanup-storage-btn', 'Open Storage → Temporary space');
+                        storageBtn.type = 'button';
+                        storageBtn.onclick = () => { finish(null); onStorage(); };
+                        footer.append(storageBtn);
+                    }
+                    targets.append(footer);
                 }
                 targets.append(el('p', 'pm-note', plan.coverage));
                 for (const gap of plan.gaps || []) targets.append(el('p', 'pm-cleanup-warning', `Unknown: ${gap}`));

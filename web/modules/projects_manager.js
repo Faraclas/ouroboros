@@ -192,7 +192,7 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
             const pin = button(project.pinned ? 'Unpin' : 'Pin', async () => { pin.disabled = true; try { await onPin?.(project, !project.pinned); if (validSelection(project.id)) await selectProject(project.id); if (isHere()) await loadCatalog(); } finally { if (pin.isConnected) pin.disabled = false; } }); actions.append(pin);
             if (canCloseProject(project)) {
                 const close = button('Close project…', async () => {
-                    const choice = await openProjectCleanup({ project, signal: detailController?.signal });
+                    const choice = await openProjectCleanup({ project, signal: detailController?.signal, onStorage });
                     if (choice) await changeProject(project, '/delete', choice, close, 'Closing…');
                 }); actions.append(close);
             }
@@ -203,7 +203,7 @@ export function initProjectsManager({ mount, state, onOpen, onCreate, onChanged,
             }, true); actions.append(reopen);
             if (canCloseProject(project)) {
                 const cleanup = button('Clean up local material…', async () => {
-                    const choice = await openProjectCleanup({ project, closing: false, signal: detailController?.signal });
+                    const choice = await openProjectCleanup({ project, closing: false, signal: detailController?.signal, onStorage });
                     if (choice?.cleanup) await changeProject(project, '/cleanup', choice.cleanup, cleanup, 'Cleaning…');
                 }); actions.append(cleanup);
             }

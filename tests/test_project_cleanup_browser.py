@@ -35,7 +35,8 @@ import {initProjectsManager} from '/static/modules/projects_manager.js';
 import {initDashboard} from '/static/modules/dashboard.js';
 const state={activePage:'dashboard',dashboardActiveSubtab:'projects'};
 const dashboard=initDashboard({state}); dashboard.page.classList.add('active');
-window.manager=initProjectsManager({mount:document.getElementById('dashboard-panel-projects'),state});
+window.storageOpened=0;
+window.manager=initProjectsManager({mount:document.getElementById('dashboard-panel-projects'),state,onStorage:()=>{window.storageOpened+=1;}});
 </script>'''
     html = (repo / 'web/index.html').read_text().replace('<script type="module" src="/static/app.js"></script>', boot)
     async def index(request): return HTMLResponse(html)
@@ -279,10 +280,14 @@ def test_existing_task_workspace_cleanup_and_unavailable_page(cleanup_server, th
     (external / 'unique').write_text('deliberately selected disposable work')
     sibling = tmp_path / 'keep-sibling'; sibling.mkdir(); (sibling / 'keep').write_text('keep')
     r.create_project(data, 'beta', name='Existing external workspace', working_dir=str(external))
-    retained = [data / f'retained-{i:02}' for i in range(27)]
+    retained = [tmp_path / f'retained-{i:02}' for i in range(27)]
     for path in retained: path.mkdir(); (path / 'evidence').write_text('durable')
+    internal_artifacts = [data / 'task_results' / 'artifacts' / 'terminal-work' / f'art-{i:02}' for i in range(12)]
+    for path in internal_artifacts: path.mkdir(parents=True); (path / 'raw').write_text('internal')
+    internal_drive = data / 'task_drives' / 'terminal-work'; internal_drive.mkdir(parents=True)
     write_task_result(data, 'terminal-work', 'completed', project_id='beta', workspace_root=str(external),
-                      artifacts=[{'path': str(p)} for p in retained])
+                      child_drive_root=str(internal_drive),
+                      artifacts=[{'path': str(p)} for p in [*retained, *internal_artifacts]])
     r.begin_project_deletion(data, 'beta'); r.complete_project_deletion(data, 'beta')
     out = pathlib.Path(os.environ.get('CLEANUP_SCREENSHOTS', str(tmp_path / 'screenshots'))); out.mkdir(parents=True, exist_ok=True)
     errors = []
@@ -302,6 +307,11 @@ def test_existing_task_workspace_cleanup_and_unavailable_page(cleanup_server, th
         dialog = page.get_by_role('dialog', name='Clean up project', exact=True)
         remove = dialog.get_by_label(f'Remove {external}', exact=True)
         expect(remove).to_be_enabled(); expect(remove).not_to_be_checked()
+        footer = dialog.locator('.pm-cleanup-internal-footer')
+        expect(footer).to_be_visible()
+        expect(footer).to_contain_text('13 internal runtime and task-artifact paths are managed separately and omitted here.')
+        expect(footer).to_contain_text('Dashboard → Storage → Temporary space')
+        expect(dialog.get_by_text('task_results/artifacts/terminal-work', exact=False)).to_have_count(0)
         submit = dialog.get_by_role('button', name='Clean selected files', exact=True)
         expect(submit).to_be_disabled()
         search = dialog.get_by_label('Filter recorded paths')
@@ -330,7 +340,27 @@ def test_existing_task_workspace_cleanup_and_unavailable_page(cleanup_server, th
         assert response.value.ok and response.value.json()['results'][0]['status'] == 'removed'
         assert not external.exists() and (sibling / 'keep').read_text() == 'keep'
         assert all((p / 'evidence').read_text() == 'durable' for p in retained)
+        assert all((p / 'raw').read_text() == 'internal' for p in internal_artifacts) and internal_drive.exists()
         assert original.exists() and not errors
+        # Opening Storage from the compact footer closes the dialog and triggers onStorage.
+        r.create_project(data, 'internal-only', name='Internal artifacts only')
+        only_art = data / 'task_results' / 'artifacts' / 'only-task' / 'dump.bin'
+        only_art.parent.mkdir(parents=True); only_art.write_text('dump')
+        write_task_result(data, 'only-task', 'completed', project_id='internal-only',
+                          workspace_root=str(data / 'task_drives' / 'only-task'),
+                          artifacts=[{'path': str(only_art)}])
+        r.begin_project_deletion(data, 'internal-only'); r.complete_project_deletion(data, 'internal-only')
+        page.goto(url); page.evaluate("window.manager.select('internal-only')")
+        page.get_by_role('button', name='Clean up local material…', exact=True).click()
+        internal_dialog = page.get_by_role('dialog', name='Clean up project', exact=True)
+        expect(internal_dialog.get_by_role('status')).to_contain_text('No external project files to clean up.')
+        expect(internal_dialog.locator('.pm-resource')).to_have_count(0)
+        expect(internal_dialog.locator('.pm-cleanup-internal-footer')).to_contain_text('2 internal runtime and task-artifact paths are managed separately and omitted here.')
+        assert internal_dialog.evaluate('(n)=>n.scrollWidth<=n.clientWidth+1')
+        page.screenshot(path=str(out / f'cleanup-internal-omitted-{theme}-{width}.png'))
+        internal_dialog.get_by_role('button', name='Open Storage → Temporary space', exact=True).click()
+        expect(internal_dialog).to_have_count(0)
+        assert page.evaluate('window.storageOpened') == 1
         # A zero-selection Close is still useful, but must not queue no-op cleanup.
         page.evaluate("window.manager.select('alpha')")
         page.get_by_role('button', name='Close project…', exact=True).click()

@@ -10,8 +10,8 @@ from tests.test_project_cleanup import setup
 
 def test_pages_are_complete_native_and_digest_bound(setup, tmp_path, monkeypatch):
     root, system, _, _, _, _ = setup
-    paths = [root / 'artifacts' / str(i) for i in range(57)]
-    paths[30] = root / 'artifacts' / 'native-\udcff'
+    paths = [tmp_path / 'external-artifacts' / str(i) for i in range(57)]
+    paths[30] = tmp_path / 'external-artifacts' / 'native-\udcff'
     for path in paths: path.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(f, 'generated_targets', lambda *a: {'targets': [
         {'path': str(p), 'source': 'task.artifacts', 'origin': 'recorded_output'} for p in paths], 'gaps': []})
@@ -36,7 +36,7 @@ def test_pages_are_complete_native_and_digest_bound(setup, tmp_path, monkeypatch
 
 def test_off_page_git_restriction_is_uninspected_not_a_loss_warning(setup, tmp_path, monkeypatch):
     root, system, _, _, _, _ = setup
-    artifact = root / 'artifacts' / 'retained'
+    artifact = tmp_path / 'external-retained'
     external = tmp_path / 'repo' / 'subdir'
     artifact.mkdir(parents=True)
     external.mkdir(parents=True)
@@ -96,8 +96,8 @@ def test_existing_recorded_scale_no_ancestor_walk_or_loss_probe(setup, monkeypat
         calls.append((self, other)); return original(self, other)
     monkeypatch.setattr(Path, 'is_relative_to', counted)
     page = c.cleanup_plan_page(root, 'alpha', system_repo_dir=system)
-    assert page['total'] == 27555 and len(page['targets']) == 25
-    assert all(t['exists'] and t['action'] == 'retain' for t in page['targets'])
+    assert page['total'] == 0 and len(page['targets']) == 0
+    assert page['omitted_internal_total'] == 27555
     assert len(json.dumps(page)) < 100000
     assert len(calls) < 100, 'comparison work must not walk ancestors per target/cwd'
 
@@ -235,3 +235,60 @@ def test_absent_targets_not_default_selected_and_bulk_eligible_across_pages(setu
             select_all_eligible=True, targets_sha256=closed_page['targets_sha256'],
         )
     assert new_dir.exists()
+
+
+def test_internal_runtime_rows_omitted_from_pages_and_bulk_execute_matches(setup, tmp_path, monkeypatch):
+    root, system, record, plan, close, execute = setup
+    import subprocess
+    clean = tmp_path / 'clean-created'; clean.mkdir()
+    remote = tmp_path / 'clean-remote.git'
+    subprocess.run(['git', 'init', '--bare', str(remote)], check=True, capture_output=True)
+    subprocess.run(['git', 'init', str(clean)], check=True, capture_output=True)
+    subprocess.run(['git', '-C', str(clean), 'config', 'user.email', 't@example.com'], check=True, capture_output=True)
+    subprocess.run(['git', '-C', str(clean), 'config', 'user.name', 'Test'], check=True, capture_output=True)
+    (clean / 'README').write_text('ok')
+    subprocess.run(['git', '-C', str(clean), 'add', 'README'], check=True, capture_output=True)
+    subprocess.run(['git', '-C', str(clean), 'commit', '-m', 'init'], check=True, capture_output=True)
+    subprocess.run(['git', '-C', str(clean), 'remote', 'add', 'origin', str(remote)], check=True, capture_output=True)
+    subprocess.run(['git', '-C', str(clean), 'push', '-u', 'origin', 'HEAD'], check=True, capture_output=True)
+    int_art = root / 'task_results' / 'artifacts' / 't1' / 'blob.txt'; int_art.parent.mkdir(parents=True); int_art.write_text('keep')
+    int_drive = root / 'task_drives' / 't1'; int_drive.mkdir(parents=True)
+    int_headless = root / 'state' / 'headless_tasks' / 't2'; int_headless.mkdir(parents=True)
+    int_ws = root / 'task_drives' / 't3'; int_ws.mkdir(parents=True)
+    explicit_internal = root / 'explicit-declared'; explicit_internal.mkdir()
+    record(explicit_internal, origin='pre_existing')
+    ext_art = tmp_path / 'ext-art'; ext_art.mkdir()
+    ext_link = tmp_path / 'ext-link'; ext_link.symlink_to(int_art)
+    monkeypatch.setattr(f, 'generated_targets', lambda *a: {'targets': [
+        {'path': str(int_art), 'source': 'task.artifacts', 'origin': 'recorded_output'},
+        {'path': str(int_drive), 'source': 'task.child_drive_root', 'origin': 'task_associated'},
+        {'path': str(int_headless), 'source': 'task.headless_child_drive_root', 'origin': 'task_associated'},
+        {'path': str(int_ws), 'source': 'task.workspace_root', 'origin': 'task_associated'},
+        {'path': str(explicit_internal), 'source': 'task.artifacts', 'origin': 'recorded_output'},
+        {'path': str(ext_art), 'source': 'task.artifacts', 'origin': 'recorded_output'},
+        {'path': str(ext_link), 'source': 'task.artifacts', 'origin': 'recorded_output'},
+        {'path': str(clean), 'source': 'create_producer', 'origin': 'project_created'},
+    ], 'gaps': []})
+    page = c.cleanup_plan_page(root, 'alpha', system_repo_dir=system, limit=25, inspect_bulk=True)
+    assert page['omitted_internal_total'] == 4
+    assert page['total'] == 4 and page['matched_total'] == 4
+    assert page['eligible_total'] == 1
+    visible_paths = {t['path'] for t in page['targets']}
+    assert visible_paths == {str(explicit_internal), str(ext_art), str(ext_link), str(clean)}
+    # Full plan still holds internal paths and execute refuses removing them directly.
+    full = plan()
+    assert len(full['targets']) == 8 and full['omitted_internal_total'] == 4
+    close()
+    closed_page = c.cleanup_plan_page(root, 'alpha', system_repo_dir=system, limit=25, inspect_bulk=True)
+    assert closed_page['targets_sha256'] == page['targets_sha256']
+    res = c.cleanup_execute(
+        root, 'alpha', 'complete', [], {}, 'human', system,
+        select_all_eligible=True, targets_sha256=closed_page['targets_sha256'],
+    )
+    assert [row['path'] for row in res['results']] == [str(clean)]
+    assert res['results'][0]['status'] == 'removed' and not clean.exists()
+    assert res['unselected_retained_count'] == 3
+    assert int_art.read_text() == 'keep' and int_drive.exists() and int_headless.exists() and int_ws.exists()
+    int_art_row = next(t for t in full['targets'] if t['path'] == str(int_art))
+    refused = execute([int_art_row['id']], {int_art_row['id']: int_art_row['selection_token']})
+    assert refused['results'][0]['status'] == 'refused' and int_art.read_text() == 'keep'
