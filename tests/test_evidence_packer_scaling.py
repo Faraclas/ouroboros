@@ -24,7 +24,7 @@ def _reserve(root, task):
 @pytest.mark.parametrize("change", ["money", "delivery", "live_row", "live_evidence"])
 def test_unrelated_changes_do_not_wake_the_look_or_the_swept_task(root, monkeypatch, change):
     _task(root, "packed", blobs=1)
-    assert packer.run_pass(root)["unlinked"] == 2
+    assert packer.run_pass(root)["unlinked"] == 3
     packer.run_pass(root)  # record the directory revision after our own unlink
     maintenance.run_job(root, "evidence_packing")  # the job's quiet fact for this state
     assert "evidence_packing" not in maintenance.due(root)
@@ -104,7 +104,7 @@ def test_measure_backfill_then_rest(root, n):
     for number in range(n):
         _task(root, f"settled-{number}", blobs=1)
     backfill = _measure(root, f"backfill-{n}")
-    assert backfill["report"]["unlinked"] == 2 * n and backfill["verifies"] == n
+    assert backfill["report"]["unlinked"] == 3 * n and backfill["verifies"] == n
     after_unlink = _measure(root, f"after-unlink-{n}")
     assert after_unlink["verifies"] == 0  # no loose members left: no generation is re-read
     stable = _measure(root, f"stable-{n}")
@@ -164,7 +164,7 @@ def test_no_global_scan_or_foreign_stamp_inside_unlink_locks(root, monkeypatch):
     monkeypatch.setattr(packer, "task_stamps", observed_stamps)
     monkeypatch.setattr(packs, "unlink_loose", remove)
     report = packer.run_pass(root)
-    assert report["faults"] == 0 and report["unlinked"] == 24
+    assert report["faults"] == 0 and report["unlinked"] == 36
     assert scans and not any(writer or publication for writer, publication in scans)
 
 
@@ -192,7 +192,7 @@ def test_manifest_published_after_keep_snapshot_protects_blob(root, monkeypatch,
         edits.setattr(packs, "manifest_blob_refs", read_refs)
         edits.setattr(packs, "write_pack", publish)
         report = packer.run_pass(root)
-    assert report["faults"] == 0 and report["kept"] == report["unlinked"] == 1
+    assert report["faults"] == 0 and report["kept"] == 1 and report["unlinked"] == 2
     assert len([task for task in manifests if task == "live"]) == 1
     assert packs.blob_bytes(root, refs[0])
     _result(root, "live")
@@ -215,7 +215,7 @@ def test_unrelated_activity_during_a_pass_does_not_stop_the_backfill(root, monke
     with monkeypatch.context() as edits:
         edits.setattr(packs, "write_pack", publish)
         report = packer.run_pass(root)
-    assert report["faults"] == 0 and report["packed"] == 6 and report["unlinked"] == 12
+    assert report["faults"] == 0 and report["packed"] == 6 and report["unlinked"] == 18
     assert not any(pathlib.Path(ref["path"]).exists() for ref in refs)
 
 
@@ -238,7 +238,7 @@ def test_a_sharer_resumed_after_the_census_reads_its_shared_blob_from_the_pack(r
     with monkeypatch.context() as edits:
         edits.setattr(packs, "write_pack", resume)
         report = packer.run_pass(root)
-    assert report["faults"] == 0 and (report["packed"], report["unlinked"], report["kept"]) == (2, 2, 0)
+    assert report["faults"] == 0 and (report["packed"], report["unlinked"], report["kept"]) == (2, 3, 0)
     assert packs.blob_bytes(root, refs[0]) == raw and packs.blob_bytes(root, other[0]) == raw
     assert len(packs.published_generations(root, "other")) == 1 and _handle_path(root, "other", other_handle).exists()
     _result(root, "other")
@@ -253,7 +253,7 @@ def test_publication_journal_exists_only_for_a_sweep_and_discards_crash_residue(
     assert not journal.exists()
     journal.parent.mkdir(parents=True, exist_ok=True)
     journal.write_bytes(b"incomplete old pass")
-    assert packer.run_pass(root)["unlinked"] == 2
+    assert packer.run_pass(root)["unlinked"] == 4
     assert not journal.exists()
 
 
@@ -307,7 +307,7 @@ def test_production_shaped_backfill_packs_every_terminal_task_beside_live_sharer
                       "pack_bytes_after": packed_bytes, "raw_bytes": report["raw"], **{k: report[k] for k in packer.COUNTERS}},
                      sort_keys=True), flush=True)
     assert (report["packed"], report["faults"], report["live"], report["kept"]) == (terminal, 0, live, live)
-    assert report["unlinked"] == terminal * 3 - live
+    assert report["unlinked"] == terminal * 5 - live
     for task, items in refs.items():
         assert [packs.blob_bytes(root, ref) for ref in items] == truth[task]
         assert packs.handle_bytes(root, task, handles[task]["path"]) == handle_truth[task]

@@ -229,7 +229,7 @@ def test_evidence_packing_keeps_late_manifests_loose_and_the_source_readable(tmp
     assert report["packed"] >= 1 and not loose_blob.exists(), report
     timeout_id = "tool_timeout_slow_probe_" + settled["invocation_id"]
     for call_id in (ref["call_id"], timeout_id):
-        assert call_manifest_path(tmp_path, "packed-task", call_id).is_file(), "call manifests are never packed"
+        assert not call_manifest_path(tmp_path, "packed-task", call_id).exists(), "terminal call manifests are packed in v2"
     found = late_settlement([tmp_path], "packed-task", "slow_probe", settled["invocation_id"])
     assert (found["call_id"], found["manifest_sha256"]) == (ref["call_id"], ref["sha256"])
     assert _late_text(registry._ctx, "packed-task", ref) == BODY, "the payload is read from its pack"

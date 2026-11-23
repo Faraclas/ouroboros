@@ -458,18 +458,26 @@ def read_call_manifest_ref(
     except (OSError, ValueError) as original_error:
         if admission_refused:
             raise
-        from ouroboros.evidence_packs import blob_bytes
+        from ouroboros.evidence_packs import blob_bytes, call_manifest_bytes
         from ouroboros.source_retention import manifest_version_ref
 
         try:
-            raw = blob_bytes(
-                pathlib.Path(drive_root), manifest_version_ref(pathlib.Path(drive_root), expected_sha),
-                expected_kind="txt", max_bytes=max_bytes, admit=admit,
+            raw = call_manifest_bytes(
+                pathlib.Path(drive_root), safe_task, call_id,
+                expected_sha=expected_sha, max_bytes=max_bytes, admit=admit,
             )
         except PermissionError:
             raise
         except FileNotFoundError:
-            raise original_error
+            try:
+                raw = blob_bytes(
+                    pathlib.Path(drive_root), manifest_version_ref(pathlib.Path(drive_root), expected_sha),
+                    expected_kind="txt", max_bytes=max_bytes, admit=admit,
+                )
+            except PermissionError:
+                raise
+            except FileNotFoundError:
+                raise original_error
     manifest = json.loads(raw.decode("utf-8"))
     if not isinstance(manifest, dict) or str(manifest.get("task_id") or "") != str(task_id) or str(manifest.get("call_id") or "") != call_id:
         raise ValueError("observability call manifest task/call identity mismatch")
@@ -1028,8 +1036,14 @@ def read_call_payload(drive_root: pathlib.Path, *, task_id: str, call_id: str) -
 
         path = next((candidate for child in retained_task_roots(drive_root, task_id)
                      if (candidate := call_manifest_path(child, task_id, call_id)).is_file()), path)
-    path = _ref_path(drive_root, {"path": str(path)}, pathlib.Path("calls") / task_id / f"{call_id}.json")
-    raw = path.read_bytes()
+    try:
+        path = _ref_path(drive_root, {"path": str(path)}, pathlib.Path("calls") / task_id / f"{call_id}.json")
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        from ouroboros.evidence_packs import call_manifest_bytes
+
+        safe_task = call_manifest_path(drive_root, task_id, call_id).parent.name
+        raw = call_manifest_bytes(drive_root, safe_task, call_id)
     manifest = json.loads(raw)
     if not isinstance(manifest, dict) or manifest.get("task_id") != task_id or manifest.get("call_id") != call_id:
         raise ValueError("observability call identity mismatch")
@@ -1049,6 +1063,7 @@ def write_call_manifest(
     task_id: str,
     call_id: str,
     manifest: Dict[str, Any],
+    extra_blob_refs: Tuple[Dict[str, Any], ...] = (),
 ) -> Dict[str, Any]:
     """Write the small per-call manifest with refs into the private ledger."""
     from ouroboros import evidence_packs, store
@@ -1070,7 +1085,7 @@ def write_call_manifest(
     # waits for them rather than failing its task (issue #1754).
     with store.name_lock(pathlib.Path(drive_root), evidence_packs.PUBLICATION_LOCK_NAME,
                          timeout_sec=evidence_packs.PUBLICATION_WAIT_SEC):
-        evidence_packs.note_manifest_publication(drive_root, payload)
+        evidence_packs.note_manifest_publication(drive_root, payload, extra_refs=extra_blob_refs)
         atomic_write_json(path, payload, trailing_newline=True)
     _chmod_private(path)
     try:
@@ -1231,10 +1246,14 @@ def persist_call(
         full_ref = write_blob(drive_root, redacted.value, kind="json")
         projection_ref = full_ref
         full_redacted = True
+    extra_refs = ()
+    if call_type == "physical_stream" and isinstance(payload, dict) and isinstance(payload.get("private_wire_ref"), dict):
+        extra_refs = (payload["private_wire_ref"],)
     manifest_ref = write_call_manifest(
         drive_root,
         task_id=task_id,
         call_id=call_id,
+        extra_blob_refs=extra_refs,
         manifest={
             "call_type": call_type,
             "full_payload_ref": full_ref,
@@ -1297,21 +1316,29 @@ def latest_llm_response_text(drive_root: pathlib.Path, task_id: str) -> str:
     safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(task_id or "")).strip("_")
     if not safe_task:
         return ""
-    calls_dir = _observability_root(pathlib.Path(drive_root)) / "calls" / safe_task
-    if not calls_dir.is_dir():
+    from ouroboros.evidence_packs import iter_task_call_manifests
+
+    def _is_llm_response(name: str) -> bool:
+        return name.startswith("llm_") and name.endswith("_response.json")
+
+    candidates = []
+    for name, raw, mtime in iter_task_call_manifests(drive_root, safe_task, predicate=_is_llm_response):
+        try:
+            created = str(json.loads(raw.decode("utf-8")).get("created_at") or "")
+        except (ValueError, UnicodeDecodeError):
+            created = ""
+        candidates.append((mtime if mtime is not None else -1.0, created, name, raw))
+    if not candidates:
         return ""
-    manifests = sorted(
-        (p for p in calls_dir.glob("llm_*_response.json")),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    candidates.sort(key=lambda item: (item[0] >= 0, item[0], item[1], item[2]), reverse=True)
+    manifest_raws = [item[3] for item in candidates]
     # Scan ALL manifests, newest first: long tool-driven tasks legitimately
     # have dozens of newest responses with empty assistant content (tool-call
     # rounds), and the salvage must still reach the older real text. Manifests
     # are tiny JSON files; blobs are read only until the first non-empty hit.
-    for manifest_path in manifests:
+    for manifest_raw in manifest_raws:
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest = json.loads(manifest_raw.decode("utf-8"))
             from ouroboros.evidence_packs import blob_bytes
             try:
                 payload = json.loads(blob_bytes(drive_root, manifest.get("full_payload_ref")).decode("utf-8", errors="replace"))

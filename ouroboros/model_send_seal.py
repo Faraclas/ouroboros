@@ -377,6 +377,13 @@ def verify_sealed_candidate(
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception:
             manifest = None
+            if isinstance(manifest_ref, dict) and manifest_ref.get("call_id") and manifest_ref.get("sha256"):
+                try:
+                    from ouroboros.observability import read_call_manifest_ref
+
+                    manifest = read_call_manifest_ref(pathlib.Path(drive_root), manifest_ref, task_id=str(task_id))
+                except Exception:
+                    manifest = None
         seal = manifest.get("model_send_seal") if isinstance(manifest, dict) else None
         if not isinstance(seal, dict):
             kind, divergence_class = "reconstruction_divergence", "seal_unreadable"

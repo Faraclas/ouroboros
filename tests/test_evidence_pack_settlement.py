@@ -83,7 +83,7 @@ def test_a_terminal_task_packs_whatever_former_blocker_it_carries(root, monkeypa
     raws, handle_raw = [packs.blob_bytes(root, ref) for ref in refs], packs.handle_bytes(root, "done", handle["path"])
     assert _packable(root, "done")
     report = packer.run_pass(root)
-    assert (report["packed"], report["unlinked"], report["faults"]) == (1, 3, 0)
+    assert (report["packed"], report["unlinked"], report["faults"]) == (1, 5, 0)
     assert not any(_loose(ref) for ref in refs) and not _handle_path(root, "done", handle).exists()
     assert [packs.blob_bytes(root, ref) for ref in refs] == raws
     assert packs.handle_bytes(root, "done", handle["path"]) == handle_raw
@@ -112,7 +112,7 @@ def test_a_terminal_task_under_an_open_review_waits_like_a_live_one_until_the_re
     assert _packable(root, "done") and not _packable(root, "reviewed")
     report = packer.run_pass(root)
     assert (report["packed"], report["kept"], report["reading"], report["live"], report["swept"]) == (1, 1, 1, 0, 2)
-    assert report["unlinked"] == 1  # the packed task's own handle; the shared blob stays for the reader
+    assert report["unlinked"] == 2  # the packed task's own handle + call manifest; the shared blob stays for the reader
     assert path.exists() and _loose(refs[0]) and _loose(refs[1]) and _handle_path(root, "reviewed", handle).exists()
     assert not packs.published_generations(root, "reviewed") and packs.blob_bytes(root, done[0]) == raw
     packer.run_pass(root)
@@ -120,7 +120,7 @@ def test_a_terminal_task_under_an_open_review_waits_like_a_live_one_until_the_re
     _result(root, "reviewed", acceptance_debt={"debt_id": "d1"}, review_operations={"owner-1": {**pointer, "state": "closed"}})
     assert packer.changed_tasks(root) == ["reviewed"] and _packable(root, "reviewed")
     report = packer.run_pass(root)
-    assert (report["packed"], report["unlinked"], report["kept"], report["reading"]) == (1, 4, 0, 0)
+    assert (report["packed"], report["unlinked"], report["kept"], report["reading"]) == (1, 6, 0, 0)
     assert not path.exists() and not any(_loose(r) for r in refs) and not _handle_path(root, "reviewed", handle).exists()
     assert packs.handle_bytes(root, "reviewed", ref["path"]) == packet
     assert packs.blob_bytes(root, refs[0]) == raw and packs.blob_bytes(root, refs[1]) == b'{"own": true}'
@@ -143,7 +143,7 @@ def test_a_live_task_is_never_packed_and_its_shared_blob_waits_for_its_own_pass(
     _result(root, "live", "completed")
     assert packer.changed_tasks(root) == ["live"] and _packable(root, "live")
     report = packer.run_pass(root)
-    assert (report["packed"], report["unlinked"], report["kept"]) == (1, 3, 0)
+    assert (report["packed"], report["unlinked"], report["kept"]) == (1, 5, 0)
     assert not _loose(refs[0]) and not any(_loose(ref) for ref in live)
     assert packs.blob_bytes(root, refs[0]) == raw and packs.blob_bytes(root, live[1]) == b'{"own": true}'
 
@@ -156,15 +156,15 @@ def test_late_evidence_becomes_the_next_generation_and_the_unpacker_restores_bot
     obs.write_call_manifest(root, task_id="task-a", call_id="late", manifest={"full_payload_ref": late})
     assert packer.changed_tasks(root) == ["task-a"]
     report = packer.run_pass(root)
-    assert (report["packed"], report["unlinked"]) == (1, 1)
+    assert (report["packed"], report["unlinked"]) == (1, 2)
     generations = packs.published_generations(root, "task-a")
     assert [g["generation"] for g in generations] == [1, 2]
-    assert [m["sha256"] for m in generations[1]["members"]] == [late["sha256"]]
+    assert [m["sha256"] for m in generations[1]["members"] if m["kind"] in packs.BLOB_KINDS] == [late["sha256"]]
     assert not _loose(late) and packs.blob_bytes(root, late) == json.dumps({"message": {"content": "late answer"}}).encode()
     assert packs.blob_bytes(root, refs[0]).startswith(b'{"message"')
     script = root / "observability" / "packs" / packs.UNPACKER_NAME
     done = subprocess.run([sys.executable, str(script), "task-a"], capture_output=True, text=True, cwd=str(root), check=True)
-    assert "restored 3 file(s) from 2 pack(s)" in done.stdout
+    assert "restored 5 file(s) from 2 pack(s)" in done.stdout
     assert _loose(refs[0]) and _loose(late) and _handle_path(root, "task-a", handle).exists()
 
 
@@ -189,7 +189,7 @@ def test_only_the_generations_an_unlink_relies_on_are_reverified(root, monkeypat
             pack = packs.packs_dir(root) / "gen.xz"
             pack.write_bytes(pack.read_bytes()[:-5] + b"XXXXX")  # nothing loose relies on it
         report = packer.run_pass(root)
-        assert (report["packed"], report["unlinked"], report["faults"]) == (1, 1, 0)
+        assert (report["packed"], report["unlinked"], report["faults"]) == (1, 2, 0)
         assert verified == [f"gen.{number}.xz"] and not _loose(late)
     assert [g["generation"] for g in packs.published_generations(root, "gen")] == [1, 2, 3]
     # A busy retry leaves a loose member held only by generation 1: that generation IS re-read, and
@@ -219,15 +219,15 @@ def test_missing_records_are_reported_and_the_rest_packs(root):
         pathlib.Path(ref["path"]).unlink()
     _handle_path(root, "gone", gone_handle).unlink()
     report = packer.run_pass(root)
-    assert (report["packed"], report["missing"], report["faults"]) == (1, 3, 0)
+    assert (report["packed"], report["missing"], report["faults"]) == (2, 3, 0)
     [row] = _rows(root, "gap")
     assert (row["missing"], row["missing_bytes"], row["generation"]) == (1, refs[1]["size"], 1)
     assert packs.blob_bytes(root, refs[0]) and packs.blob_bytes(root, refs[2])
     with pytest.raises(FileNotFoundError):
         packs.blob_bytes(root, refs[1])
     [row] = _rows(root, "gone")
-    assert (row["missing"], row["missing_bytes"], row["generation"]) == (2, sum(ref["size"] for ref in gone), None)
-    assert not packs.published_generations(root, "gone")
+    assert (row["missing"], row["missing_bytes"], row["generation"]) == (2, sum(ref["size"] for ref in gone), 1)
+    assert len(packs.published_generations(root, "gone")) == 1
     packer.run_pass(root)
     assert packer.changed_tasks(root) == []  # a recorded gap is not re-examined until its folder moves
 
@@ -265,16 +265,16 @@ def test_only_this_tasks_own_evidence_defers_its_unlink(root, monkeypatch, chang
     if change == "own_manifest":
         assert report["unlinked"] == 0 and _loose(refs[0]) and _handle_path(root, "packing", handle).exists()
         assert "packing" in packer.changed_tasks(root)
-        assert packer.run_pass(root)["unlinked"] == 3  # generation 2 for the late member, then everything goes
+        assert packer.run_pass(root)["unlinked"] == 5  # generation 2 for the late member + manifest, then everything goes
     elif change == "own_review":
         assert report["unlinked"] == 0 and _loose(refs[0]) and _handle_path(root, "packing", handle).exists()
         assert "packing" in packer.changed_tasks(root)
         assert packer.run_pass(root)["unlinked"] == 0 and _loose(refs[0])  # kept while the review is open
         _result(root, "packing", review_operations={"op": {"surface": "task_acceptance", "state": "closed"}})
-        assert packer.run_pass(root)["unlinked"] == 2  # the generation already written serves the unlink
+        assert packer.run_pass(root)["unlinked"] == 3  # the generation already written serves the unlink
         assert not _loose(refs[0]) and not _handle_path(root, "packing", handle).exists()
     else:
-        assert report["unlinked"] == 2 and not _loose(refs[0]) and not _handle_path(root, "packing", handle).exists()
+        assert report["unlinked"] == 3 and not _loose(refs[0]) and not _handle_path(root, "packing", handle).exists()
     assert packs.blob_bytes(root, refs[0]).startswith(b'{"message"')
 
 
@@ -288,7 +288,7 @@ def test_a_folder_without_a_store_row_is_neither_packed_nor_kept_but_counted(roo
     (calls / "a.json").write_text(json.dumps({"ref": refs[0]}), encoding="utf-8")
     (calls / "b.json").write_text(json.dumps({"ref": own}), encoding="utf-8")
     report = packer.run_pass(root)
-    assert (report["packed"], report["storeless"], report["kept"], report["unlinked"]) == (1, 1, 0, 2)
+    assert (report["packed"], report["storeless"], report["kept"], report["unlinked"]) == (1, 1, 0, 3)
     assert not _loose(refs[0]) and packs.blob_bytes(root, refs[0]) == raw  # from the terminal task's pack
     assert _loose(own) and not packs.published_generations(root, "orphan")
     packer.run_pass(root)
@@ -372,7 +372,9 @@ def test_new_packs_order_checkpoints_then_blobs_smallest_first_and_old_order_sta
     sidecar = packs.read_sidecar(packs.packs_dir(root) / "ordered.members.json")
     members = sorted(sidecar["members"], key=lambda m: m["offset"])
     assert members[0]["kind"] == "checkpoint" and members[0]["path"] == handle["path"]
-    blobs = [(m["size"], m["sha256"]) for m in members[1:]]
+    call_members = [m for m in members[1:] if m["kind"] == packs.CALL_MANIFEST]
+    blobs = [(m["size"], m["sha256"]) for m in members[1:] if m["kind"] in packs.BLOB_KINDS]
+    assert len(call_members) == len(payloads)
     assert blobs == sorted(blobs) and blobs != [(len(p), hashlib.sha256(p).hexdigest()) for p in payloads]
     assert [packs.blob_bytes(root, ref) for ref in refs] == payloads
     assert packs.handle_bytes(root, "ordered", handle["path"]).startswith(b"# focus")

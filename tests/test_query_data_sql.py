@@ -438,7 +438,7 @@ def test_pack_sql_holds_the_index_owner_lock(ctx, monkeypatch, tier):
     with packs.open_index(ctx.drive_root, write=True):
         result = run(ctx, "SELECT count(*) FROM members", db="packs", timeout_sec=0.05)
         assert result["status"] == "error" and result["code"] == "deadline" and result["phase"] == "acquire", result
-    assert run(ctx, "SELECT count(*) FROM members", db="packs")["data"]["rows"] == [[2]]
+    assert run(ctx, "SELECT count(*) FROM members", db="packs")["data"]["rows"] == [[3]]
     # Admission retains the owner's one lock through the read-only query scope.
     with sql._source(ctx.drive_root, "packs", sql._Budget(1)) as observed:
         assert observed == tier

@@ -335,7 +335,8 @@ def pack_sweep(root: pathlib.Path):
                 path.unlink()
 
 
-def run_pass(root: pathlib.Path, *, sweep=None, since: Optional[int] = None, owed=()) -> Dict[str, Any]:
+def run_pass(root: pathlib.Path, *, sweep=None, since: Optional[int] = None, owed=(),
+             stop: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
     """Pack every terminal candidate of the census one task at a time, then the money archive and the
     unpacker. The census is the rows written terminal after the counter stood at ``since`` and the
     ``owed`` candidates (``loose_task_ids_since``); without a position (``None``: the first run, a
@@ -344,9 +345,10 @@ def run_pass(root: pathlib.Path, *, sweep=None, since: Optional[int] = None, owe
     root = pathlib.Path(root)
     if sweep is None:
         with pack_sweep(root) as sweep:
-            return run_pass(root, sweep=sweep, since=since, owed=owed)
+            return run_pass(root, sweep=sweep, since=since, owed=owed, stop=stop)
     report: Dict[str, Any] = {"status": "completed", **dict.fromkeys(COUNTERS, 0), "unfinished": []}
-    ids = _loose_task_ids(root) if since is None else loose_task_ids_since(root, since, owed)
+    extra_blobs_by_task = packs.loose_manifest_version_blobs(root, stop=stop) if since is None else {}
+    ids = (_loose_task_ids(root) | set(extra_blobs_by_task)) if since is None else loose_task_ids_since(root, since, owed)
     rows = task_rows(root, ids)  # the census baseline: older than every fact read below
     report["live"] = sum(1 for row in rows.values() if row is not None and not _terminal(row))
     report["reading"] = sum(1 for row in rows.values() if _terminal(row) and not _packable(row))
@@ -355,7 +357,8 @@ def run_pass(root: pathlib.Path, *, sweep=None, since: Optional[int] = None, owe
     # and review fact; a packed task is recorded as its own unlinks left its directories (below), so a
     # later census over unchanged history finds nothing, and a row written terminal again brings the
     # task back whatever its stamp moved (``loose_task_ids_since``).
-    revisions = changed_stamps(root, rows=rows, ids=ids, owed=owed)
+    effective_owed = tuple(owed) + tuple(extra_blobs_by_task) if extra_blobs_by_task else owed
+    revisions = changed_stamps(root, rows=rows, ids=ids, owed=effective_owed)
     packable = [task for task in revisions if _packable(rows.get(task))]
     for task in revisions:
         if task not in packable:
@@ -371,7 +374,7 @@ def run_pass(root: pathlib.Path, *, sweep=None, since: Optional[int] = None, owe
     for task, raw in candidates:
         try:
             outcome = packs.pack_task(root, task, keep_shas=set(), listing=listing, revision=revisions[task],
-                                      sweep=sweep)
+                                      sweep=sweep, extra_blobs=extra_blobs_by_task.get(task))
         except Exception as exc:
             report["faults"] += 1
             report["unfinished"].append(task)

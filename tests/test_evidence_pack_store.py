@@ -53,7 +53,7 @@ def test_a_pass_reads_no_obligation_set(root, monkeypatch, status, tier):
     report = packer.run_pass(root)
     assert report["faults"] == 0
     assert report["packed"] == (24 if status == "completed" else 0)
-    assert report["unlinked"] == (48 if status == "completed" else 0)
+    assert report["unlinked"] == (72 if status == "completed" else 0)
 
 
 def test_a_duty_committed_during_compression_no_longer_defers_the_unlink(root, monkeypatch):
@@ -67,7 +67,7 @@ def test_a_duty_committed_during_compression_no_longer_defers_the_unlink(root, m
 
     with monkeypatch.context() as patch:
         patch.setattr(packs, "write_pack", write)
-        assert packer.run_pass(root)["unlinked"] == 2
+        assert packer.run_pass(root)["unlinked"] == 3
     from pathlib import Path
     assert not Path(refs[0]["path"]).exists() and packs.blob_bytes(root, refs[0])
 

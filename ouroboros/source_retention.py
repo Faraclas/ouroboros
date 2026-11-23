@@ -174,7 +174,10 @@ def manifest_version_ref(root: pathlib.Path, digest: str) -> dict:
 
 
 def read_manifest_version(root: pathlib.Path, digest: str) -> bytes:
-    return packs.blob_bytes(root, manifest_version_ref(root, digest))  # loose or packed, sha-verified
+    try:
+        return packs.blob_bytes(root, manifest_version_ref(root, digest))  # loose or packed .txt.gz, sha-verified
+    except FileNotFoundError:
+        return packs.manifest_bytes_by_sha(root, digest)
 
 
 def _check_open():
@@ -602,6 +605,16 @@ class RetentionWalk:
         carrier = ("call_request" if call_type.endswith("_request") else "call_response"
                    if call_type.endswith(("_response", "_error", "_review_collected")) else "metadata")
         projection = dict(manifest)
+        version_refs: list = []
+        seen_versions: set = set()
+        def _add_version(ref_item: Any) -> None:
+            if isinstance(ref_item, dict) and ref_item.get("sha256") and ref_item["sha256"] not in seen_versions:
+                seen_versions.add(ref_item["sha256"])
+                version_refs.append({key: ref_item[key] for key in ("sha256", "path", "kind", "encoding", "size")
+                                     if key in ref_item})
+        for existing in manifest.get("promoted_manifest_version_refs") or ():
+            _add_version(existing)
+        _add_version(version)
         for name in ("full_payload_ref", "redacted_projection_ref"):
             nested = manifest.get(name)
             if isinstance(nested, dict) and nested:
@@ -613,18 +626,26 @@ class RetentionWalk:
             # real unaccounted seal behind an imported-projection marker.
             return dict(ref)
         projection["promoted_call_manifest"] = True
+        projection["promoted_manifest_version_refs"] = list(version_refs)
         if target.exists():
             previous = target.read_bytes()
-            obs.write_blob(self.parent, previous.decode("utf-8"), kind="txt")
             previous_manifest = json.loads(previous)
             if not previous_manifest.get("promoted_call_manifest"):
                 # An imported version must not hide a native seal from the
                 # monetary auditor. Its exact version is already held in CAS.
                 return {**ref, "path": str(target)}
-            if previous_manifest == projection:
+            for existing in previous_manifest.get("promoted_manifest_version_refs") or ():
+                _add_version(existing)
+            projection["promoted_manifest_version_refs"] = list(version_refs)
+            if ({k: v for k, v in previous_manifest.items() if k != "promoted_manifest_version_refs"}
+                    == {k: v for k, v in projection.items() if k != "promoted_manifest_version_refs"}
+                    and set(seen_versions) == {r.get("sha256") for r in previous_manifest.get("promoted_manifest_version_refs") or () if isinstance(r, dict)}):
                 self.state["promoted_ref_count"] += 1
                 return {"path": str(target), "call_id": ref["call_id"],
                         "sha256": hashlib.sha256(previous).hexdigest()}
+            prev_version = obs.write_blob(self.parent, previous.decode("utf-8"), kind="txt")
+            _add_version(prev_version)
+            projection["promoted_manifest_version_refs"] = list(version_refs)
         _check_open()
         result = obs.write_call_manifest(self.parent, task_id=task, call_id=ref["call_id"], manifest=projection)
         self.state["promoted_ref_count"] += 1

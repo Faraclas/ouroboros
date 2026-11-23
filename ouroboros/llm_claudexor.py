@@ -929,7 +929,17 @@ def recover_model_attempt(drive_root, row: dict, *, gateway_factory=None):
         pass
     if manifest and manifest.get("invocation_id") != attempt_id:
         return None
-    request = read_json_dict(call_manifest_path(drive_root, task_id, f"{attempt_id}_model_request")) or {}
+    req_call_id = f"{attempt_id}_model_request"
+    req_path = call_manifest_path(drive_root, task_id, req_call_id)
+    request = read_json_dict(req_path) or {}
+    if not request:
+        from ouroboros.evidence_packs import call_manifest_bytes
+        try:
+            loaded = json.loads(call_manifest_bytes(drive_root, req_path.parent.name, req_call_id).decode("utf-8"))
+            if isinstance(loaded, dict):
+                request = loaded
+        except (FileNotFoundError, ValueError, OSError):
+            pass
     if request and (request.get("invocation_id") != attempt_id or request.get("task_id") != task_id):
         return None
     operation_id = manifest.get("operation_id") or request.get("operation_id")

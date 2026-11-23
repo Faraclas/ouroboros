@@ -101,7 +101,16 @@ def _manifest_at(roots: Iterable[pathlib.Path], task_id: str, call_id: str,
             with path.open("rb") as stream:
                 raw = stream.read(_MANIFEST_BYTES + 1)
         except (FileNotFoundError, NotADirectoryError):
-            continue
+            from ouroboros.evidence_packs import EvidenceCorrupt, call_manifest_bytes
+            try:
+                raw = call_manifest_bytes(root, path.parent.name, call_id, max_bytes=_MANIFEST_BYTES, admit=admit)
+            except PermissionError:
+                raise
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError, EvidenceCorrupt) as exc:
+                unreadable = exc
+                continue
         except OSError as exc:
             unreadable = exc
             continue
@@ -217,11 +226,20 @@ def _own_timeouts(roots: Iterable[pathlib.Path], task_id: str) -> List[dict]:
         try:
             names = sorted(entry.name for entry in os.scandir(directory))
         except FileNotFoundError:
-            continue
+            names = []
+        seen_names = set()
+        entries = []
         for name in names:
-            if not (name.startswith("tool_timeout_") and name.endswith(".json")):
-                continue
-            raw = (directory / name).read_bytes()
+            if name.startswith("tool_timeout_") and name.endswith(".json"):
+                entries.append((name, (directory / name).read_bytes()))
+                seen_names.add(name)
+        from ouroboros.evidence_packs import iter_task_call_manifests
+        for name, raw, _ in iter_task_call_manifests(
+            root, directory.name,
+            predicate=lambda n: n not in seen_names and n.startswith("tool_timeout_") and n.endswith(".json"),
+        ):
+            entries.append((name, raw))
+        for name, raw in entries:
             try:
                 manifest = json.loads(raw.decode("utf-8"))
             except ValueError:

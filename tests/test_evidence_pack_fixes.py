@@ -52,7 +52,7 @@ def test_windows_busy_retry_reverifies_disk_before_unlink(root, monkeypatch):
 
     monkeypatch.setattr(packs, "verify_pack", verify)
     passed = packer.run_pass(root)
-    assert passed["faults"] == 0 and passed["unlinked"] == 2
+    assert passed["faults"] == 0 and passed["unlinked"] == 3
     assert verified == [packed]
     assert not any(path.exists() for path in loose_paths)
 
@@ -195,7 +195,7 @@ def test_identical_checkpoint_and_blob_bytes_keep_both_index_kinds(root):
     assert read_actor_source_bytes(root, "same", handle) == raw
     assert packs.blob_bytes(root, refs[0]) == packs.blob_bytes(root, other) == raw
     with packs.open_index(root) as conn:
-        assert {row[0] for row in conn.execute("SELECT kind FROM members")} == {"json", "bin", "checkpoint"}
+        assert {row[0] for row in conn.execute("SELECT kind FROM members")} == {"json", "bin", "checkpoint", "call_manifest"}
 
 
 def test_old_index_schema_rebuilds_without_rewriting_sidecars(root):
@@ -215,7 +215,7 @@ def test_old_index_schema_rebuilds_without_rewriting_sidecars(root):
         assert key == {"sha256", "kind", "task_id", "generation"}
         assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == str(packs.INDEX_SCHEMA_VERSION)
     assert (directory / "indexed.members.json").read_bytes() == sidecar
-    assert json.loads(sidecar)["format_version"] == 1
+    assert json.loads(sidecar)["format_version"] == packs.FORMAT_VERSION
     assert read_actor_source_bytes(root, "indexed", handle).startswith(b"# focus")
     assert packs.blob_bytes(root, refs[0]).startswith(b'{"message"')
 
@@ -487,7 +487,7 @@ def test_exporting_phase_keeps_loose_evidence_until_published_again(root):
     assert _loose(refs[0]) and _handle_path(root, "phase", handle).exists()
     with store.open_store(root, write=True, service=True) as txn:  # the seam's own mode: the gate refuses a public write here
         txn.set_meta("phase", store.PUBLISHED)
-    assert packer.run_pass(root)["unlinked"] == 2
+    assert packer.run_pass(root)["unlinked"] == 3
 
 
 def test_switch_preflight_refuses_corrupt_sidecar_before_export_or_owner(root, monkeypatch):

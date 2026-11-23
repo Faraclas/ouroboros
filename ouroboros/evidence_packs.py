@@ -27,12 +27,14 @@ INDEX_WAIT_SEC = 5.0
 UNLINK_SECTION_SEC = 0.5  # one deletion section's budget under the store write lock, publication lock included
 UNLINK_SECTION_GAP_SEC = 0.15  # between sections: longer than a waiting writer's SQLite busy poll (100 ms)
 PUBLICATION_WAIT_SEC = 90.0  # a manifest's contention budget for the publication lock (not a stale-owner bound)
-FORMAT_VERSION = 1
-INDEX_SCHEMA_VERSION = 2
+FORMAT_VERSION = 2
+SUPPORTED_FORMAT_VERSIONS = frozenset({1, 2})
+INDEX_SCHEMA_VERSION = 3
 CODEC, PRESET = "xz", 1
 MIN_DICT_SIZE, MAX_DICT_SIZE = 4096, 64 << 20
 CHECKPOINTS_REL = pathlib.PurePosixPath("source_handles/context_checkpoints")
 CHECKPOINT = "checkpoint"
+CALL_MANIFEST = "call_manifest"
 BLOB_KINDS = frozenset({"json", "txt", "bin"})
 USAGE_ARCHIVE_REL = pathlib.Path("archive/usage_ledger")
 _APPLICATION_ID = {store.TIER_ENFORCED: 0x4F555045, store.TIER_NAME: 0x4F55504E}  # 'OUPE' / 'OUPN'
@@ -44,6 +46,8 @@ CREATE TABLE members (sha256 TEXT NOT NULL, task_id TEXT NOT NULL, generation IN
   offset INTEGER NOT NULL, size INTEGER NOT NULL, kind TEXT NOT NULL, PRIMARY KEY (sha256, kind, task_id, generation));
 CREATE TABLE handles (task_id TEXT NOT NULL, rel_path TEXT NOT NULL, sha256 TEXT NOT NULL,
   generation INTEGER NOT NULL, PRIMARY KEY (task_id, rel_path));
+CREATE TABLE call_manifests (task_id TEXT NOT NULL, call_id TEXT NOT NULL, sha256 TEXT NOT NULL,
+  generation INTEGER NOT NULL, PRIMARY KEY (task_id, call_id, generation));
 CREATE TABLE swept (task_id TEXT PRIMARY KEY, stamps TEXT NOT NULL);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
@@ -87,7 +91,7 @@ def read_sidecar(path: pathlib.Path, *, raw: Optional[bytes] = None) -> Dict[str
     """Read the publication authority; a torn or invalid sidecar is never absence."""
     try:
         data = json.loads(path.read_text(encoding="utf-8") if raw is None else raw)
-        if (not isinstance(data, dict) or data.get("format_version") != FORMAT_VERSION or data.get("codec") != CODEC
+        if (not isinstance(data, dict) or data.get("format_version") not in SUPPORTED_FORMAT_VERSIONS or data.get("codec") != CODEC
                 or not isinstance(data.get("members"), list) or not data.get("task_id")
                 or any(type(data[key]) is not int for key in ("generation", "raw_total", "packed_total", "dict_size", "preset"))
                 or data["generation"] < 1 or sidecar_name(data["task_id"], data["generation"]) != path.name
@@ -95,9 +99,10 @@ def read_sidecar(path: pathlib.Path, *, raw: Optional[bytes] = None) -> Dict[str
                 or data["packed_total"] <= 0 or data["preset"] != PRESET
                 or data["dict_size"] != dict_size_for(data["raw_total"])):
             raise ValueError("invalid pack header")
+        allowed_kinds = BLOB_KINDS | {CHECKPOINT} | ({CALL_MANIFEST} if data["format_version"] >= 2 else set())
         offset, blobs = 0, False
         for member in sorted(data["members"], key=lambda m: m["offset"]):
-            if (member["kind"] not in BLOB_KINDS | {CHECKPOINT}
+            if (member["kind"] not in allowed_kinds
                     or any(type(member[key]) is not int for key in ("size", "offset"))
                     or member["size"] < 0 or member["offset"] != offset
                     or len(member["sha256"]) != 64 or member["sha256"].strip("0123456789abcdef")):
@@ -106,6 +111,11 @@ def read_sidecar(path: pathlib.Path, *, raw: Optional[bytes] = None) -> Dict[str
                 rel = pathlib.PurePosixPath(member["path"])
                 if blobs or len(rel.parts) != 3 or rel.parts[:2] != CHECKPOINTS_REL.parts or rel.stem.rsplit("-", 1)[-1] != member["sha256"]:
                     raise ValueError("invalid checkpoint prefix")
+            elif member["kind"] == CALL_MANIFEST:
+                name = str(member.get("path") or "")
+                if not name.endswith(".json") or "/" in name or "\\" in name or name in {".json", ".", ".."} or name.startswith("."):
+                    raise ValueError("invalid call manifest path")
+                blobs = True
             else:
                 blobs = True
             offset += member["size"]
@@ -302,6 +312,7 @@ def _index_rows(conn: sqlite3.Connection, pack_path: pathlib.Path, sidecar: Dict
     task_id, generation = str(sidecar["task_id"]), int(sidecar["generation"])
     conn.execute("DELETE FROM members WHERE task_id=? AND generation=?", (task_id, generation))
     conn.execute("DELETE FROM handles WHERE task_id=? AND generation=?", (task_id, generation))
+    conn.execute("DELETE FROM call_manifests WHERE task_id=? AND generation=?", (task_id, generation))
     conn.execute("INSERT OR REPLACE INTO packs VALUES (?,?,?,?,?,?,?)", (
         task_id, generation, pack_path.name, int(sidecar.get("raw_total") or 0), int(sidecar.get("packed_total") or 0),
         sidecar.get("verified_at"), len(sidecar["members"])))
@@ -311,6 +322,9 @@ def _index_rows(conn: sqlite3.Connection, pack_path: pathlib.Path, sidecar: Dict
         if member["kind"] == CHECKPOINT and member.get("path"):
             conn.execute("INSERT OR REPLACE INTO handles VALUES (?,?,?,?)",
                          (task_id, str(member["path"]), member["sha256"], generation))
+        elif member["kind"] == CALL_MANIFEST and member.get("path"):
+            conn.execute("INSERT OR REPLACE INTO call_manifests VALUES (?,?,?,?)",
+                         (task_id, str(member["path"]).removesuffix(".json"), member["sha256"], generation))
 
 
 def _index_wait(wait_sec: float = INDEX_WAIT_SEC) -> float:
@@ -344,7 +358,7 @@ def _rebuild_index(root: pathlib.Path, path: pathlib.Path, tier: str, *, wait_se
                         row = conn.execute("SELECT task_id, generation FROM packs WHERE path=?",
                                            (name.removesuffix(".members.json") + ".xz",)).fetchone()
                         if row is not None:
-                            for table in ("packs", "members", "handles"):
+                            for table in ("packs", "members", "handles", "call_manifests"):
                                 conn.execute(f"DELETE FROM {table} WHERE task_id=? AND generation=?", tuple(row))
                     for sidecar_path, sidecar in sidecars:
                         _index_rows(conn, sidecar_path.with_name(pack_name(sidecar["task_id"], sidecar["generation"])), sidecar)
@@ -489,6 +503,162 @@ def _indexed_handles(root: pathlib.Path, task_id: str, rel_path: str, *,
 
 def _locate(root: pathlib.Path, **identity: str) -> Optional[Tuple[pathlib.Path, Dict[str, Any]]]:
     return next(iter(_placements(root, **identity)), None)
+
+
+_CALL_MANIFESTS_SQL = (
+    "SELECT p.path AS pack, m.sha256, m.offset, m.size, m.kind, c.call_id || '.json' AS path, c.generation "
+    "FROM call_manifests c "
+    "JOIN members m ON m.sha256=c.sha256 AND m.task_id=c.task_id AND m.generation=c.generation "
+    "JOIN packs p ON p.task_id=c.task_id AND p.generation=c.generation "
+    "WHERE c.task_id=? AND m.kind=?"
+)
+
+
+def _indexed_call_manifests(root: pathlib.Path, task_id: str, call_id: str = "", expected_sha: str = "", *,
+                            validated: bool) -> Optional[List[Tuple[pathlib.Path, Dict[str, Any]]]]:
+    path = packs_dir(root) / INDEX_NAME
+    try:
+        with contextlib.ExitStack() as held:
+            if not validated:
+                conn = held.enter_context(open_index(root, rebuild=False))
+            else:
+                held.enter_context(store.name_lock(root, INDEX_LOCK_NAME, timeout_sec=0))
+                if not _index_validated(path):
+                    return None
+                conn = held.enter_context(contextlib.closing(store.connect(path, index_tier(root), wait_sec=0)))
+                held.enter_context(store.transaction(conn, write=False))
+            clauses, params = [], [task_id, CALL_MANIFEST]
+            if call_id:
+                clauses.append("c.call_id=?")
+                params.append(call_id)
+            if expected_sha:
+                clauses.append("c.sha256=?")
+                params.append(expected_sha)
+            sql = _CALL_MANIFESTS_SQL + ((" AND " + " AND ".join(clauses)) if clauses else "") + " ORDER BY c.generation DESC, m.offset ASC"
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            recorded = conn.execute("SELECT value FROM meta WHERE key='sidecar_errors'").fetchone()
+            if not rows and recorded and json.loads(recorded[0]):
+                return None
+    except (store.StoreError, sqlite3.Error, OSError, ValueError):
+        return None
+    return [(packs_dir(root) / row["pack"], dict(row)) for row in rows]
+
+
+def _task_call_manifests(root: pathlib.Path, task_id: str, call_id: str = "",
+                         expected_sha: str = "") -> List[Tuple[pathlib.Path, Dict[str, Any]]]:
+    """Addressed lookup for a task's packed call manifests (newest generation first)."""
+    if not packs_dir(root).is_dir():
+        return []
+    rows = _indexed_call_manifests(root, task_id, call_id, expected_sha, validated=True)
+    if rows is not None:
+        return rows
+    errors, found = [], []
+    target_name = f"{call_id}.json" if call_id else ""
+    for sidecar_path, sidecar in list_sidecars(root, errors=errors, names=_task_sidecar_names(root, task_id)):
+        if sidecar["task_id"] != task_id:
+            continue
+        for member in sidecar["members"]:
+            if member["kind"] != CALL_MANIFEST or not member.get("path"):
+                continue
+            if target_name and member["path"] != target_name:
+                continue
+            if expected_sha and member["sha256"] != expected_sha:
+                continue
+            found.append((-int(sidecar["generation"]), int(member["offset"]), sidecar_path.with_name(pack_name(task_id, sidecar["generation"])), member))
+    if errors and not found:
+        kept = _indexed_call_manifests(root, task_id, call_id, expected_sha, validated=False)
+        if kept:
+            return kept
+        raise errors[0]
+    found.sort(key=lambda item: (item[0], item[1]))
+    return [(pack, member) for _, _, pack, member in found]
+
+
+def call_manifest_bytes(root: Any, task_id: str, call_id: str, *, expected_sha: str = "",
+                        max_bytes: Optional[int] = None,
+                        admit: Optional[Callable[[pathlib.Path], None]] = None) -> bytes:
+    """Read one packed call manifest by ``(task_id, call_id[, expected_sha])`` with verification."""
+    placements = _task_call_manifests(pathlib.Path(root), str(task_id), str(call_id), str(expected_sha or ""))
+    if not placements:
+        raise FileNotFoundError(f"observability call manifest missing: {task_id}/{call_id}.json")
+    failure: Optional[Exception] = None
+    for pack_path, member in placements:
+        if admit is not None:
+            admit(pack_path)
+        if max_bytes is not None and int(member["size"]) > max_bytes:
+            raise ValueError("observability call manifest exceeds byte limit")
+        try:
+            raw = member_bytes(pack_path, member)
+            if expected_sha and hashlib.sha256(raw).hexdigest() != expected_sha:
+                raise EvidenceCorrupt(f"evidence_corrupt: call manifest {call_id} sha256 mismatch")
+            return raw
+        except FileNotFoundError as exc:
+            failure = failure or exc
+        except (EvidenceCorrupt, ValueError) as exc:
+            failure = exc
+        except OSError:
+            failure = EvidenceCorrupt(f"evidence_corrupt: unreadable pack {pack_path.name}")
+    raise failure or FileNotFoundError(f"observability call manifest missing: {task_id}/{call_id}.json")
+
+
+def manifest_bytes_by_sha(root: Any, digest: str, *, max_bytes: Optional[int] = None,
+                          admit: Optional[Callable[[pathlib.Path], None]] = None) -> bytes:
+    """Read one packed ``call_manifest`` member by its exact content ``sha256``."""
+    placements = _placements(pathlib.Path(root), sha256=str(digest), kind=CALL_MANIFEST)
+    if not placements:
+        raise FileNotFoundError(f"observability call manifest sha missing: {digest}")
+    failure: Optional[Exception] = None
+    for pack_path, member in placements:
+        if admit is not None:
+            admit(pack_path)
+        if max_bytes is not None and int(member["size"]) > max_bytes:
+            raise ValueError("observability call manifest exceeds byte limit")
+        try:
+            raw = member_bytes(pack_path, member)
+            if hashlib.sha256(raw).hexdigest() != digest:
+                raise EvidenceCorrupt(f"evidence_corrupt: call manifest {digest[:12]} sha256 mismatch")
+            return raw
+        except FileNotFoundError as exc:
+            failure = failure or exc
+        except (EvidenceCorrupt, ValueError) as exc:
+            failure = exc
+        except OSError:
+            failure = EvidenceCorrupt(f"evidence_corrupt: unreadable pack {pack_path.name}")
+    raise failure or FileNotFoundError(f"observability call manifest sha missing: {digest}")
+
+
+def iter_task_call_manifests(root: Any, task_id: str, *,
+                             predicate: Optional[Callable[[str], bool]] = None) -> List[Tuple[str, bytes, Optional[float]]]:
+    """Single owner of loose+packed call-manifest enumeration (loose first, filtered before decode).
+
+    Returns ``[(filename, raw_bytes, mtime_sec_or_none), ...]`` with packed members decoded in
+    ascending offset order within each generation so ``_PackReader`` never rewinds."""
+    root = pathlib.Path(root)
+    seen: set = set()
+    out: List[Tuple[str, bytes, Optional[float]]] = []
+    directory = root / "observability" / "calls" / str(task_id)
+    with contextlib.suppress(OSError):
+        for entry in sorted(os.scandir(directory), key=lambda e: e.name):
+            if entry.name.startswith(".") or not entry.name.endswith(".json") or entry.name.endswith(".model_send_violation.json"):
+                continue
+            if predicate is not None and not predicate(entry.name):
+                continue
+            with contextlib.suppress(OSError):
+                raw = pathlib.Path(entry.path).read_bytes()
+                mtime = entry.stat(follow_symlinks=False).st_mtime_ns / 1e9
+                out.append((entry.name, raw, mtime))
+                seen.add(entry.name)
+    with contextlib.suppress(OSError, EvidenceCorrupt):
+        for pack_path, member in _task_call_manifests(root, str(task_id)):
+            name = str(member.get("path") or "")
+            if not name or name in seen:
+                continue
+            if predicate is not None and not predicate(name):
+                continue
+            with contextlib.suppress(OSError, EvidenceCorrupt):
+                out.append((name, member_bytes(pack_path, member), None))
+                seen.add(name)
+    return out
 
 
 
@@ -878,7 +1048,7 @@ def _walk_blob_refs(value: Any, out: List[Tuple[str, str, int]], seen: set) -> N
             _walk_blob_refs(item, out, seen)
 
 
-def note_manifest_publication(root: Any, manifest: dict) -> None:
+def note_manifest_publication(root: Any, manifest: dict, *, extra_refs: Any = ()) -> None:
     """Called under the publication lock BEFORE the manifest write. Track new refs only
     while a sweep owns the scratch file; a stale file is reset at the next sweep."""
     try:
@@ -887,39 +1057,71 @@ def note_manifest_publication(root: Any, manifest: dict) -> None:
         return
     with os.fdopen(fd, "ab") as journal:
         refs: list = []
-        _walk_blob_refs(manifest, refs, set())
+        seen: set = set()
+        _walk_blob_refs(manifest, refs, seen)
+        if extra_refs:
+            _walk_blob_refs(list(extra_refs), refs, seen)
         journal.write("".join(sha + "\n" for _, sha, _ in refs).encode("ascii"))
 
 
+def loose_manifest_version_blobs(root: Any, stop: Optional[Callable[[], bool]] = None) -> Dict[str, List[Tuple[str, str, int]]]:
+    """Discover legacy loose ``observability/blobs/<sha>.txt.gz`` manifest snapshots grouped by ``task_id``."""
+    blobs_dir = pathlib.Path(root) / "observability" / "blobs"
+    by_task: Dict[str, List[Tuple[str, str, int]]] = {}
+    try:
+        entries = os.scandir(blobs_dir)
+    except OSError:
+        return by_task
+    with entries:
+        for entry in entries:
+            if stop is not None and stop():
+                break
+            if entry.name.startswith(".") or not entry.name.endswith(".txt.gz"):
+                continue
+            sha = entry.name[:-len(".txt.gz")]
+            if len(sha) != 64 or sha.strip("0123456789abcdef"):
+                continue
+            with contextlib.suppress(OSError, ValueError, EOFError, zlib.error):
+                raw = read_loose_gzip(pathlib.Path(entry.path), max_bytes=256 * 1024)
+                if hashlib.sha256(raw).hexdigest() != sha:
+                    continue
+                parsed = json.loads(raw.decode("utf-8"))
+                if isinstance(parsed, dict) and parsed.get("task_id") and parsed.get("call_id"):
+                    by_task.setdefault(str(parsed["task_id"]), []).append(("txt", sha, len(raw)))
+    return by_task
+
+
 def manifest_blob_refs(root: Any, task_id: str) -> List[Tuple[str, str, int]]:
-    """``(kind, sha256, size)`` of every blob the task's call manifests reference, first appearance first."""
+    """``(kind, sha256, size)`` of every blob the task's call manifests (and transitive stream/usage refs) reference."""
     from ouroboros.deadline_utils import parse_deadline_ts
 
+    root = pathlib.Path(root)
     out: List[Tuple[str, str, int]] = []
     seen: set = set()
     manifests = []
-    directory = pathlib.Path(root) / "observability" / "calls" / str(task_id)
-    try:
-        entries = list(os.scandir(directory))
-    except FileNotFoundError:
-        return out
-    for entry in entries:
-        if entry.name.startswith(".") or not entry.name.endswith(".json"):
-            continue
+    for name, raw, mtime in iter_task_call_manifests(root, str(task_id)):
         with contextlib.suppress(OSError, ValueError):
-            value = json.loads(pathlib.Path(entry.path).read_text(encoding="utf-8"))
+            value = json.loads(raw.decode("utf-8"))
             created = parse_deadline_ts(value.get("created_at")) if isinstance(value, dict) else None
-            first = created.timestamp() if created else entry.stat(follow_symlinks=False).st_mtime_ns / 1e9
-            manifests.append((first, entry.name, value))
+            first = created.timestamp() if created else (mtime if mtime is not None else 0.0)
+            manifests.append((first, name, value))
     for _, _, value in sorted(manifests):
         _walk_blob_refs(value, out, seen)
+        if isinstance(value, dict) and value.get("call_type") == "physical_stream":
+            outer_ref = value.get("redacted_projection_ref") or value.get("full_payload_ref")
+            if isinstance(outer_ref, dict):
+                with contextlib.suppress(OSError, ValueError, EvidenceCorrupt):
+                    outer_payload = json.loads(blob_bytes(root, outer_ref, expected_kind="json", max_bytes=1 << 20).decode("utf-8"))
+                    _walk_blob_refs(outer_payload, out, seen)
     return out
 
 
-def loose_members(root: Any, task_id: str, *, missing: Optional[list] = None) -> List[Dict[str, Any]]:
-    """The task's members whose bytes are at hand (loose checkpoint handles first, then the manifest
-    blobs that are loose or already held by some pack on this root), each with its loose source path;
-    a referenced blob that is neither is appended to ``missing`` as ``(kind, sha256, size)``."""
+def loose_members(root: Any, task_id: str, *, missing: Optional[list] = None,
+                  extra_blobs: Optional[List[Tuple[str, str, int]]] = None) -> List[Dict[str, Any]]:
+    """The task's members whose bytes are at hand (loose checkpoint handles first, then loose call
+    manifests, then manifest/usage/extra blobs that are loose or already held by some pack on this
+    root), each with its loose source path; a referenced blob that is neither is appended to
+    ``missing`` as ``(kind, sha256, size)``."""
     from ouroboros.artifacts import task_artifact_dir_path
 
     root = pathlib.Path(root)
@@ -931,7 +1133,24 @@ def loose_members(root: Any, task_id: str, *, missing: Optional[list] = None) ->
             if entry.is_file(follow_symlinks=False) and len(stem) == 64 and not stem.strip("0123456789abcdef"):
                 members.append({"sha256": stem, "kind": CHECKPOINT, "size": entry.stat(follow_symlinks=False).st_size,
                                 "path": (CHECKPOINTS_REL / entry.name).as_posix(), "source": pathlib.Path(entry.path)})
-    for kind, sha256, size in manifest_blob_refs(root, task_id):
+    calls_dir = root / "observability" / "calls" / str(task_id)
+    with contextlib.suppress(OSError):
+        for entry in sorted(os.scandir(calls_dir), key=lambda e: e.name):
+            if (entry.name.startswith(".") or not entry.name.endswith(".json")
+                    or entry.name.endswith(".model_send_violation.json")
+                    or not entry.is_file(follow_symlinks=False)):
+                continue
+            with contextlib.suppress(OSError):
+                raw = pathlib.Path(entry.path).read_bytes()
+                members.append({"sha256": hashlib.sha256(raw).hexdigest(), "kind": CALL_MANIFEST,
+                                "size": len(raw), "path": entry.name, "source": pathlib.Path(entry.path)})
+    blob_refs = list(manifest_blob_refs(root, task_id))
+    seen_blobs = {(kind, sha) for kind, sha, _ in blob_refs}
+    for kind, sha256, size in extra_blobs or ():
+        if (kind, sha256) not in seen_blobs:
+            seen_blobs.add((kind, sha256))
+            blob_refs.append((kind, sha256, size))
+    for kind, sha256, size in blob_refs:
         loose = root / "observability" / "blobs" / f"{sha256}.{kind}.gz"
         if loose.is_file() or _locate(root, sha256=sha256, kind=kind) is not None:  # a shared sha is duplicated per pack
             members.append({"sha256": sha256, "kind": kind, "size": size, "source": loose})
@@ -949,7 +1168,7 @@ def published_generations(root: Any, task_id: str, listing: Optional[list] = Non
 
 
 def _member_source_bytes(root: pathlib.Path, task_id: str, member: Dict[str, Any]) -> bytes:
-    if member["kind"] == CHECKPOINT:
+    if member["kind"] in (CHECKPOINT, CALL_MANIFEST):
         raw = member["source"].read_bytes()
     else:
         raw = blob_bytes(root, {"sha256": member["sha256"], "kind": member["kind"], "encoding": "gzip", "size": member["size"]})
@@ -960,10 +1179,12 @@ def _member_source_bytes(root: pathlib.Path, task_id: str, member: Dict[str, Any
 
 def write_pack(root: Any, task_id: str, generation: int, members: List[Dict[str, Any]]) -> Tuple[pathlib.Path, Dict[str, Any]]:
     """Pack + sidecar to temp names, fsync both, publish the pack, then the sidecar LAST. Checkpoints lead
-    (the sidecar's prefix rule), then blobs smallest first by ``(size, sha256)``: in one stream a small
-    response or error decodes from a short prefix; the sidecar's offsets stay the readers' only map."""
-    members = sorted(members, key=lambda m: (0, 0, "", "") if m["kind"] == CHECKPOINT
-                     else (1, int(m["size"]), m["sha256"], m["kind"]))
+    (the sidecar's prefix rule), then call manifests, then blobs smallest first by ``(size, sha256)``:
+    in one stream a small manifest, response or error decodes from a short prefix; the sidecar's offsets
+    stay the readers' only map."""
+    members = sorted(members, key=lambda m: (0, 0, str(m.get("path") or ""), "") if m["kind"] == CHECKPOINT
+                     else (1, int(m["size"]), str(m.get("path") or ""), m["sha256"]) if m["kind"] == CALL_MANIFEST
+                     else (2, int(m["size"]), m["sha256"], m["kind"]))
     root, directory = pathlib.Path(root), packs_dir(root)
     directory.mkdir(parents=True, exist_ok=True)
     pack_path, sidecar_path = directory / pack_name(task_id, generation), directory / sidecar_name(task_id, generation)
@@ -1063,8 +1284,10 @@ def unlink_loose(root: Any, task_id: str, sidecars: List[Dict[str, Any]], *, kee
                 return todo[index:]
             if not member["source"].is_file():
                 continue
-            if member["kind"] != CHECKPOINT and (member["sha256"] in keep or member["sha256"] in keep_shas):
+            if member["kind"] not in (CHECKPOINT, CALL_MANIFEST) and (member["sha256"] in keep or member["sha256"] in keep_shas):
                 report["kept"] += 1
+                continue
+            if member["kind"] == CALL_MANIFEST and report["busy"]:
                 continue
             try:
                 os.unlink(member["source"])
@@ -1073,13 +1296,18 @@ def unlink_loose(root: Any, task_id: str, sidecars: List[Dict[str, Any]], *, kee
                 pass
             except PermissionError:
                 report["busy"] += 1
+        if not report["busy"]:
+            with contextlib.suppress(OSError):
+                (root / "observability" / "calls" / str(task_id)).rmdir()
         return []
 
     # Compression precedes custody -> store write -> manifest publication locks. A section holds
     # the store write lock (a rollback barrier) and the publication lock for one UNLINK_SECTION_SEC
     # budget; model calls and every store writer wait on them. Inside, only this task's recheck;
     # between sections a waiting writer gets a poll-length gap. A stale check defers the candidate.
-    todo: Optional[list] = [m for m in members if _member_key(m) in packed]
+    # Unlink blobs and checkpoints before call manifests so a busy-blob retry keeps its manifest loose.
+    todo: Optional[list] = sorted((m for m in members if _member_key(m) in packed),
+                                  key=lambda m: 1 if m["kind"] == CALL_MANIFEST else 0)
     with task_custody_lock(root, task_id) as acquired:
         while acquired and todo:
             left: Optional[list] = None
@@ -1102,7 +1330,7 @@ def unlink_loose(root: Any, task_id: str, sidecars: List[Dict[str, Any]], *, kee
 
 
 def pack_task(root: Any, task_id: str, *, keep_shas: set, listing: Optional[list] = None, revision: Optional[str] = None,
-              sweep=None) -> Dict[str, Any]:
+              sweep=None, extra_blobs: Optional[List[Tuple[str, str, int]]] = None) -> Dict[str, Any]:
     """The per-task steps, each idempotent: new loose members -> next generation (write, publish,
     re-read + verify every member, index), then unlink loose files held by verified packs. Only the
     generations an unlink relies on are re-read: the new one, and an older one while it still holds a
@@ -1114,13 +1342,14 @@ def pack_task(root: Any, task_id: str, *, keep_shas: set, listing: Optional[list
     if sweep is None:
         with pack_sweep(root) as sweep:
             sweep.collect_keep(keep_rows(root))
-            return pack_task(root, task_id, keep_shas=keep_shas, listing=listing, revision=revision, sweep=sweep)
+            return pack_task(root, task_id, keep_shas=keep_shas, listing=listing, revision=revision, sweep=sweep,
+                             extra_blobs=extra_blobs)
     if revision is None:
         revision = task_stamps(root, task_id)
     generations = published_generations(root, task_id, listing)
     already = {_member_key(m) for s in generations for m in s["members"]}
     missing: list = []
-    members = loose_members(root, task_id, missing=missing)
+    members = loose_members(root, task_id, missing=missing, extra_blobs=extra_blobs)
     fresh = [m for m in members if _member_key(m) not in already]
     report: Dict[str, Any] = {"task_id": str(task_id), "generation": None, "members": 0, "raw": 0, "packed": 0,
                               "verified_bytes": 0, "missing": len(missing),
@@ -1234,6 +1463,9 @@ def unpack(sidecar_path):
             if member["kind"] == "checkpoint":
                 target = os.path.join(ROOT, "task_results", "artifacts", task, *member["path"].split("/"))
                 written += _write(target, raw)
+            elif member["kind"] == "call_manifest":
+                target = os.path.join(ROOT, "observability", "calls", task, member["path"])
+                written += _write(target, raw)
             else:
                 target = os.path.join(ROOT, "observability", "blobs", "%s.%s.gz" % (member["sha256"], member["kind"]))
                 written += _write(target, gzip.compress(raw, compresslevel=1))
@@ -1271,18 +1503,20 @@ if __name__ == "__main__":
 _README = """# Evidence packs
 
 Each `<task>[.<gen>].xz` is one xz stream (LZMA2 preset 1) of a settled task's evidence: its
-`source_handles/context_checkpoints/*` files first, then every blob its call manifests
-reference, raw bytes back to back. `<task>[.<gen>].members.json` is the authority: header
-(task, generation, format_version, codec, preset, dict_size, raw_total, packed_total,
-pack_sha256, created_at, verified_at) and members (sha256, kind, size, offset, path for
-handles). `index.sqlite` is a cache rebuilt from the sidecars whenever it is missing or damaged.
+`source_handles/context_checkpoints/*` files first, then its `observability/calls/<task>/*.json`
+manifests (v2), then every blob its call manifests and usage rows reference, raw bytes back to back.
+`<task>[.<gen>].members.json` is the authority: header (task, generation, format_version, codec,
+preset, dict_size, raw_total, packed_total, pack_sha256, created_at, verified_at) and members
+(sha256, kind, size, offset, path for handles and call manifests). `index.sqlite` is a cache rebuilt
+from the sidecars whenever it is missing or damaged.
 
 Ouroboros reads packed members in place. To get loose files back without the app:
 
     python3 unpack_evidence.py <task_id> | --all | --usage-archive
 
-Blobs return as `observability/blobs/<sha256>.<kind>.gz` (gzip), handles under
-`task_results/artifacts/<task>/source_handles/context_checkpoints/`, both sha256-verified.
+Blobs return as `observability/blobs/<sha256>.<kind>.gz` (gzip), call manifests under
+`observability/calls/<task>/`, and handles under
+`task_results/artifacts/<task>/source_handles/context_checkpoints/`, all sha256-verified.
 """
 
 

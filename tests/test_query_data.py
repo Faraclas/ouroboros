@@ -461,7 +461,7 @@ def test_pack_index_sql_recovers_from_sidecars(ctx, cache):
                 DROP TABLE previous_members;
                 UPDATE meta SET value='1' WHERE key='schema_version';
             """)
-            assert conn.execute("SELECT count(*) FROM members").fetchone() == (1,)
+            assert conn.execute("SELECT count(*) FROM members").fetchone() == (2,)
     elif cache == "quick_check":
         with closing(sqlite3.connect(path)) as conn, conn:
             conn.executescript("""
@@ -475,7 +475,9 @@ def test_pack_index_sql_recovers_from_sidecars(ctx, cache):
     # Cold cache recovery is the subject, not a one-second completion SLA.
     result = call(ctx, op="sql", db="packs", query="SELECT kind, size FROM members ORDER BY kind", timeout_sec=5)
     assert result["status"] == "ok", result
-    assert result["data"]["rows"] == [["checkpoint", len(raw)], ["json", len(raw)]], result
+    rows_by_kind = {k: s for k, s in result["data"]["rows"]}
+    assert rows_by_kind["checkpoint"] == len(raw) and rows_by_kind["json"] == len(raw)
+    assert "call_manifest" in rows_by_kind and rows_by_kind["call_manifest"] > 0
     assert authority == {p: p.read_bytes() for p in authority}
     with closing(sqlite3.connect(path)) as conn:
         assert conn.execute("PRAGMA quick_check").fetchall() == [("ok",)]

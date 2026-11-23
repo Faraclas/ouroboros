@@ -105,7 +105,7 @@ def test_pack_format_sidecar_prefix_and_shared_sha_duplicated(root):
     for member in members:  # every member complete inside its own pack; no independent frames anywhere
         raw = whole[member["offset"]:member["offset"] + member["size"]]
         assert hashlib.sha256(raw).hexdigest() == member["sha256"]
-    assert {sidecar[k] for k in ("format_version", "codec", "preset")} == {1, "xz"}
+    assert (sidecar["format_version"], sidecar["codec"], sidecar["preset"]) == (packs.FORMAT_VERSION, "xz", packs.PRESET)
     assert sidecar["dict_size"] == packs.dict_size_for(sidecar["raw_total"]) and sidecar["dict_size"] % 2 == 0
     assert sidecar["pack_sha256"] == hashlib.sha256(pack_a.read_bytes()).hexdigest()
     assert sidecar["members"][0]["path"] == handle_a["path"]
@@ -154,7 +154,9 @@ def test_readers_resolve_loose_then_pack_and_blob_shared_with_active_task_stays_
     assert intact and json.loads(payload)["message"]["content"].startswith("answer task-a 1")
     assert _read_blob_bytes({"full_payload_ref": {**refs_a[1], "sha256": "0" * 64}}) == (None, False)
     txt = _blob(root, b"manifest version bytes", kind="txt")
-    (root / "observability" / "calls" / "task-a" / "llm_8_response.json").write_text(
+    calls_a = root / "observability" / "calls" / "task-a"
+    calls_a.mkdir(parents=True, exist_ok=True)
+    (calls_a / "llm_8_response.json").write_text(
         json.dumps({"call_id": "llm_8", "manifest_version_ref": txt}), encoding="utf-8")
     _run(root)
     assert not _loose(txt)
@@ -307,8 +309,9 @@ def test_index_is_a_cache_rebuilt_from_sidecars(root):
     assert index.exists()
     with contextlib.closing(sqlite3.connect(index)) as conn:
         assert conn.execute("PRAGMA application_id").fetchone()[0] in packs._APPLICATION_ID.values()
-        assert conn.execute("SELECT count(*) FROM members").fetchone()[0] == 3
+        assert conn.execute("SELECT count(*) FROM members").fetchone()[0] == 5
         assert conn.execute("SELECT count(*) FROM handles").fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM call_manifests").fetchone()[0] == 2
     index.write_bytes(b"not a database at all")
     packs._VALIDATED.clear()
     # A handle is addressed by its task: its own sidecar answers, and the damaged cache is
@@ -396,12 +399,16 @@ def test_second_generation_packs_only_new_members(root):
     refs, handle = _task(root, "task-a", blobs=1)
     _run(root)
     late = _blob(root, json.dumps({"message": {"content": "late answer"}}).encode())
-    (root / "observability" / "calls" / "task-a" / "llm_7_response.json").write_text(
+    calls_a = root / "observability" / "calls" / "task-a"
+    calls_a.mkdir(parents=True, exist_ok=True)
+    (calls_a / "llm_7_response.json").write_text(
         json.dumps({"call_id": "llm_7", "full_payload_ref": late}), encoding="utf-8")
     report = _run(root)
     assert report["packed"] == 1
     sidecar = json.loads((root / "observability" / "packs" / "task-a.2.members.json").read_text(encoding="utf-8"))
-    assert [m["sha256"] for m in sidecar["members"]] == [late["sha256"]] and sidecar["generation"] == 2
+    blob_shas = [m["sha256"] for m in sidecar["members"] if m["kind"] in packs.BLOB_KINDS]
+    call_paths = [m["path"] for m in sidecar["members"] if m["kind"] == packs.CALL_MANIFEST]
+    assert blob_shas == [late["sha256"]] and call_paths == ["llm_7_response.json"] and sidecar["generation"] == 2
     assert not _loose(late) and obs.read_blob_ref(root, late)["message"]["content"] == "late answer"
     assert obs.read_blob_ref(root, refs[0])["message"]["content"].startswith("answer")
 
@@ -483,8 +490,9 @@ def test_unpacker_script_restores_a_task_and_the_v760_reader_reads_it(root):
     script = root / "observability" / "packs" / packs.UNPACKER_NAME
     assert script.exists() and (root / "observability" / "packs" / packs.README_NAME).exists()
     done = subprocess.run([sys.executable, str(script), "task-a"], capture_output=True, text=True, cwd=str(root), check=True)
-    assert "restored 3 file" in done.stdout
+    assert "restored 5 file" in done.stdout
     assert all(_loose(ref) for ref in refs) and _handle_path(root, "task-a", handle).exists()
+    assert (root / "observability" / "calls" / "task-a" / "llm_0_response.json").exists()
     v760 = subprocess.run(["git", "show", "v7.6.0:ouroboros/observability.py"], capture_output=True, text=True, cwd=str(REPO))
     if v760.returncode != 0:
         pytest.skip("v7.6.0 is not reachable from this checkout")
@@ -497,6 +505,134 @@ def test_unpacker_script_restores_a_task_and_the_v760_reader_reads_it(root):
     assert namespace["read_blob_ref"](root, refs[1])["message"]["content"].startswith("answer task-a 1")
     again = subprocess.run([sys.executable, str(script), "--all"], capture_output=True, text=True, cwd=str(root), check=True)
     assert "restored 0 file" in again.stdout  # idempotent
+
+
+def test_v2_call_manifests_pack_and_read_transparently(root):
+    """Terminal call manifests fold into FORMAT_VERSION=2 packs and all readers resolve them transparently."""
+    persisted = obs.persist_call(
+        root, task_id="task-calls", call_id="llm_0_response", call_type="llm_response",
+        payload={"message": {"content": "packed call manifest answer"}},
+    )
+    _result(root, "task-calls", "completed")
+    report = _run(root)
+    assert (report["packed"], report["faults"]) == (1, 0)
+    assert not (root / "observability" / "calls" / "task-calls").exists()
+    manifest = obs.read_call_manifest_ref(root, persisted["manifest_ref"], task_id="task-calls")
+    assert manifest["call_id"] == "llm_0_response" and manifest["task_id"] == "task-calls"
+    loaded_manifest, payload, _ = obs.read_call_payload(root, task_id="task-calls", call_id="llm_0_response")
+    assert loaded_manifest["call_id"] == "llm_0_response"
+    assert payload["message"]["content"] == "packed call manifest answer"
+    assert obs.latest_llm_response_text(root, "task-calls") == "packed call manifest answer"
+
+
+def test_physical_stream_private_wire_ref_discovered_and_packed(root):
+    """physical_stream manifests pack both their outer payload blob and transitive private_wire_ref."""
+    wire_payload = {"wire_base64": "YWJj", "attempt_id": "att-1", "complete": True}
+    raw_ref = obs.write_blob(root, wire_payload, kind="json")
+    persisted = obs.persist_call(
+        root, task_id="task-stream", call_id="physical_att-1_stream", call_type="physical_stream",
+        payload={"attempt_id": "att-1", "complete": True, "private_wire_ref": raw_ref},
+        manifest={"attempt_id": "att-1", "complete": True},
+    )
+    _result(root, "task-stream", "completed")
+    refs = packs.manifest_blob_refs(root, "task-stream")
+    assert ("json", raw_ref["sha256"], raw_ref["size"]) in refs
+    report = _run(root)
+    assert (report["packed"], report["faults"]) == (1, 0)
+    assert not pathlib.Path(raw_ref["path"]).exists()
+    assert not pathlib.Path(persisted["redacted_projection_ref"]["path"]).exists()
+    assert obs.read_blob_ref(root, raw_ref) == wire_payload
+
+
+def test_promoted_manifest_txt_snapshots_and_legacy_backfill_pack(root):
+    """New promotions record promoted_manifest_version_refs; whole-census backfill packs legacy .txt.gz blobs."""
+    from ouroboros.source_retention import read_manifest_version, retain_tree
+
+    child = root / "task_drives" / "child-task"
+    child.mkdir(parents=True)
+    persisted = obs.persist_call(
+        child, task_id="child-task", call_id="llm_1_response", call_type="llm_response",
+        payload={"message": {"content": "from child"}},
+    )
+    orig_sha = persisted["manifest_ref"]["sha256"]
+    state = {"schema_version": 1, "status": "complete", "promoted_ref_count": 0,
+             "promoted_source_handle_count": 0, "pending_refs": [], "unavailable_refs": []}
+    with obs.child_ref_promotion_scope():
+        retain_tree(persisted["manifest_ref"], root, child, "child-task", state)
+    txt_blob = root / "observability" / "blobs" / f"{orig_sha}.txt.gz"
+    assert txt_blob.exists()
+    _result(root, "child-task", "completed")
+    # Also create a legacy .txt.gz snapshot belonging to a second task without promoted_manifest_version_refs.
+    legacy_raw = json.dumps({"schema_version": 1, "task_id": "legacy-txt", "call_id": "llm_0_response"}).encode("utf-8")
+    legacy_ref = _blob(root, legacy_raw, kind="txt")
+    _result(root, "legacy-txt", "completed")
+    report = _run(root)
+    assert (report["packed"], report["faults"]) == (2, 0)
+    assert not txt_blob.exists() and not pathlib.Path(legacy_ref["path"]).exists()
+    assert json.loads(read_manifest_version(root, orig_sha))["task_id"] == "child-task"
+    assert json.loads(read_manifest_version(root, legacy_ref["sha256"]))["task_id"] == "legacy-txt"
+
+
+def test_claudexor_recover_model_attempt_reads_packed_request_manifest(root):
+    """recover_model_attempt still resolves operation_id after the packer packs & unlinks <attempt>_model_request."""
+    from ouroboros.llm_claudexor import recover_model_attempt
+
+    attempt_id = "att_packed_recovery"
+    obs.persist_call(
+        root, task_id="task-cx", call_id=f"{attempt_id}_model_request", call_type="llm_claudexor_request",
+        payload={"prompt": "hello"},
+        manifest={"operation_id": "op_packed_123", "invocation_id": attempt_id, "request_kind": "chat"},
+    )
+    _result(root, "task-cx", "completed")
+    report = _run(root)
+    assert (report["packed"], report["faults"]) == (1, 0)
+    assert not obs.call_manifest_path(root, "task-cx", f"{attempt_id}_model_request").exists()
+
+    seen_ops = []
+    class _FakeGateway:
+        def get_model_operation(self, op_id, timeout_sec=None):
+            seen_ops.append(op_id)
+            return {"state": "running", "dispatch": {"state": "dispatched"}}
+        def close(self):
+            pass
+
+    result = recover_model_attempt(root, {"task_id": "task-cx", "attempt_id": attempt_id}, gateway_factory=_FakeGateway)
+    assert result is None and seen_ops == ["op_packed_123"]
+
+
+def test_same_store_retention_and_mixed_loose_packed_manifests(root):
+    """Same-store RetentionWalk reads packed call manifests, and mixed loose+packed enumeration merges both."""
+    from ouroboros.late_tool_results import _own_timeouts
+    from ouroboros.source_retention import retain_tree
+
+    persisted = obs.persist_call(
+        root, task_id="task-mix", call_id="llm_0_response", call_type="llm_response",
+        payload={"message": {"content": "first packed answer"}},
+    )
+    inv_id = "a" * 32
+    obs.persist_call(
+        root, task_id="task-mix", call_id=f"tool_timeout_probe_{inv_id}", call_type="tool_timeout",
+        payload={"timeout_sec": 5},
+        manifest={"tool": "probe", "invocation_id": inv_id, "timeout_sec": 5, "tool_call_id": "tc1", "task_attempt": 1},
+    )
+    _result(root, "task-mix", "completed")
+    assert _run(root)["faults"] == 0
+    assert not (root / "observability" / "calls" / "task-mix").exists()
+    # Same-store retention walk over the packed manifest ref must succeed without marking it unavailable.
+    state = {"schema_version": 1, "status": "complete", "promoted_ref_count": 0,
+             "promoted_source_handle_count": 0, "pending_refs": [], "unavailable_refs": []}
+    with obs.child_ref_promotion_scope():
+        retain_tree(persisted["manifest_ref"], root, root, "task-mix", state)
+    assert not state["unavailable_refs"] and not state["pending_refs"]
+    # Now add one new loose manifest (empty assistant response) alongside the packed ones:
+    # mixed loose+packed lookup must still discover both the packed answer and the packed timeout!
+    obs.persist_call(
+        root, task_id="task-mix", call_id="llm_1_response", call_type="llm_response",
+        payload={"message": {"content": ""}},
+    )
+    assert obs.latest_llm_response_text(root, "task-mix") == "first packed answer"
+    timeouts = _own_timeouts([root], "task-mix")
+    assert [t["invocation_id"] for t in timeouts] == [inv_id]
 
 
 def test_usage_archive_segments_become_xz_and_attempt_ids_stay_findable(root):

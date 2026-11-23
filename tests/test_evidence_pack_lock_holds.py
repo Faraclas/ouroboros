@@ -78,8 +78,8 @@ def test_a_long_deletion_leaves_the_locks_to_waiters_between_sections(root, monk
         assert _loose(refs), "the store write lock came free only after the deletion"
     runner.join(60)
     assert not runner.is_alive() and report["faults"] == 0
-    # 60 blobs and the checkpoint handle, whose own unlink in section one moved the task's stamps
-    assert report["unlinked"] == 61 and not _loose(refs) and not _handle_path(root, "big", handle).exists()
+    # 60 blobs, 60 call manifests and the checkpoint handle, whose own unlinks moved the task's stamps
+    assert report["unlinked"] == 121 and not _loose(refs) and not _handle_path(root, "big", handle).exists()
 
 
 def test_a_reference_published_between_sections_keeps_its_blob(root, monkeypatch):
@@ -97,7 +97,7 @@ def test_a_reference_published_between_sections_keeps_its_blob(root, monkeypatch
     report = packer.run_pass(root)
     assert report["faults"] == 0 and late, "the deletion never reached a second section"
     assert {ref["path"] for ref in _loose(refs)} == {ref["path"] for ref in late}
-    assert report["kept"] == len(late) and report["unlinked"] == 13 - len(late)
+    assert report["kept"] == len(late) and report["unlinked"] == 25 - len(late)
     assert all(packs.blob_bytes(root, ref) for ref in refs)  # packed or loose, every byte reads
 
 
