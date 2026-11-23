@@ -150,3 +150,15 @@ test('directory_manifest rows render as folder cards with host ZIP archive links
     assert.match(html, /full-evidence\/OUROBOROS_TEST_EVIDENCE_RUN\.txt\nfull-evidence\/run-1\/detail\.json\n… 118 more"/);
     assert.doesNotMatch(html, /artifacts\/full-evidence"/, 'must not emit a broken root file link for the folder');
 });
+
+test('pruned_by_retention artifacts show a clear non-clickable retention note', () => {
+    const view = projectResultArtifacts(TASK, [
+        { name: 'verdict.json', size: 120, status: 'ready' },
+        { name: 'huge-dump.zip', size: 50 * 1024 * 1024, status: 'pruned_by_retention' },
+    ]);
+    assert.equal(view.files.length, 2);
+    assert.equal(view.files[1].url, '');
+    assert.equal(view.files[1].note, 'pruned by retention');
+    const html = render(view);
+    assert.match(html, /huge-dump\.zip · 50 MB · pruned by retention/);
+});

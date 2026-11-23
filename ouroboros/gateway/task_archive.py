@@ -325,6 +325,14 @@ def serve_directory_archive(drive_root: Any, task_id: str, name: str, directory:
         return json_error(str(exc), 404, reason_code="artifact_archive_unverified",
                           task_id=task_id, artifact=name, directory=directory)
     if not members:
+        from ouroboros.artifact_retention import PRUNED_STATUS, pruned_retention_entry
+        for st_dir in task_artifact_stores(drive_root, task_id):
+            pruned = pruned_retention_entry(st_dir, directory)
+            if pruned is not None:
+                return json_error("directory archive was pruned by storage retention policy", 410,
+                                  reason_code=PRUNED_STATUS, task_id=task_id, artifact=name, directory=directory,
+                                  pruned_at=str(pruned.get("pruned_at") or ""),
+                                  retention_reason=str(pruned.get("reason") or ""))
         return json_error("no recorded ready file of this task lies in that directory", 404,
                           reason_code="artifact_archive_empty", task_id=task_id, artifact=name, directory=directory)
     member = ""
@@ -542,6 +550,13 @@ def serve_task_file(drive_root: Any, store: pathlib.Path, relpath: str, name: st
                               409, reason_code="artifact_identity_changed", task_id=task_id, artifact=name,
                               recorded_sha256=str(expected.get("sha256") or ""), recorded_size=expected.get("size"))
         if exc.errno is None or exc.errno in _MEMBER_GONE:
+            from ouroboros.artifact_retention import PRUNED_STATUS, pruned_retention_entry
+            pruned = pruned_retention_entry(store, relpath)
+            if pruned is not None:
+                return json_error("artifact file was pruned by storage retention policy", 410,
+                                  reason_code=PRUNED_STATUS, task_id=task_id, artifact=name, relpath=relpath,
+                                  pruned_at=str(pruned.get("pruned_at") or ""),
+                                  retention_reason=str(pruned.get("reason") or ""))
             return json_error("artifact file is missing, changed while read, or failed its capture verification",
                               404, reason_code="artifact_unverified", task_id=task_id, artifact=name)
         return json_error("artifact could not be read", 503, reason_code="artifact_unavailable",

@@ -897,8 +897,10 @@ def _task_get_response(request: Request) -> JSONResponse:
     if objections is not None:
         payload["plan_objections"] = objections
     if isinstance(payload.get("artifacts"), list):  # what ``?archive=<dir>`` would stream now, per top-level dir
-        payload["artifact_archives"] = directory_archives(task_artifact_stores(drive_root, task_id),
-                                                          payload["artifacts"], anchor=drive_root)
+        from ouroboros.artifact_retention import project_pruned_artifacts
+        stores = task_artifact_stores(drive_root, task_id)
+        payload["artifacts"] = project_pruned_artifacts(stores, payload["artifacts"])
+        payload["artifact_archives"] = directory_archives(stores, payload["artifacts"], anchor=drive_root)
     from ouroboros.owner_stop_receipt import wrap_up_document_view  # named only: written on ``?wrap_up=``
     if document := wrap_up_document_view(data):
         payload["wrap_up_document"] = document
@@ -965,6 +967,14 @@ def api_task_artifact(request: Request):
             return json_error("artifact metadata path does not match requested name", 500)
         if (rows or registered) and not located and relpath is None:
             return json_error("artifact path is outside task artifact directory", 500)
+        from ouroboros.artifact_retention import PRUNED_STATUS, pruned_retention_entry
+        for st_dir in stores:
+            pruned = pruned_retention_entry(st_dir, relpath or name)
+            if pruned is not None:
+                return json_error("artifact file was pruned by storage retention policy", 410,
+                                  reason_code=PRUNED_STATUS, task_id=task_id, artifact=name,
+                                  relpath=relpath or name, pruned_at=str(pruned.get("pruned_at") or ""),
+                                  retention_reason=str(pruned.get("reason") or ""))
         return json_error("artifact not found", 404, task_id=task_id, artifact=name)
     (index, _path, relative), _order, artifact = min(matches, key=lambda item: (item[0][0], item[1]))
     return serve_task_file(drive_root, stores[index], relative, name, recorded_identity(artifact), task_id=task_id,

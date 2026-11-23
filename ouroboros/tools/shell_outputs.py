@@ -611,6 +611,22 @@ def _register_process_outputs(
                 notes.append(f"failed output copy {text}: source is not a regular file")
                 failed = True
         elif source.is_dir():
+            from ouroboros.test_evidence import EVIDENCE_RUN_MARKER
+
+            try:
+                is_evidence_run = (source / EVIDENCE_RUN_MARKER).is_file()
+            except OSError as exc:
+                notes.append(f"failed directory output inspection {text}: {type(exc).__name__}: {exc}")
+                failed = True
+                continue
+            if is_evidence_run:
+                notes.append(
+                    f"refused promoting raw test-evidence directory {text} to artifact_store root "
+                    "(keep raw test-evidence runs under source_handles/test-evidence and declare only "
+                    "compact summary/verdict files in outputs)"
+                )
+                failed = True
+                continue
             dir_members, _dir_size, blocked_member, skipped_members = _scan_directory_output_members(
                 ctx,
                 source,

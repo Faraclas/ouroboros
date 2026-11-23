@@ -95,7 +95,7 @@ UNREAD_MAIL_KINDS = frozenset({"owner_text", "task_message", "quiz_answer", "qui
 OWNER_MAIL_KINDS = frozenset({"owner_text", "quiz_answer", "quiz_closed", "card_input"})  # what the owner authored
 # A store's own bookkeeping and non-deliverable subtrees (inputs, media, sources).
 _STORE_BOOKKEEPING = frozenset({".artifact_manifest.json", ".artifact_manifest.json.lock",
-                                ".scratch_manifest.json", "verification_receipts.jsonl"})
+                                ".scratch_manifest.json", "pruned_manifest.json", "verification_receipts.jsonl"})
 _STORE_INPUT_SUBTREES = frozenset({"attachments", "chat_media", "source_handles"})
 _SETTLED = frozenset({"completed", "failed", "cancelled", "rejected_duplicate"})
 _INPUT_FIELDS = ("task_contract", "attachment_manifest", "attachment_manifest_ref", "metadata")

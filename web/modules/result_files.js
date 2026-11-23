@@ -70,7 +70,8 @@ export function projectResultArtifacts(taskId, records, archives = null, wrapUp 
                 || { name: dirName, fileCount: 0, bytes: 0, unavailableCount: 0, relpaths: [], archive: null };
             folder.fileCount = Math.max(folder.fileCount, count);
             folder.bytes = bytes === null ? null : Math.max(folder.bytes || 0, bytes);
-            if (!serving) folder.unavailableCount = Math.max(folder.unavailableCount, count || 1);
+            if (status === 'pruned_by_retention') folder.prunedCount = Math.max(folder.prunedCount || 0, count || 1);
+            else if (!serving) folder.unavailableCount = Math.max(folder.unavailableCount, count || 1);
             if (Array.isArray(row.sample_files)) {
                 for (const sample of row.sample_files) {
                     const rel = `${dirName}/${String(sample || '').replace(/^\/+/, '')}`;
@@ -85,7 +86,8 @@ export function projectResultArtifacts(taskId, records, archives = null, wrapUp 
                 || { name: parts[0], fileCount: 0, bytes: 0, unavailableCount: 0, relpaths: [], archive: null };
             folder.fileCount += 1;
             folder.bytes = folder.bytes === null || bytes === null ? null : folder.bytes + bytes;
-            if (!serving) folder.unavailableCount += 1;
+            if (status === 'pruned_by_retention') folder.prunedCount = (folder.prunedCount || 0) + 1;
+            else if (!serving) folder.unavailableCount += 1;
             folder.relpaths.push(parts.join('/'));
             folders.set(parts[0], folder);
             continue;
@@ -94,7 +96,7 @@ export function projectResultArtifacts(taskId, records, archives = null, wrapUp 
         if (!name) continue;
         files.push({
             name, bytes,
-            note: serving ? (row.measured === false ? 'unverified' : '') : (status || 'unavailable'),
+            note: serving ? (row.measured === false ? 'unverified' : '') : (status === 'pruned_by_retention' ? 'pruned by retention' : (status || 'unavailable')),
             url: serving ? taskArtifactDownloadUrl(taskId, name) : '',
         });
     }
@@ -164,8 +166,10 @@ function resultArtifactsHtml(view, limit = RESULT_FILE_ROWS) {
                     ? ['folder', fileCountText(folder.archive.fileCount), artifactBytes(folder.archive.bytes),
                         folder.archive.excluded ? `${folder.archive.excluded.toLocaleString('en-US')} not archived` : '']
                     : ['folder', fileCountText(folder.fileCount), artifactBytes(folder.bytes),
+                        folder.prunedCount && folder.prunedCount >= folder.fileCount ? 'pruned by retention'
+                            : (folder.prunedCount ? `${folder.prunedCount.toLocaleString('en-US')} pruned by retention` : ''),
                         folder.unavailableCount ? `${folder.unavailableCount.toLocaleString('en-US')} unavailable` : '',
-                        folder.archive ? 'no archive' : ''])
+                        folder.archive && !(folder.prunedCount && folder.prunedCount >= folder.fileCount) ? 'no archive' : ''])
                 + '</span>',
         })),
     ];

@@ -25,6 +25,7 @@ from ouroboros.task_results import validate_task_id
 log = logging.getLogger(__name__)
 
 _ARTIFACT_MANIFEST = ".artifact_manifest.json"
+_PRUNED_MANIFEST = "pruned_manifest.json"
 _ARTIFACT_VERSION_RETENTION = 5
 _ARTIFACT_VERSIONS_DIR = "artifact_versions"
 
@@ -1303,7 +1304,7 @@ def collect_task_artifact_records(
             nonlocal total_size, has_marker
             for entry_name, entry_is_dir in sorted(sub.entries()):
                 entry_path = store.joinpath(top_name, *rel_parts, entry_name)
-                if entry_name in {_ARTIFACT_MANIFEST, SCRATCH_MANIFEST_NAME} or entry_path == receipts:
+                if entry_name in {_ARTIFACT_MANIFEST, SCRATCH_MANIFEST_NAME, _PRUNED_MANIFEST} or entry_path == receipts:
                     continue
                 if entry_is_dir:
                     if entry_name in _SKIPPED_ARTIFACT_DIRS:
@@ -1342,7 +1343,7 @@ def collect_task_artifact_records(
     def walk(directory, relative=()):
         for name, is_directory in sorted(directory.entries()):
             path = store.joinpath(*relative, name)
-            if (name in {_ARTIFACT_MANIFEST, SCRATCH_MANIFEST_NAME}
+            if (name in {_ARTIFACT_MANIFEST, SCRATCH_MANIFEST_NAME, _PRUNED_MANIFEST}
                     or path in {receipts, store / (_ARTIFACT_MANIFEST + ".lock")}
                     or (is_directory and name in _SKIPPED_ARTIFACT_DIRS)
                     or not relative and name in {_ATTACHMENTS_SUBDIR, _CHAT_MEDIA_SUBDIR, _SOURCE_HANDLES_SUBDIR}):

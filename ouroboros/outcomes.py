@@ -1305,6 +1305,7 @@ def artifact_bundle_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "ready_with_changes",
         "ready_no_changes",
         "missing",
+        "pruned_by_retention",
         "not_applicable",
     }:
         status = explicit_status
@@ -1322,6 +1323,13 @@ def artifact_bundle_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
         explicit_status = str(item.get("status") or "").strip()
         if item.get("copy_status") == "failed":
             artifact_status = "missing"
+        elif explicit_status in ("", ARTIFACT_STATUS_READY) and path and not pathlib.Path(path).exists():
+            from ouroboros.artifact_retention import PRUNED_STATUS, pruned_retention_for_path
+
+            if pruned_retention_for_path(path) is not None:
+                artifact_status = PRUNED_STATUS
+            else:
+                artifact_status = explicit_status or "missing"
         elif explicit_status:
             artifact_status = explicit_status
         elif path and pathlib.Path(path).exists():

@@ -55,6 +55,18 @@ export const FREE_GROUPS = {
         unit: ['{n} result', '{count} results'],
         saved: true,
     },
+    stale_backups: {
+        label: 'Stale backup folders',
+        loss: 'Aged (>24h) pre-update or snapshot backup folders under backups/ and state/backup_dir*. Symlink-pointed, recent, and active switch or skill rollback backups stay untouched.',
+        unit: ['{n} backup', '{count} backups'],
+        saved: true,
+    },
+    settled_artifact_bulk: {
+        label: 'Settled task bulk artifacts',
+        loss: 'Generated caches, raw test-evidence logs/packs, and oversized (>10 MB) unregistered bulk from finished tasks. Registered deliverables, compact JSON verdicts, patches, and a bounded pruned_manifest.json tombstone stay.',
+        unit: ['{n} task', '{count} tasks'],
+        saved: true,
+    },
 };
 
 /** The server's typed kept reasons in the owner's words. */

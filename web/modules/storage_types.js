@@ -97,7 +97,7 @@
  * leftovers no background pass removes (reviewers' files, ownerless review copies, unrecorded copies,
  * leftover environments and test-run records, Git marks of results never applied).
  * @typedef {Object} StorageFreeGroup
- * @property {string} id  // work_folders | working_copies | review_evidence | review_checkouts | lost_copies | service_folders | result_pins
+ * @property {string} id  // work_folders | working_copies | review_evidence | review_checkouts | lost_copies | service_folders | result_pins | stale_backups | settled_artifact_bulk
  * @property {number} count
  * @property {number} inside_wait  // finished less than retention_days ago
  * @property {number} in_use  // live, pending, unknown or non-terminal: offered nowhere, named here
