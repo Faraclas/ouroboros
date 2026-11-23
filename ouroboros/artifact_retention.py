@@ -9,10 +9,12 @@ Safety invariants:
 1. True positive-identification allowlist: registered deliverables (``.artifact_manifest.json``,
    including ``user_file``, ``process_output``, ``process_output_directory*``,
    ``verification_ledger``, ``workspace_patch*``, ``memory_export``, ``delete_recovery``),
-   compact verdicts/recipes (``*.json`` <= ``COMPACT_VERDICT_BYTES`` inside test-evidence
-   runs), staged inputs (``attachments/``, ``chat_media/``), delegated patches
-   (``delegated_runs/``), compact root files (<= ``BULK_FILE_BYTES``), and metadata/tombstones
-   are NEVER pruned here.
+   compact JSON verdicts/recipes (``*.json`` <= ``COMPACT_VERDICT_BYTES`` at root in
+   closed-project mode or inside test-evidence runs), staged inputs (``attachments/``,
+   ``chat_media/``), delegated patches (``delegated_runs/``), ``source_handles/`` other than
+   ``working`` and raw ``test-evidence``, compact root files (<= ``BULK_FILE_BYTES`` in default
+   7-day/Storage Free mode; closed-project mode sets ``bulk_file_bytes=0`` to prune remaining
+   unregistered bulk files/dirs), and metadata/tombstones are NEVER pruned here.
 2. Only settled tasks proven terminal, not live, whose root task is also terminal and not
    live, whose child drive is already settled/absent, and holding zero open custody /
    promotion / review / plan obligations (treating NULL collection flags as pending) are
@@ -408,8 +410,9 @@ def classify_task_artifact_bulk(
 
     True allowlist: all registered deliverables (``.artifact_manifest.json``, including
     ``user_file``, ``process_output``, ``process_output_directory*``, ``verification_ledger``,
-    ``workspace_patch*``), compact JSON verdicts inside test-evidence runs (<= 1 MiB),
-    ``attachments/``, ``chat_media/``, ``delegated_runs/``, and compact root files stay intact.
+    ``workspace_patch*``), compact JSON verdicts inside test-evidence runs (<= 1 MiB) and at root
+    when ``bulk_file_bytes == 0``, ``attachments/``, ``chat_media/``, ``delegated_runs/``, and
+    compact root files (<= ``BULK_FILE_BYTES`` in default mode) stay intact.
     """
     if bulk_file_bytes is None:
         bulk_file_bytes = BULK_FILE_BYTES
@@ -499,6 +502,8 @@ def classify_task_artifact_bulk(
             except OSError:
                 unreadable += 1
                 continue
+            if bulk_file_bytes == 0 and entry.suffix.lower() == ".json" and sz <= COMPACT_VERDICT_BYTES:
+                continue  # closed-project prune keeps compact JSON verdicts/receipts alongside deliverables
             if sz > bulk_file_bytes:
                 evictable.append({
                     "relpath": name,
@@ -512,7 +517,7 @@ def classify_task_artifact_bulk(
     return evictable, unreadable
 
 
-def _parse_epoch_seconds(value: Any) -> Optional[float]:
+def parse_epoch_seconds(value: Any) -> Optional[float]:
     if value is None:
         return None
     text = str(value).strip()
@@ -531,7 +536,7 @@ def _parse_epoch_seconds(value: Any) -> Optional[float]:
         return None
 
 
-def _task_eligible_for_bulk_prune(
+def task_eligible_for_bulk_prune(
     root: pathlib.Path,
     task_id: str,
     row: Optional[Dict[str, Any]],
@@ -584,12 +589,26 @@ def _task_eligible_for_bulk_prune(
 
     epoch: Optional[float] = None
     for key in ("drive_retention_at", "updated_at", "ts"):
-        parsed = _parse_epoch_seconds(row.get(key))
+        parsed = parse_epoch_seconds(row.get(key))
         if parsed is not None:
             epoch = parsed
             break
     inside_wait = bool(cutoff_ts is not None and (epoch is None or epoch > cutoff_ts))
     return "offer", inside_wait
+
+
+def load_retention_rows(root: Any, task_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Load retention rows for TASK_IDS and prefetch any missing ``root_task_id`` rows."""
+    root_path = pathlib.Path(root)
+    rows_by_id = _task_retention_rows(root_path, task_ids)
+    missing_roots = sorted({
+        str(r.get("root_task_id") or "")
+        for r in rows_by_id.values()
+        if r.get("root_task_id") and str(r.get("root_task_id")) not in rows_by_id
+    })
+    if missing_roots:
+        rows_by_id.update(_task_retention_rows(root_path, missing_roots))
+    return rows_by_id
 
 
 def _task_retention_rows(root: pathlib.Path, task_ids: List[str]) -> Dict[str, Dict[str, Any]]:
@@ -599,7 +618,7 @@ def _task_retention_rows(root: pathlib.Path, task_ids: List[str]) -> Dict[str, D
     if not task_ids:
         return {}
     cols = (
-        "task_id", "status", "root_task_id", "parent_task_id",
+        "task_id", "status", "root_task_id", "parent_task_id", "project_id",
         "child_drive_root", "headless_child_drive_root",
         "ts", "updated_at", "drive_retention_at",
         "owes_synthesis", "owes_terminal_projection", "has_pending_promotion",
@@ -638,15 +657,7 @@ def list_settled_artifact_bulk_candidates(
     dirs = [e for e in sorted(art_root.iterdir(), key=lambda p: p.name) if e.is_dir() and not e.is_symlink()]
     if not dirs:
         return [], 0, 0
-    rows_by_id = _task_retention_rows(root_path, [d.name for d in dirs])
-    # Pre-fetch any distinct root_task_id referenced by children in one batched query.
-    missing_roots = sorted({
-        str(r.get("root_task_id") or "")
-        for r in rows_by_id.values()
-        if r.get("root_task_id") and str(r.get("root_task_id")) not in rows_by_id
-    })
-    if missing_roots:
-        rows_by_id.update(_task_retention_rows(root_path, missing_roots))
+    rows_by_id = load_retention_rows(root_path, [d.name for d in dirs])
 
     candidates: List[Dict[str, Any]] = []
     in_use = 0
@@ -655,7 +666,7 @@ def list_settled_artifact_bulk_candidates(
         if stop and stop():
             break
         tid = task_dir.name
-        verdict, inside_wait = _task_eligible_for_bulk_prune(
+        verdict, inside_wait = task_eligible_for_bulk_prune(
             root_path, tid, rows_by_id.get(tid), rows_by_id, live, cutoff_ts,
         )
         if verdict != "offer":
@@ -743,6 +754,7 @@ def prune_task_artifact_bulk(
     live: Callable[[str], Optional[bool]],
     reason: str = "owner_storage_free",
     grace_days: int = 0,
+    bulk_file_bytes: Optional[int] = None,
     only_relpaths: Optional[Iterable[str]] = None,
     stop: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
@@ -761,7 +773,7 @@ def prune_task_artifact_bulk(
 
         cutoff_ts = (datetime.now(timezone.utc).timestamp() - max(0, int(grace_days)) * 86400) if grace_days > 0 else None
         rows = _task_retention_rows(root_path, [str(task_id)])
-        verdict, inside_wait = _task_eligible_for_bulk_prune(
+        verdict, inside_wait = task_eligible_for_bulk_prune(
             root_path, str(task_id), rows.get(str(task_id)), rows, live, cutoff_ts,
         )
         if verdict != "offer":
@@ -770,7 +782,7 @@ def prune_task_artifact_bulk(
         if grace_days > 0 and inside_wait:
             return {"task_id": task_id, "status": "kept", "removed": 0, "removed_bytes": 0, "moved_dirs": 0, "reason": "inside_wait"}
 
-        targets, _unr = classify_task_artifact_bulk(artifact_dir, stop=stop)
+        targets, _unr = classify_task_artifact_bulk(artifact_dir, bulk_file_bytes=bulk_file_bytes, stop=stop)
         if only_relpaths is not None:
             allowed = set(only_relpaths)
             targets = [t for t in targets if t["relpath"] in allowed]

@@ -261,6 +261,7 @@ test('each place says who removes it and how its last pass ended, unknown never 
     assert.equal(removerLine([{ id: 'record_compression', state: 'pending', at, compressed: 1204, saved_bytes: 2.1e9 }], NOW),
         'Compression: 1,204 files compressed, 2.1 GB saved, in progress', 'an unfinished pass is said as such');
     assert.equal(removerLine([{ id: 'evidence_packing', state: 'never', at: null }], NOW), 'Evidence packing: not run yet');
+    assert.equal(removerLine([{ id: 'artifact_retention', state: 'done', at }], NOW), 'Artifact retention: done');
     assert.equal(removerLine(undefined, NOW), '');
 
     const view = renderStorage(response({ count: count(), removers: { engine: held, app_state: jobs, model_calls: [] } }), { now: NOW });

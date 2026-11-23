@@ -316,6 +316,11 @@ def _setup_job(name, data, monkeypatch):
             txn.conn.execute("UPDATE tasks SET owner_pause_state=NULL WHERE task_id='older'")
     elif name == "body_compaction":
         write_task_result(data, "compactable", "completed", result="answer")
+    elif name == "artifact_retention":
+        write_task_result(data, "settled", "completed", result="answer")
+        art = data / "task_results" / "artifacts" / "settled"
+        art.mkdir(parents=True, exist_ok=True)
+        (art / "small.txt").write_text("ok\n", encoding="utf-8")
 
 
 @pytest.mark.parametrize("name", maintenance.JOB_NAMES)

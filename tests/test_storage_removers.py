@@ -293,8 +293,9 @@ def test_the_projection_and_query_data_read_the_same_removers(data, monkeypatch)
     projected = storage.count.projection(data)["removers"]
     assert projected == storage_removers.place_removers(data)
     assert set(projected) <= {place_id for place_id, _group, _spec in storage.PLACES}
-    [_packing, evidence] = projected["task_results"]
+    [_packing, evidence, retention] = projected["task_results"]
     [_retirement, seats, _trash] = projected["app_state"]
+    assert retention["id"] == "artifact_retention"
     assert evidence == {"id": "record_compression", "state": "done", "at": evidence["at"],
                         "compressed": 12, "saved_bytes": 4096}, "Task results shows the evidence plane"
     assert seats == {"id": "record_compression", "state": "done", "at": seats["at"],

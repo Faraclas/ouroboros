@@ -1189,6 +1189,12 @@ def complete_project_deletion(drive_root: Any, project_id: str) -> Optional[Dict
             write_closure_brief(drive_root, pid, overwrite=False, sync_fts=True)
         except Exception:
             log.warning("closure_brief generation failed for tombstoned %s", pid, exc_info=True)
+        try:
+            from ouroboros import maintenance
+
+            maintenance.child.request()
+        except Exception:
+            log.debug("Maintenance request after tombstone failed for %s", pid, exc_info=True)
         return completed
     return None
 

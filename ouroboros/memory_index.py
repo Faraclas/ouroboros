@@ -1045,6 +1045,70 @@ def source_watermark(drive_root: Any) -> Dict[str, Any]:
     }
 
 
+def indexed_closure_briefs(drive_root: Any, project_ids: Iterable[str]) -> Set[str]:
+    """Return the subset of ``project_ids`` whose ``closure_brief.md`` exists, is non-empty,
+    and matches an intact FTS5 entry in ``state/memory_index.sqlite`` (validates index once)."""
+    candidates: Dict[str, Tuple[int, int]] = {}
+    root = pathlib.Path(drive_root)
+    for raw_pid in project_ids:
+        pid = str(raw_pid or "").strip()
+        if not explicit_project_id_ok(pid):
+            continue
+        brief = closure_brief_path(root, pid)
+        try:
+            if brief.is_symlink() or not brief.is_file():
+                continue
+            st = brief.lstat()
+            if st.st_size <= 0 or not brief.read_text(encoding="utf-8").strip():
+                continue
+            candidates[pid] = (int(st.st_mtime_ns), int(st.st_size))
+        except (OSError, UnicodeDecodeError):
+            continue
+    if not candidates:
+        return set()
+    db_path = index_path(root)
+    try:
+        if db_path.is_symlink() or not db_path.is_file():
+            return set()
+        conn = _connect(db_path, read_only=True)
+        try:
+            if not _validate_existing(conn):
+                return set()
+            source_keys = [f"cb:{pid}" for pid in candidates]
+            doc_keys = [f"closure_brief:{pid}" for pid in candidates]
+            sf_rows = {
+                str(r[0]): (int(r[1]), int(r[2]))
+                for r in conn.execute(
+                    f"SELECT source_key, mtime_ns, size_bytes FROM sync_files "
+                    f"WHERE source_key IN ({','.join('?' * len(source_keys))})",
+                    source_keys,
+                ).fetchall()
+            }
+            fts_docs = {
+                str(r[0])
+                for r in conn.execute(
+                    f"SELECT d.doc_key FROM docs d JOIN docs_fts f ON f.rowid = d.id "
+                    f"WHERE d.doc_key IN ({','.join('?' * len(doc_keys))})",
+                    doc_keys,
+                ).fetchall()
+            }
+            return {
+                pid for pid, sig in candidates.items()
+                if sf_rows.get(f"cb:{pid}") == sig and f"closure_brief:{pid}" in fts_docs
+            }
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error, ValueError):
+        return set()
+
+
+def is_closure_brief_indexed(drive_root: Any, project_id: str) -> bool:
+    """Return True only when ``projects/<project_id>/closure_brief.md`` exists, is non-empty,
+    and matches an intact FTS5 entry in ``state/memory_index.sqlite`` (fail closed)."""
+    pid = str(project_id or "").strip()
+    return bool(pid) and pid in indexed_closure_briefs(drive_root, [pid])
+
+
 def maintenance_due(drive_root: Any, row: Mapping[str, Any], *, child: bool = False) -> bool:
     """Return True when the derived memory index should be synced by the maintenance child."""
     root = pathlib.Path(drive_root)

@@ -224,6 +224,264 @@ def test_settled_artifact_bulk_true_allowlist_verdict_preservation_lineage_and_p
     assert json.loads(arch_resp.body)["reason_code"] == "pruned_by_retention"
 
 
+def _write_fresh_queue_snapshot(root: pathlib.Path, *, running: Optional[list] = None) -> None:
+    state_dir = root / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    (state_dir / "queue_snapshot.json").write_text(
+        json.dumps({"generation": 1, "ts": now_iso, "running": running or [], "pending": []}),
+        encoding="utf-8",
+    )
+    (state_dir / "queue.alive").write_text(
+        json.dumps({"generation": 1, "ts": now_iso, "heartbeats": {}}),
+        encoding="utf-8",
+    )
+
+
+def test_maintenance_artifact_retention_7d_window_and_allowlist(tmp_path, monkeypatch):
+    from ouroboros import artifact_retention_job, maintenance, maintenance_jobs
+    from ouroboros.task_status import task_has_live_queue_ownership
+
+    root = tmp_path / "data"
+    now = time.time()
+    _write_fresh_queue_snapshot(root, running=[{"id": "live01", "task": {"id": "live01", "root_task_id": "live01"}}])
+    assert task_has_live_queue_ownership(root, "young01") is False
+    assert task_has_live_queue_ownership(root, "live01") is True
+
+    monkeypatch.setattr(artifact_retention, "BULK_FILE_BYTES", 1024)
+
+    def _seed_task(tid: str, age_days: float, *, status: str = "completed", review_pending: int = 0) -> pathlib.Path:
+        ts_iso = datetime.fromtimestamp(now - age_days * 86400, tz=timezone.utc).isoformat()
+        art = artifacts.task_artifact_dir_path(root, tid, create=True)
+        (art / "user-deliverable.bin").write_bytes(b"u" * 2048)
+        (art / ".artifact_manifest.json").write_text(
+            json.dumps({"schema_version": 1, "artifacts": {
+                "user-deliverable.bin": {"kind": "user_file", "name": "user-deliverable.bin", "path": str(art / "user-deliverable.bin")},
+            }}),
+            encoding="utf-8",
+        )
+        (art / "bulk-dump.bin").write_bytes(b"b" * 4096)
+        (art / "bulk-dir").mkdir()
+        (art / "bulk-dir" / "raw.log").write_bytes(b"r" * 4096)
+        write_task_result(root, tid, status, ts=ts_iso, result="ok", artifact_status="ready")
+        with store.open_store(root, write=True) as txn:
+            txn.conn.execute(
+                "UPDATE tasks SET owes_synthesis=0, owes_terminal_projection=0, "
+                "review_collection_pending=?, plan_collection_pending=0, drive_retention_at=? WHERE task_id=?",
+                (review_pending, str(now - age_days * 86400), tid),
+            )
+        return art
+
+    young_art = _seed_task("young01", age_days=2.0)
+    old_art = _seed_task("old01", age_days=9.0)
+    held_art = _seed_task("held01", age_days=12.0, review_pending=1)
+    live_art = _seed_task("live01", age_days=12.0)
+
+    assert maintenance.due(root) and "artifact_retention" in maintenance.due(root)
+    report = maintenance.run(root, should_stop=lambda: False)
+    assert report["jobs"]["artifact_retention"]["state"] == "done"
+    assert report["jobs"]["artifact_retention"]["items"] == 1
+
+    # old01 bulk pruned and custody_trash swept in the same maintenance pass; deliverable intact!
+    assert (old_art / "user-deliverable.bin").is_file()
+    assert not (old_art / "bulk-dump.bin").exists()
+    assert not (old_art / "bulk-dir").exists()
+    assert (old_art / artifact_retention.PRUNED_MANIFEST_NAME).is_file()
+    assert not any((root / "state" / "custody_trash").glob("bulk_old01*"))
+
+    # young01 (<7d), held01 (review_collection_pending=1), and live01 (in queue_snapshot running) untouched!
+    assert (young_art / "bulk-dump.bin").is_file() and (young_art / "bulk-dir").is_dir()
+    assert (held_art / "bulk-dump.bin").is_file() and (held_art / "bulk-dir").is_dir()
+    assert (live_art / "bulk-dump.bin").is_file() and (live_art / "bulk-dir").is_dir()
+
+    # Immediate second run rests cleanly.
+    assert artifact_retention_job.due(root, maintenance_jobs.job(root, "artifact_retention") or {}, {}, True) is False
+    assert maintenance.run_job(root, "artifact_retention") is None
+
+    # Advance young01 past 7-day grace window -> becomes due and prunes!
+    with store.open_store(root, write=True) as txn:
+        txn.conn.execute(
+            "UPDATE tasks SET drive_retention_at=? WHERE task_id='young01'",
+            (str(now - 8.0 * 86400),),
+        )
+    row = maintenance_jobs.job(root, "artifact_retention") or {}
+    row["next_due"] = now - 60
+    row["young"]["young01"] = now - 60
+    maintenance_jobs.record(root, "artifact_retention", **row)
+    assert artifact_retention_job.due(root, maintenance_jobs.job(root, "artifact_retention") or {}, {}, True) is True
+    res2 = maintenance.run_job(root, "artifact_retention")
+    assert res2 == {"state": "done", "items": 1}
+    assert (young_art / "user-deliverable.bin").is_file()
+    assert not (young_art / "bulk-dump.bin").exists()
+    assert not (young_art / "bulk-dir").exists()
+    assert (held_art / "bulk-dump.bin").is_file()
+
+
+def test_maintenance_closed_project_pruning_requires_verified_fts5_closure_brief(tmp_path):
+    from ouroboros import maintenance, memory_index, projects_registry
+
+    root = tmp_path / "data"
+    now = time.time()
+    _write_fresh_queue_snapshot(root)
+
+    pid = "closed-alpha"
+    projects_registry.create_project(root, pid, name="Closed Alpha")
+    projects_registry.begin_project_deletion(root, pid)
+    # Write tombstoned registry entry directly without closure_brief.md first (fail-closed check).
+    with projects_registry._file_write_lock(projects_registry._registry_path(root)):
+        reg = projects_registry._load(root, strict=True, project_id=pid)
+        for entry in reg["projects"]:
+            if entry["id"] == pid:
+                entry["lifecycle"] = projects_registry.PROJECT_TOMBSTONED
+                entry["tombstoned_at"] = datetime.now(timezone.utc).isoformat()
+        projects_registry._save(root, reg)
+
+    tid = "closedtask01"
+    art = artifacts.task_artifact_dir_path(root, tid, create=True)
+    (art / "deliverable.txt").write_text("keep me\n", encoding="utf-8")
+    (art / ".artifact_manifest.json").write_text(
+        json.dumps({"schema_version": 1, "artifacts": {
+            "deliverable.txt": {"kind": "user_file", "name": "deliverable.txt", "path": str(art / "deliverable.txt")},
+        }}),
+        encoding="utf-8",
+    )
+    (art / "compact-verdict.json").write_text('{"verdict": "ok"}\n', encoding="utf-8")
+    # Small (<10 MiB) raw dump & directory — only closed-project pruning removes <10 MiB bulk!
+    (art / "small-raw.log").write_bytes(b"s" * 512)
+    (art / "raw-dir").mkdir()
+    (art / "raw-dir" / "trace.bin").write_bytes(b"t" * 512)
+    recent_iso = datetime.fromtimestamp(now - 60, tz=timezone.utc).isoformat()
+    write_task_result(root, tid, "completed", project_id=pid, ts=recent_iso, result="ok", artifact_status="ready")
+    with store.open_store(root, write=True) as txn:
+        txn.conn.execute(
+            "UPDATE tasks SET owes_synthesis=0, owes_terminal_projection=0, "
+            "review_collection_pending=0, plan_collection_pending=0, drive_retention_at=? WHERE task_id=?",
+            (str(now - 60), tid),
+        )
+
+    # 1. Missing closure_brief.md -> FAIL CLOSED!
+    assert memory_index.is_closure_brief_indexed(root, pid) is False
+    maintenance.run(root, should_stop=lambda: False)
+    assert (art / "small-raw.log").is_file() and (art / "raw-dir").is_dir()
+
+    # 2. closure_brief.md exists on disk, NOT yet in memory_index.sqlite -> FAIL CLOSED!
+    brief_path = root / "projects" / pid / "closure_brief.md"
+    brief_path.parent.mkdir(parents=True, exist_ok=True)
+    brief_path.write_text("---\nschema_version: 1\nproject_id: closed-alpha\ntitle: Closed Alpha\n---\nSummary.\n", encoding="utf-8")
+    assert memory_index.is_closure_brief_indexed(root, pid) is False
+    maintenance.run_job(root, "artifact_retention")
+    assert (art / "small-raw.log").is_file() and (art / "raw-dir").is_dir()
+
+    # 3. Sync memory_index, then mutate closure_brief.md without re-syncing (stale index) -> FAIL CLOSED!
+    memory_index.sync_index(root)
+    assert memory_index.is_closure_brief_indexed(root, pid) is True
+    brief_path.write_text("---\nschema_version: 1\nproject_id: closed-alpha\ntitle: Closed Alpha Updated\n---\nNew.\n", encoding="utf-8")
+    os.utime(brief_path, (now + 10, now + 10))
+    assert memory_index.is_closure_brief_indexed(root, pid) is False
+    maintenance.run_job(root, "artifact_retention")
+    assert (art / "small-raw.log").is_file() and (art / "raw-dir").is_dir()
+
+    # 4. Run full maintenance.run(root): memory_index indexes updated brief, then artifact_retention prunes, then custody_trash deletes!
+    report = maintenance.run(root, should_stop=lambda: False)
+    assert memory_index.is_closure_brief_indexed(root, pid) is True
+    assert report["jobs"]["artifact_retention"]["items"] == 1
+    assert (art / "deliverable.txt").is_file()
+    assert (art / "compact-verdict.json").is_file()
+    assert not (art / "small-raw.log").exists()
+    assert not (art / "raw-dir").exists()
+    assert (art / artifact_retention.PRUNED_MANIFEST_NAME).is_file()
+    resp = task_archive.serve_task_file(root, art, "small-raw.log", "small-raw.log", None, task_id=tid)
+    assert resp.status_code == 410 and json.loads(resp.body)["reason_code"] == "pruned_by_retention"
+
+
+def test_artifact_retention_unreadable_registry_rests_and_child_lineage_and_reopen_guard(tmp_path):
+    from ouroboros import artifact_retention_job, maintenance, maintenance_jobs, memory_index, project_management, projects_registry, storage_removers
+
+    root = tmp_path / "data"
+    now = time.time()
+    _write_fresh_queue_snapshot(root)
+
+    # 1. Corrupt projects.json -> fail closed AND rest on second check until projects.json changes!
+    pid = "closed-beta"
+    projects_registry.create_project(root, pid, name="Closed Beta")
+    child_tid = "childnullpid01"
+    root_tid = "rootpid01"
+    recent_iso = datetime.fromtimestamp(now - 30, tz=timezone.utc).isoformat()
+    write_task_result(root, root_tid, "completed", project_id=pid, ts=recent_iso, result="ok", artifact_status="ready")
+    write_task_result(
+        root, child_tid, "completed", project_id="", root_task_id=root_tid, parent_task_id=root_tid,
+        ts=recent_iso, result="ok", artifact_status="ready",
+    )
+    child_art = artifacts.task_artifact_dir_path(root, child_tid, create=True)
+    (child_art / "child-raw.log").write_bytes(b"c" * 512)
+    with store.open_store(root, write=True) as txn:
+        txn.conn.execute(
+            "UPDATE tasks SET owes_synthesis=0, owes_terminal_projection=0, "
+            "review_collection_pending=0, plan_collection_pending=0, drive_retention_at=? WHERE task_id IN (?, ?)",
+            (str(now - 30), root_tid, child_tid),
+        )
+
+    reg_path = root / "state" / "projects.json"
+    saved_reg = reg_path.read_text(encoding="utf-8")
+    reg_path.write_text("{broken json", encoding="utf-8")
+    first = maintenance.run_job(root, "artifact_retention")
+    assert first == {"state": "done", "items": 0}
+    assert (child_art / "child-raw.log").is_file()
+    assert (maintenance_jobs.job(root, "artifact_retention") or {}).get("registry_unreadable") is True
+    # Rests with no repeated spawn while projects.json stays unchanged!
+    assert "artifact_retention" not in maintenance.due(root)
+    assert maintenance.run_job(root, "artifact_retention") is None
+
+    # 2. Restore registry, tombstone + write & index brief -> child with project_id='' is discovered via root lineage and pruned!
+    reg_path.write_text(saved_reg, encoding="utf-8")
+    os.utime(reg_path, (now + 5, now + 5))
+    projects_registry.begin_project_deletion(root, pid)
+    projects_registry.complete_project_deletion(root, pid)
+    memory_index.sync_index(root)
+    assert memory_index.is_closure_brief_indexed(root, pid) is True
+    res = maintenance.run_job(root, "artifact_retention")
+    assert res == {"state": "done", "items": 1}
+    assert not (child_art / "child-raw.log").exists()
+    assert (child_art / artifact_retention.PRUNED_MANIFEST_NAME).is_file()
+
+    # 3. Mid-pass reopen guard: _still_closed_and_verified returns False if project is reopened!
+    sig = artifact_retention_job._stat_sig(root / "projects" / pid / "closure_brief.md")
+    assert artifact_retention_job._still_closed_and_verified(root, pid, sig) is True
+    project_management.reopen_project(root, pid)
+    assert artifact_retention_job._still_closed_and_verified(root, pid, sig) is False
+
+    # 4. storage_removers surfaces artifact_retention under task_results!
+    removers = storage_removers.place_removers(root, engine=False)
+    assert any(r["id"] == "artifact_retention" and r["state"] == "done" for r in removers["task_results"])
+
+    # 5. Active-project task kept fail-closed while registry unreadable is revisited when registry is repaired!
+    active_pid = "active-recover"
+    projects_registry.create_project(root, active_pid, name="Active Recover")
+    old_ts = datetime.fromtimestamp(now - 10 * 86400, tz=timezone.utc).isoformat()
+    act_tid = "actrecover01"
+    write_task_result(root, act_tid, "completed", project_id=active_pid, ts=old_ts, result="ok", artifact_status="ready")
+    act_art = artifacts.task_artifact_dir_path(root, act_tid, create=True)
+    (act_art / "big-dump.bin").write_bytes(b"a" * (artifact_retention.BULK_FILE_BYTES + 1024))
+    with store.open_store(root, write=True) as txn:
+        txn.conn.execute(
+            "UPDATE tasks SET owes_synthesis=0, owes_terminal_projection=0, "
+            "review_collection_pending=0, plan_collection_pending=0, drive_retention_at=? WHERE task_id=?",
+            (str(now - 10 * 86400), act_tid),
+        )
+    saved_reg2 = reg_path.read_text(encoding="utf-8")
+    reg_path.write_text("{broken", encoding="utf-8")
+    os.utime(reg_path, (now + 20, now + 20))
+    maintenance.run_job(root, "artifact_retention")
+    assert (act_art / "big-dump.bin").is_file()
+    assert act_tid in (maintenance_jobs.job(root, "artifact_retention") or {}).get("waiting", [])
+    reg_path.write_text(saved_reg2, encoding="utf-8")
+    os.utime(reg_path, (now + 30, now + 30))
+    res2 = maintenance.run_job(root, "artifact_retention")
+    assert res2 == {"state": "done", "items": 1}
+    assert not (act_art / "big-dump.bin").exists()
+    assert (act_art / artifact_retention.PRUNED_MANIFEST_NAME).is_file()
+
+
 def test_shell_outputs_refuses_promoting_raw_test_evidence_directory_to_artifact_root(tmp_path):
     from ouroboros.tools.registry import ToolContext
     from ouroboros.tools.shell_outputs import _register_process_outputs

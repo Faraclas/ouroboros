@@ -155,7 +155,7 @@
 /**
  * One remover of a place, read fresh: a maintenance job's row or the engine's last retention pass.
  * @typedef {Object} StorageRemover
- * @property {string} id  // engine | runtime_retirement | custody_trash | evidence_packing | record_compression
+ * @property {string} id  // engine | runtime_retirement | custody_trash | evidence_packing | record_compression | artifact_retention
  * @property {string} state  // a job: pending | running | done | failed | never | unsupported | unavailable; the engine: completed | held | truncated | failed | none | unavailable | unsupported
  * @property {string|null} at  // the job row's last write; the engine pass's end
  * @property {{class: string, at: string}=} last_error  // a job whose last run threw, until a run returns normally

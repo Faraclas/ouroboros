@@ -64,6 +64,7 @@ const JOB_WORDS = {
     custody_trash: 'Deleting moved folders',
     evidence_packing: 'Evidence packing',
     record_compression: 'Compression',
+    artifact_retention: 'Artifact retention',
 };
 const JOB_STATES = {
     done: '{job}: done',

@@ -34,8 +34,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from ouroboros import (delegate_capture_job, delegate_pending, maintenance_jobs, maintenance_retirement,
-    store_body_dedup,
+from ouroboros import (artifact_retention_job, delegate_capture_job, delegate_pending, maintenance_jobs,
+    maintenance_retirement, store_body_dedup,
                        plan_collection_job, record_compression, store, subagent_metrics)
 from ouroboros.startup_historical_audit import _REPORT_BYTES, finish_maintenance_job, spawn_maintenance_job
 
@@ -364,6 +364,7 @@ JOBS: Dict[str, tuple] = {
     "hot_facts": (_hot_facts_due, _hot_facts_run),
     "body_compaction": (store_body_dedup.due, store_body_dedup.run),
     "ended_plan_asks": (plan_collection_job.due, plan_collection_job.run),
+    "artifact_retention": (artifact_retention_job.due, artifact_retention_job.run),  # before custody_trash so moved bulk deletes same pass
     "custody_trash": (_trash_due, _trash_run),  # before retirement: a removed drive's bytecode goes in the same pass
     "runtime_retirement": (maintenance_retirement.due, maintenance_retirement.run),
     "child_ref_promotion": (_promotion_due, _promotion_run),
