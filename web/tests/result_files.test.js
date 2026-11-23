@@ -116,3 +116,37 @@ test('a settled detail naming only saved work still gets its Files row', () => {
     assert.equal(syncResultFilesItem(record, { status: 'failed', artifacts: [] }), true, 'gone from the detail: gone');
     assert.deepEqual(record.items, []);
 });
+
+test('directory_manifest rows render as folder cards with host ZIP archive links and total file count', () => {
+    const manifestRecords = [
+        { name: 'report.md', size: 512, status: 'ready' },
+        {
+            kind: 'directory_manifest',
+            name: 'full-evidence',
+            is_directory: true,
+            file_count: 120,
+            size: 65536,
+            sha256: '',
+            tree_sha256: 'abc123',
+            sample_files: ['OUROBOROS_TEST_EVIDENCE_RUN.txt', 'run-1/detail.json'],
+            status: 'ready',
+            errors: [],
+        },
+    ];
+    const manifestArchives = {
+        'full-evidence': { name: 'full-evidence.zip', files: 120, size: 65536, excluded: 0, available: true },
+    };
+    const view = projectResultArtifacts(TASK, manifestRecords, manifestArchives);
+    assert.equal(view.files.length, 1);
+    assert.equal(view.folders.length, 1);
+    assert.equal(view.fileCount, 121);
+    assert.equal(view.folders[0].name, 'full-evidence');
+    assert.equal(view.folders[0].fileCount, 120);
+    assert.equal(view.folders[0].archive.available, true);
+    assert.equal(view.folders[0].archive.url, `/api/tasks/${TASK}/artifacts/full-evidence.zip?archive=full-evidence`);
+    const html = render(view);
+    assert.match(html, /121 files/);
+    assert.match(html, /href="\/api\/tasks\/task-files\/artifacts\/full-evidence\.zip\?archive=full-evidence"/);
+    assert.match(html, /full-evidence\/OUROBOROS_TEST_EVIDENCE_RUN\.txt\nfull-evidence\/run-1\/detail\.json\n… 118 more"/);
+    assert.doesNotMatch(html, /artifacts\/full-evidence"/, 'must not emit a broken root file link for the folder');
+});

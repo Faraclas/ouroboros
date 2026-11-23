@@ -27,7 +27,7 @@ import weakref
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from ouroboros.utils import append_jsonl, machine_json, utc_now_iso  # one compact JSON text: key order kept, facts round-trip
-from ouroboros import store_empty, store_hot_facts, store_task_cards, store_timing
+from ouroboros import store_body_dedup, store_empty, store_hot_facts, store_task_cards, store_timing
 from ouroboros.swarm_rollup import retain_swarm_basis
 
 STORE_REL = pathlib.Path("state/current.sqlite")
@@ -1291,8 +1291,8 @@ def document_text(document: Dict[str, Any]) -> str:
 def encode_document(document: Dict[str, Any]) -> str:
     """The body text stored in ``task_bodies``: the document with each present row-backed field
     emptied (the rows hold its content) and without the card values its ``task_cards`` row holds."""
-    return document_text({key: ({} if key in ROW_BACKED_FIELDS else value)
-                          for key, value in store_task_cards.strip(document).items()})
+    return document_text(store_body_dedup.dedup({key: ({} if key in ROW_BACKED_FIELDS else value)
+                                                 for key, value in store_task_cards.strip(document).items()}))
 
 
 def typed_columns(document: Dict[str, Any], *, pending_drive: Optional[bool] = None) -> Dict[str, Any]:
@@ -1347,7 +1347,7 @@ def materialize(task_id: str, body: Optional[str], records: list, card: Any) -> 
     back (``project_handoffs``), its card row over it (``store_task_cards.project``); ``None`` without a body."""
     if body is None:
         return None
-    return store_task_cards.project(project_handoffs(json.loads(body), decode_handoffs([task_id], records)[task_id]), card)
+    return store_task_cards.project(project_handoffs(store_body_dedup.expand(json.loads(body)), decode_handoffs([task_id], records)[task_id]), card)
 
 
 class Txn:

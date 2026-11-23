@@ -643,8 +643,12 @@ def store_artifact_view(canonical_root: Any, task_id: str, recorded: List[Dict[s
             return
         index, rel = located
         try:  # read as the walk reads: no SQLite lock drops, and a WAL index is refused unread
-            with confined_directory(anchor, (*stores[index].relative_to(anchor).parts, *rel.split("/")[:-1])) as held:
-                held.open_for_read(rel.rsplit("/", 1)[-1])[0].close()
+            if row.get("kind") == "directory_manifest" or row.get("is_directory"):
+                with confined_directory(anchor, (*stores[index].relative_to(anchor).parts, *rel.split("/"))):
+                    pass
+            else:
+                with confined_directory(anchor, (*stores[index].relative_to(anchor).parts, *rel.split("/")[:-1])) as held:
+                    held.open_for_read(rel.rsplit("/", 1)[-1])[0].close()
         except OSError as exc:  # a recorded index, immutable or not, is shared memory no read may serve or verify
             if isinstance(exc, WalIndexRefused) or exc.errno in {errno.ELOOP, errno.EMLINK, errno.ENOTDIR}:
                 return  # A linked placement is not an own-store row; a missing identity stays visible.
@@ -783,6 +787,8 @@ def _obligations(source: pathlib.Path, current: Dict[str, Any], child: Dict[str,
         rel = store_relpath(source, row.get("path")) if isinstance(row, dict) else ""
         if not rel:
             continue
+        if row.get("kind") == "directory_manifest" or row.get("is_directory"):
+            continue  # directory summary rows: their regular files are carried by _listed(source)
         if rel.rsplit("/", 1)[-1] in _STORE_BOOKKEEPING:
             raise _Retained("artifact_obligation_reserved")
         seen = recorded.get(rel)
@@ -795,7 +801,7 @@ def _obligations(source: pathlib.Path, current: Dict[str, Any], child: Dict[str,
 
 def _listed(source: pathlib.Path) -> Dict[str, pathlib.Path]:
     """The regular files SOURCE holds outside its bookkeeping and input subtrees."""
-    from ouroboros.artifacts import iter_artifact_tree
+    from ouroboros.artifacts import _SKIPPED_ARTIFACT_DIRS, iter_artifact_tree
     from ouroboros.store import is_wal_index  # a leftover WAL index: shared memory, never read nor copied
 
     if not (source.exists() or source.is_symlink()):
@@ -807,7 +813,9 @@ def _listed(source: pathlib.Path) -> Dict[str, pathlib.Path]:
         for path in iter_artifact_tree(source):
             rel = path.relative_to(source).as_posix()
             if path.is_symlink() or not path.is_file() or path.name in _STORE_BOOKKEEPING \
-                    or rel.split("/", 1)[0] in _STORE_INPUT_SUBTREES or is_wal_index(path):
+                    or rel.split("/", 1)[0] in _STORE_INPUT_SUBTREES \
+                    or any(part in _SKIPPED_ARTIFACT_DIRS for part in rel.split("/")[:-1]) \
+                    or is_wal_index(path):
                 continue
             listed[rel] = path
     except OSError as exc:

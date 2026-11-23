@@ -310,6 +310,8 @@ def _setup_job(name, data, monkeypatch):
         write_task_result(data, "older", "completed", result="answer")
         with store.open_store(data, write=True) as txn:  # an older writer left the hot columns unset
             txn.conn.execute("UPDATE tasks SET owner_pause_state=NULL WHERE task_id='older'")
+    elif name == "body_compaction":
+        write_task_result(data, "compactable", "completed", result="answer")
 
 
 @pytest.mark.parametrize("name", maintenance.JOB_NAMES)

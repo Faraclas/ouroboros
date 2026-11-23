@@ -62,6 +62,24 @@ export function projectResultArtifacts(taskId, records, archives = null, wrapUp 
         const status = String(row.status || '').trim().toLowerCase();
         const serving = (status === '' || status === 'ready') && !(Array.isArray(row.errors) && row.errors.length)
             && !row.copy_status;
+        if (row.kind === 'directory_manifest' || row.is_directory === true) {
+            const dirName = String(row.name || parts[0] || '').trim();
+            if (!dirName) continue;
+            const count = Number.isInteger(Number(row.file_count)) && Number(row.file_count) >= 0 ? Number(row.file_count) : 0;
+            const folder = folders.get(dirName)
+                || { name: dirName, fileCount: 0, bytes: 0, unavailableCount: 0, relpaths: [], archive: null };
+            folder.fileCount = Math.max(folder.fileCount, count);
+            folder.bytes = bytes === null ? null : Math.max(folder.bytes || 0, bytes);
+            if (!serving) folder.unavailableCount = Math.max(folder.unavailableCount, count || 1);
+            if (Array.isArray(row.sample_files)) {
+                for (const sample of row.sample_files) {
+                    const rel = `${dirName}/${String(sample || '').replace(/^\/+/, '')}`;
+                    if (sample && !folder.relpaths.includes(rel)) folder.relpaths.push(rel);
+                }
+            }
+            folders.set(dirName, folder);
+            continue;
+        }
         if (parts.length > 1) {
             const folder = folders.get(parts[0])
                 || { name: parts[0], fileCount: 0, bytes: 0, unavailableCount: 0, relpaths: [], archive: null };
@@ -118,7 +136,7 @@ const metaTail = (parts) => parts.filter(Boolean).map((part) => ` · ${escapeHtm
 
 function folderTooltip(folder) {
     const shown = folder.relpaths.slice(0, FOLDER_TOOLTIP_PATHS);
-    const more = folder.relpaths.length - shown.length;
+    const more = Math.max(folder.relpaths.length, folder.fileCount || 0) - shown.length;
     return shown.join('\n') + (more > 0 ? `\n… ${more.toLocaleString('en-US')} more` : '');
 }
 

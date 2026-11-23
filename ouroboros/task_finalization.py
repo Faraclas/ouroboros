@@ -843,7 +843,11 @@ def _listed_file_count(task_id: str, store: pathlib.Path) -> int:
         return 0
     if not stat.S_ISDIR(mode):  # a file or a link where the store directory should be
         raise NotADirectoryError(str(store))
-    return len(collect_task_artifact_records(drive, task_id, measure=False, strict=True))
+    return sum(
+        int(row.get("file_count") or 1)
+        if (row.get("kind") == "directory_manifest" or row.get("is_directory")) else 1
+        for row in collect_task_artifact_records(drive, task_id, measure=False, strict=True)
+    )
 
 
 def rescued_files_sentence(fact: Dict[str, Any]) -> str:

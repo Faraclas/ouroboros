@@ -13,7 +13,7 @@ import json
 import sqlite3
 from typing import Any, Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Tuple
 
-from ouroboros import store, store_task_cards
+from ouroboros import store, store_body_dedup, store_task_cards
 from ouroboros.store import Txn, open_store
 from ouroboros.store_capture import Captured, capture
 
@@ -174,7 +174,7 @@ def _documents(pages: List[Tuple[Captured, Captured]]) -> List[Tuple[str, Dict[s
         records = rows.rows(key=lambda record: record["task_id"])
         handoffs = store.decode_handoffs([record["task_id"] for record in records], _handoff_records(handoff_rows))
         documents.extend((str(record["task_id"]), store_task_cards.project(store.project_handoffs(
-            json.loads(record["body"]), handoffs[record["task_id"]]), record)) for record in records)
+            store_body_dedup.expand(json.loads(record["body"])), handoffs[record["task_id"]]), record)) for record in records)
     return documents
 
 

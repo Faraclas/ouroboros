@@ -35,6 +35,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from ouroboros import (delegate_capture_job, delegate_pending, maintenance_jobs, maintenance_retirement,
+    store_body_dedup,
                        plan_collection_job, record_compression, store, subagent_metrics)
 from ouroboros.startup_historical_audit import _REPORT_BYTES, finish_maintenance_job, spawn_maintenance_job
 
@@ -336,6 +337,7 @@ JOBS: Dict[str, tuple] = {
     "dialogue_import": (_dialogue_due, _dialogue_run),  # the owner's history: newest segments first
     "memory_tail": (_tail_due, _tail_run),  # after the import: the tail's positions are settled
     "hot_facts": (_hot_facts_due, _hot_facts_run),
+    "body_compaction": (store_body_dedup.due, store_body_dedup.run),
     "ended_plan_asks": (plan_collection_job.due, plan_collection_job.run),
     "custody_trash": (_trash_due, _trash_run),  # before retirement: a removed drive's bytecode goes in the same pass
     "runtime_retirement": (maintenance_retirement.due, maintenance_retirement.run),

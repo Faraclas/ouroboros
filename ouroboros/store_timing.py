@@ -35,7 +35,7 @@ from typing import Any, Dict, Iterator
 
 KINDS = {"current.sqlite": "current", "dialog.sqlite": "dialog", "usage.sqlite": "usage"}
 # The frames the site skips: the store transport, not the owner that opened the transaction.
-_STORE_FRAMES = frozenset({"store.py", "store_timing.py", "store_hot_facts.py", "store_task_cards.py", "task_store.py",
+_STORE_FRAMES = frozenset({"store.py", "store_timing.py", "store_hot_facts.py", "store_task_cards.py", "store_body_dedup.py", "task_store.py",
                            "task_results.py", "dialogue_store.py", "usage_store.py", "store_capture.py", "contextlib.py"})
 TOP_SITES = 3  # sites per bucket in the published row: the row's size bound (one row a minute), not a policy
 _LOCK = threading.Lock()

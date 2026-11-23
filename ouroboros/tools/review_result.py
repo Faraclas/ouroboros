@@ -96,6 +96,8 @@ def produced_material(ctx: Any) -> Dict[str, Any]:
             if not name or not row.get("size") or not registered_task_artifact(root, task_id, name):
                 continue
             path = pathlib.Path(str(row["path"]))
+            if path.is_dir():
+                continue
             out["files"].append({"path": str(path), "kind": "artifact", **_file_identity(path)})
     except Exception as exc:
         out["issues"].append(f"task artifacts could not be listed ({type(exc).__name__}: {exc})")

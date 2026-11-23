@@ -80,6 +80,10 @@ _SVG_POLICY = {"content-security-policy": "sandbox", "x-content-type-options": "
 Route = Tuple[pathlib.Path, List[str]]  # (directory opened by absolute path, segments below it)
 
 
+class _ArchiveWalkError(OSError):
+    """Confined enumeration of a directory_manifest tree failed mid-walk; never serve a partial ZIP."""
+
+
 def task_artifact_location(stores: List[pathlib.Path], raw_path: Any, spellings: Any = ()) -> Optional[tuple]:
     """Attribute lexically (``spellings``: ``root_spellings`` of the canonical root the
     stores were built from); only the subsequent held walk may touch descendants."""
@@ -187,6 +191,20 @@ def directory_archives(stores: List[pathlib.Path], rows: Any, *, anchor: Any = N
             location = task_artifact_location(stores, row.get("path"), spellings)
             relpath = location[2] if location else str(row.get("relpath") or "")
             parts = plain_segments(relpath)
+            if len(parts) == 1 and (row.get("kind") == "directory_manifest" or row.get("is_directory")):
+                if location and _eligible(row) and anchor is not None:
+                    try:
+                        with confined_directory(anchor, (*stores[location[0]].relative_to(anchor).parts, parts[0])):
+                            pass
+                        files_count = int(row.get("file_count") or 0)
+                        total_size = int(row.get("size") or 0)
+                        entry = view.setdefault(parts[0], {"name": parts[0] + ARCHIVE_SUFFIX, "files": 0, "size": 0,
+                                                           "excluded": 0, "available": False})
+                        entry["files"] = max(entry["files"], files_count)
+                        entry["size"] = max(entry["size"], total_size)
+                    except OSError:
+                        pass
+                continue
             if len(parts) < 2:
                 continue  # a root file (or an unattributable row) belongs to no directory
             entry = view.setdefault(parts[0], {"name": parts[0] + ARCHIVE_SUFFIX, "files": 0, "size": 0,
@@ -217,6 +235,39 @@ def _archive_members(stores: List[pathlib.Path], rows: Any, directory: str, *,
     with _Parents() as parents:
         for order, row in enumerate(rows if isinstance(rows, list) else []):
             location = task_artifact_location(stores, row.get("path"), spellings) if isinstance(row, dict) else None
+            if (location is not None and _eligible(row)
+                    and (row.get("kind") == "directory_manifest" or row.get("is_directory"))
+                    and (location[2] == directory or directory.startswith(location[2] + "/"))):
+                store_path = stores[location[0]]
+                dir_parts = plain_segments(directory)
+                if dir_parts:
+                    from ouroboros.store import is_wal_index
+                    try:
+                        store_rel = store_path.relative_to(anchor).parts
+                        def _walk_manifest(held_dir, rel_parts):
+                            for entry_name, entry_is_dir in sorted(held_dir.entries()):
+                                if entry_is_dir:
+                                    if entry_name in artifact_store._SKIPPED_ARTIFACT_DIRS:
+                                        continue
+                                    with held_dir.child(entry_name) as sub:
+                                        _walk_manifest(sub, (*rel_parts, entry_name))
+                                    continue
+                                if not held_dir.api and is_wal_index(entry_name, dir_fd=held_dir.handle):
+                                    continue
+                                if entry_name in {artifact_store._ARTIFACT_MANIFEST, artifact_store.SCRATCH_MANIFEST_NAME}:
+                                    continue
+                                member_rel = "/".join((*dir_parts, *rel_parts, entry_name))
+                                route = _route(anchor, store_path, member_rel)
+                                if route is not None and _member_stat(parents, route) is not None and (
+                                        member_rel not in picked or (location[0], order) < picked[member_rel][0]):
+                                    picked[member_rel] = ((location[0], order), route, {"path": str(store_path.joinpath(*member_rel.split("/"))), "status": "ready"})
+                        with confined_directory(anchor, (*store_rel, *dir_parts)) as root_held:
+                            _walk_manifest(root_held, ())
+                    except FileNotFoundError:
+                        pass
+                    except OSError as exc:
+                        raise _ArchiveWalkError(f"directory_manifest archive enumeration failed: {exc}") from exc
+                continue
             if location is None or not location[2].startswith(prefix) or not _eligible(row):
                 continue
             route = _route(anchor, stores[location[0]], location[2])
@@ -267,8 +318,12 @@ def serve_directory_archive(drive_root: Any, task_id: str, name: str, directory:
     result = load_effective_task_result(drive_root, task_id) or {}
     if not result:
         return json_error("task not found", 404)
-    members = _archive_members(task_artifact_stores(drive_root, task_id), result.get("artifacts"), directory,
-                               anchor=drive_root)
+    try:
+        members = _archive_members(task_artifact_stores(drive_root, task_id), result.get("artifacts"), directory,
+                                   anchor=drive_root)
+    except _ArchiveWalkError as exc:
+        return json_error(str(exc), 404, reason_code="artifact_archive_unverified",
+                          task_id=task_id, artifact=name, directory=directory)
     if not members:
         return json_error("no recorded ready file of this task lies in that directory", 404,
                           reason_code="artifact_archive_empty", task_id=task_id, artifact=name, directory=directory)

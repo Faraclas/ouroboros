@@ -788,8 +788,10 @@ def _copy_child_artifacts_to_parent(
     bytes stay exact; differing mutable copies are versioned first. A failure
     keeps the original row and a pending reference."""
     from ouroboros.artifacts import (
-        ArtifactIdentityError, _archive_previous_artifact_version, copy_artifact_file, stream_artifact_file,
+        ArtifactIdentityError, _ARTIFACT_MANIFEST, _SKIPPED_ARTIFACT_DIRS, _archive_previous_artifact_version,
+        copy_artifact_file, iter_artifact_tree, stream_artifact_file,
     )
+    from ouroboros.store import is_wal_index
     from ouroboros.outcome_receipt_store import is_verification_receipts_path
 
     parent_dir = task_artifacts_dir(parent_drive_root, task_id)
@@ -806,6 +808,42 @@ def _copy_child_artifacts_to_parent(
         source = src = (src if src.is_absolute() else child_drive / raw_path).resolve(strict=False)
         if is_verification_receipts_path(child_drive, task_id, src):
             # Receipt union has its own locked writer; never replace its rows.
+            continue
+        if (item.get("kind") == "directory_manifest" or item.get("is_directory")) and src.is_dir():
+            raw_src = pathlib.Path(raw_path)
+            lexical_src = raw_src if raw_src.is_absolute() else child_drive / raw_path
+            in_child = (not lexical_src.is_symlink() and lexical_src.is_relative_to(child_base)
+                        and src.is_relative_to(child_base))
+            in_parent = (not lexical_src.is_symlink() and lexical_src.is_relative_to(parent_base)
+                         and src.is_relative_to(parent_base))
+            if not (in_child or in_parent):
+                item.update(copy_status="failed", copy_error="directory_manifest path escapes child artifact store")
+                if promotion is not None:
+                    promotion["pending_refs"].append({"path": str(raw_path), "kind": "directory_manifest", "reason": item["copy_error"]})
+                rebased.append(item)
+                continue
+            dest_dir = src if in_parent else parent_dir / src.relative_to(child_base)
+            try:
+                if dest_dir != src:
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    for member in iter_artifact_tree(src):
+                        rel_member = member.relative_to(src).as_posix()
+                        if (member.is_symlink() or not member.is_file() or is_wal_index(member)
+                                or member.name in {_ARTIFACT_MANIFEST, SCRATCH_MANIFEST_NAME}
+                                or any(part in _SKIPPED_ARTIFACT_DIRS for part in rel_member.split("/")[:-1])):
+                            continue
+                        dest_member = dest_dir.joinpath(*rel_member.split("/"))
+                        if dest_member.is_file() and not dest_member.is_symlink():
+                            _archive_previous_artifact_version(pathlib.Path(parent_drive_root), task_id, dest_member, member)
+                        copy_artifact_file(member, dest_member)
+                item.pop("copy_status", None)
+                item.pop("copy_error", None)
+                item.update(path=str(dest_dir), name=str(item.get("name") or dest_dir.name))
+            except OSError as exc:
+                item.update(copy_status="failed", copy_error=f"{type(exc).__name__}: {exc}")
+                if promotion is not None:
+                    promotion["pending_refs"].append({"path": str(src), "kind": "directory_manifest", "reason": item["copy_error"]})
+            rebased.append(item)
             continue
         expected = item if item.get("immutable") else None
         dest = (src if src.is_relative_to(parent_base) else

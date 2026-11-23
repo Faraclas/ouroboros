@@ -64,6 +64,8 @@ _MAX_SCRATCH_PATHS = 1000
 _ATTACHMENTS_SUBDIR = "attachments"
 _CHAT_MEDIA_SUBDIR = "chat_media"
 _SOURCE_HANDLES_SUBDIR = "source_handles"
+_SKIPPED_ARTIFACT_DIRS = frozenset({"__pycache__", ".pytest_cache"})
+BULK_DIRECTORY_THRESHOLD = 64
 _SOURCE_HANDLE_CATEGORIES = frozenset({"tool_results", "context_checkpoints", "delegated_activity"})
 _LEGACY_TOOL_RESULT_TRUNCATION_RE = re.compile(
     r"\n\.\.\. \(truncated from (?P<original>[1-9][0-9]*) chars, "
@@ -1276,7 +1278,8 @@ def collect_task_artifact_records(
     hashes the open file. Strict reads raise on unreadable files/metadata; ``anchor`` confines child stores."""
     from ouroboros.confined_files import confined_directory, read_confined_json
     from ouroboros.outcome_receipt_store import verification_receipts_path
-    from ouroboros.store import WalIndexRefused
+    from ouroboros.store import WalIndexRefused, is_wal_index
+    from ouroboros.test_evidence import EVIDENCE_RUN_MARKER
 
     try:
         store = task_artifact_dir_path(drive_root, validate_task_id(task_id), create=False)
@@ -1290,16 +1293,88 @@ def collect_task_artifact_records(
     manifest = {str(k): v for k, v in entries.items() if isinstance(v, dict)} if isinstance(entries, dict) else {}
     rows, opened = [], False
 
+    def _scan_bulk_subdir(root_dir, top_name: str):
+        """Confined metadata scan of a top-level subdir; returns (is_bulk, files[(rel, size)], total_size)."""
+        files: List[tuple[str, int]] = []
+        total_size = 0
+        has_marker = False
+
+        def _descend(sub, rel_parts):
+            nonlocal total_size, has_marker
+            for entry_name, entry_is_dir in sorted(sub.entries()):
+                entry_path = store.joinpath(top_name, *rel_parts, entry_name)
+                if entry_name in {_ARTIFACT_MANIFEST, SCRATCH_MANIFEST_NAME} or entry_path == receipts:
+                    continue
+                if entry_is_dir:
+                    if entry_name in _SKIPPED_ARTIFACT_DIRS:
+                        continue
+                    try:
+                        with sub.child(entry_name) as nested_dir:
+                            _descend(nested_dir, (*rel_parts, entry_name))
+                    except OSError:
+                        if strict:
+                            raise
+                    continue
+                if entry_name == EVIDENCE_RUN_MARKER:
+                    has_marker = True
+                try:
+                    if not sub.api:
+                        if is_wal_index(entry_name, dir_fd=sub.handle):
+                            continue
+                        obs = os.stat(entry_name, dir_fd=sub.handle, follow_symlinks=False)
+                        if not stat.S_ISREG(obs.st_mode):
+                            continue
+                        size = obs.st_size
+                    else:
+                        h, obs = sub.open_for_read(entry_name)
+                        h.close()
+                        size = obs.st_size
+                except OSError as exc:
+                    if strict and not isinstance(exc, WalIndexRefused):
+                        raise
+                    continue
+                files.append(("/".join((*rel_parts, entry_name)), size))
+                total_size += size
+
+        _descend(root_dir, ())
+        return (len(files) > BULK_DIRECTORY_THRESHOLD or has_marker), files, total_size
+
     def walk(directory, relative=()):
         for name, is_directory in sorted(directory.entries()):
             path = store.joinpath(*relative, name)
             if (name in {_ARTIFACT_MANIFEST, SCRATCH_MANIFEST_NAME}
                     or path in {receipts, store / (_ARTIFACT_MANIFEST + ".lock")}
+                    or (is_directory and name in _SKIPPED_ARTIFACT_DIRS)
                     or not relative and name in {_ATTACHMENTS_SUBDIR, _CHAT_MEDIA_SUBDIR, _SOURCE_HANDLES_SUBDIR}):
                 continue
             try:
                 if is_directory:
                     with directory.child(name) as child:
+                        if not relative and name != DELEGATED_CAPTURE_PREFIX:
+                            is_bulk, bulk_files, bulk_size = _scan_bulk_subdir(child, name)
+                            if is_bulk:
+                                tree_hasher = sha256()
+                                for rel_member, member_size in bulk_files:
+                                    tree_hasher.update(
+                                        f"{rel_member}\0{member_size}\n".encode("utf-8", errors="surrogateescape")
+                                    )
+                                manifest_row: Dict[str, Any] = {
+                                    "kind": "directory_manifest",
+                                    "name": name,
+                                    "path": str(path),
+                                    "is_directory": True,
+                                    "file_count": len(bulk_files),
+                                    "size": bulk_size,
+                                    "sha256": "",
+                                    "tree_sha256": tree_hasher.hexdigest(),
+                                    "sample_files": [rel_member for rel_member, _ in bulk_files[:10]],
+                                }
+                                if measure:
+                                    manifest_row.update(status=ARTIFACT_STATUS_READY, errors=[])
+                                else:
+                                    manifest_row["measured"] = False
+                                rows.append(manifest_row)
+                                continue
                         walk(child, (*relative, name))
                     continue
                 handle, observed = directory.open_for_read(name)
