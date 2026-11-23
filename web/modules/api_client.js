@@ -529,6 +529,14 @@ export const apiClient = {
     /** @returns {Promise<import('./api_types.js').OwnerSafetyModeResponse>} */
     ownerSafetyMode: (mode) => jsonPost('/api/owner/safety-mode', { mode }),
     logsTail: (name, limit = 2000) => fetchJson(`/api/logs/${encodeURIComponent(name)}?limit=${encodeURIComponent(limit)}`, { cache: 'no-store' }),
+    /** Read-only ranked FTS5 memory search over state/memory_index.sqlite.
+     * @returns {Promise<import('./memory_search.js').MemorySearchResponse>} */
+    memorySearch: ({ query = '', scope = '', includeArchived = false, limit = 20, signal } = {}) => {
+        const params = new URLSearchParams({ query: String(query || '').trim(), limit: String(limit) });
+        if (scope) params.set('scope', String(scope));
+        if (includeArchived) params.set('include_archived', 'true');
+        return fetchJson(`/api/memory/search?${params}`, { cache: 'no-store', signal });
+    },
     /** @returns {Promise<import('./model_route_types.js').ResponseLimitAckResponse|Object>} */
     ownerCapabilityAck: (payload) => jsonPost('/api/owner/capability-ack', payload),
     /** @returns {Promise<import('./api_types.js').OpenAICompatibleModelsResponse>} */

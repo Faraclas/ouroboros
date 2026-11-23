@@ -8,13 +8,14 @@ const DASHBOARD_TABS = [
     { value: 'activity', label: 'Activity' },
     { value: 'projects', label: 'Projects' },
     { value: 'consciousness', label: 'Consciousness' },
+    { value: 'memory', label: 'Memory' },
     { value: 'costs', label: 'Costs' },
     { value: 'updates', label: 'Updates' },
     { value: 'storage', label: 'Storage' },
     { value: 'evolution', label: 'Evolution' },
 ];
 // Static guard markers: renderTabStrip emits data-dashboard-tab="logs",
-// data-dashboard-tab="activity", data-dashboard-tab="projects", data-dashboard-tab="consciousness", data-dashboard-tab="costs",
+// data-dashboard-tab="activity", data-dashboard-tab="projects", data-dashboard-tab="consciousness", data-dashboard-tab="memory", data-dashboard-tab="costs",
 // data-dashboard-tab="updates", data-dashboard-tab="storage", and
 // data-dashboard-tab="evolution" from DASHBOARD_TABS at runtime.
 

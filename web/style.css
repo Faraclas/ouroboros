@@ -5817,6 +5817,178 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 }
 /* === design-system:migrated-end === */
 
+/* === design-system:migrated-begin (Dashboard Memory tab) === */
+.memory-search-root {
+    container: memorysearch / inline-size;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+.memory-search-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--space-4) var(--space-5);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+}
+.memory-search-card {
+    padding: var(--space-4);
+    border-radius: var(--radius-object);
+    background: var(--surface-object);
+    box-shadow: var(--elev-rest);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+}
+.memory-search-head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+}
+.memory-search-title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: var(--type-section);
+    line-height: var(--line-title);
+    font-weight: 600;
+}
+.memory-search-desc,
+.memory-search-summary,
+.memory-search-empty,
+.memory-hit-meta-item,
+.memory-hit-kind {
+    margin: 0;
+    color: var(--text-meta);
+    font-size: var(--type-meta);
+    line-height: var(--line-meta);
+}
+.memory-search-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+.memory-search-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+}
+.memory-search-input {
+    flex: 1 1 260px;
+    min-width: 0;
+}
+.memory-search-scope {
+    flex: 0 1 220px;
+    min-width: 0;
+}
+.memory-search-options {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+}
+.memory-search-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--text-meta);
+    font-size: var(--type-meta);
+    line-height: var(--line-meta);
+    cursor: pointer;
+}
+.memory-search-results {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+.memory-hit-card {
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-object);
+    background: var(--surface-object);
+    box-shadow: var(--elev-rest);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+.memory-hit-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-2);
+}
+.memory-hit-title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: var(--type-body);
+    line-height: var(--line-body);
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+.memory-hit-kind {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+.memory-hit-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+}
+.memory-hit-status {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: var(--type-meta);
+    line-height: var(--line-meta);
+    font-weight: 600;
+    border: 1px solid var(--status-neutral-border);
+    color: var(--status-neutral-fg);
+    background: var(--status-neutral-bg);
+}
+.memory-hit-status[data-tone="ok"] {
+    border-color: var(--status-ok-border);
+    color: var(--status-ok-fg);
+    background: var(--status-ok-bg);
+}
+.memory-hit-snippet {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--type-body);
+    line-height: var(--line-body);
+    overflow-wrap: anywhere;
+}
+.memory-hit-foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+}
+.memory-hit-address {
+    padding: 2px var(--space-2);
+    border-radius: var(--radius-sm);
+    background: var(--surface-tray);
+    color: var(--text-meta);
+    font-size: var(--type-meta);
+    line-height: var(--line-meta);
+    overflow-wrap: anywhere;
+    user-select: all;
+}
+@container memorysearch (max-width: 560px) {
+    .memory-search-scroll { padding: var(--space-3); }
+    .memory-search-bar { flex-direction: column; align-items: stretch; }
+    .memory-search-input,
+    .memory-search-scope,
+    .memory-search-submit { width: 100%; flex: none; }
+    .memory-hit-foot { flex-direction: column; align-items: flex-start; }
+}
+/* === design-system:migrated-end === */
+
 #page-dashboard {
     min-height: 0;
 }

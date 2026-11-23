@@ -916,6 +916,13 @@ def search_memory(drive_root: Any, query: str, *, scope: str = "", include_archi
         rebuilt = True
         rows = _execute()
 
+    return _build_search_result(raw_query, norm_scope, bool(include_archived), limit, rows, started, rebuilt, today)
+
+
+def _build_search_result(
+    raw_query: str, norm_scope: str, include_archived: bool, limit: int,
+    rows: List[Tuple[Any, ...]], started: float, rebuilt: bool, today: Optional[datetime.date],
+) -> SearchResult:
     ref_today = today or datetime.datetime.now(datetime.timezone.utc).date()
     ranked = [
         SearchHit(
@@ -928,8 +935,60 @@ def search_memory(drive_root: Any, query: str, *, scope: str = "", include_archi
         for r in rows
     ]
     ranked.sort(key=lambda h: (-h.score, h.date_ymd == "", h.doc_key))
-    return SearchResult(raw_query, norm_scope, bool(include_archived), limit, tuple(ranked[:limit]),
+    return SearchResult(raw_query, norm_scope, include_archived, limit, tuple(ranked[:limit]),
                         len(rows), int((time.monotonic() - started) * 1000), rebuilt)
+
+
+def search_readonly(drive_root: Any, query: str, *, scope: str = "", include_archived: bool = False,
+                    limit: int = 10, today: Optional[datetime.date] = None,
+                    allowed_project_id: Optional[str] = None) -> Optional[SearchResult]:
+    """Execute a strictly read-only FTS5 search without taking locks, syncing, or creating files.
+
+    Returns None if the index file is absent or unreadable so callers can fall back cleanly.
+    """
+    started = time.monotonic()
+    root = pathlib.Path(drive_root)
+    norm_scope = validate_scope(scope)
+    if allowed_project_id is not None and allowed_project_id != "" and not explicit_project_id_ok(allowed_project_id):
+        raise ValueError(f"invalid allowed_project_id {allowed_project_id!r}")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not (1 <= limit <= 50):
+        raise ValueError("limit must be 1..50")
+    raw_query = str(query or "").strip()
+    if not raw_query:
+        raise ValueError("query must be a non-empty string")
+
+    db_path = index_path(root)
+    if not db_path.is_file():
+        return None
+    fts_expr = _tokenize_fts_query(raw_query)
+    if not fts_expr:
+        return SearchResult(raw_query, norm_scope, bool(include_archived), limit, (), 0,
+                            int((time.monotonic() - started) * 1000), False)
+
+    fetch_limit = max(limit * 5, 100)
+    try:
+        conn = _connect(db_path, read_only=True)
+        try:
+            if not _validate_existing(conn):
+                return None
+            try:
+                rows = _run_fts_query(conn, fts_expr, scope=norm_scope,
+                                      include_archived=bool(include_archived), fetch_limit=fetch_limit,
+                                      allowed_project_id=allowed_project_id)
+            except sqlite3.OperationalError:
+                fb = _fallback_fts_query(raw_query)
+                if not fb or fb == fts_expr:
+                    return SearchResult(raw_query, norm_scope, bool(include_archived), limit, (), 0,
+                                        int((time.monotonic() - started) * 1000), False)
+                rows = _run_fts_query(conn, fb, scope=norm_scope,
+                                      include_archived=bool(include_archived), fetch_limit=fetch_limit,
+                                      allowed_project_id=allowed_project_id)
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error):
+        return None
+
+    return _build_search_result(raw_query, norm_scope, bool(include_archived), limit, rows, started, False, today)
 
 
 def format_search_result(result: SearchResult, *, max_chars: int = 80_000) -> str:

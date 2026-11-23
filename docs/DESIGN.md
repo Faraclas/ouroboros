@@ -2461,8 +2461,8 @@ has migrated. Migrated today:
 - `web/cards.css` (living cards in the feed)
 - `web/style.css` regions paired by `design-system:migrated-begin` /
   `design-system:migrated-end`: harness accounts; Dashboard → Updates (status
-  card, one action row, collapsed Recovery with one restore list), Storage and
-  Evolution;
+  card, one action row, collapsed Recovery with one restore list), Memory,
+  Storage and Evolution;
   the Skills page (Installed, Browse, Sources, the detail sheet, its dialogs);
   chat typography, foreground and status colour. Chat geometry retains local
   literals per the viewport reserve contract; shared palette channels keep

@@ -151,6 +151,7 @@ def collect_routes(
         api_projects_list,
     )
     from ouroboros.gateway.state import api_consciousness, api_contract, api_health, api_state
+    from ouroboros.gateway.memory import api_memory_search
     from ouroboros.gateway.skill_publish import skill_publish_routes
     from ouroboros.gateway.task_reviews import task_review_routes
     from ouroboros.gateway.tasks import (
@@ -303,6 +304,7 @@ def collect_routes(
         Route("/api/chat/history", endpoint=make_chat_history_endpoint(data_dir)),
         Route("/api/rooms/{chat_id}/activity", endpoint=api_room_activity, methods=["GET"]),
         Route("/api/logs/{name}", endpoint=api_logs_tail, methods=["GET"]),
+        Route("/api/memory/search", endpoint=api_memory_search, methods=["GET"]),
         Route("/api/chat/upload", endpoint=api_chat_upload, methods=["POST"]),
         Route("/api/chat/upload", endpoint=api_chat_upload_delete, methods=["DELETE"]),
         Route("/api/openai-compatible/models", endpoint=api_openai_compatible_models, methods=["POST"]),

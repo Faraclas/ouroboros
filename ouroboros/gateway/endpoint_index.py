@@ -112,6 +112,7 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "GET /api/chat/history",
     "GET /api/rooms/{chat_id}/activity",
     "GET /api/logs/{name}",
+    "GET /api/memory/search",
     "POST /api/chat/upload",
     "DELETE /api/chat/upload",
     "POST /api/openai-compatible/models",
@@ -506,6 +507,9 @@ HTTP_SHAPES: dict[str, Shape] = {
     "POST /api/storage/free/cancel": Shape("202:StorageResponse", note="stops the listing or the run; what was freed stays freed"),
     "GET /api/evolution-data": Shape("200:EvolutionDataResponse", query="force",
                                      note="answers from the saved copy at once; new tags or force start one background re-measurement"),
+    "GET /api/memory/search": Shape(
+        "200:MemorySearchResponse 400,503:ErrorResponse", query="query q scope include_archived limit",
+        note="read-only ranked FTS5 search over state/memory_index.sqlite; excludes archived and superseded records unless include_archived=true"),
     "POST /api/openai-compatible/models": Shape("200:OpenAICompatibleModelsResponse 400,502:ErrorResponse",
                                                 "OpenAICompatibleModelsRequest", note="lists {baseUrl}/models once; saves nothing"),
     "GET /api/local-model/status": Shape("200:LocalModelStatusResponse"),

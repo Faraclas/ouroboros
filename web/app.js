@@ -29,6 +29,7 @@ import { initWidgets } from './modules/widgets.js';
 import { initUpdates } from './modules/updates.js';
 import { initActivity } from './modules/activity.js';
 import { initConsciousnessDashboard } from './modules/consciousness_dashboard.js';
+import { initMemorySearch } from './modules/memory_search.js';
 import { initUpdateStatus } from './modules/update_status.js';
 import { getInterfaceSize } from './modules/interface_size.js';
 import { initDashboard } from './modules/dashboard.js';
@@ -1537,25 +1538,21 @@ evolution = initEvolution({ ...ctx, mount: document.getElementById('dashboard-pa
 initUpdates({ ...ctx, mount: document.getElementById('dashboard-panel-updates') });
 initActivity({ ...ctx, mount: document.getElementById('dashboard-panel-activity') });
 initConsciousnessDashboard({ ...ctx, mount: document.getElementById('dashboard-panel-consciousness') });
+const disposeMemorySearch = initMemorySearch({ ...ctx, mount: document.getElementById('dashboard-panel-memory'), getProjects: () => lastProjectRows });
 initCosts({ ...ctx, mount: document.getElementById('dashboard-panel-costs') });
 const disposeStorage = initStorage({ ...ctx, mount: document.getElementById('dashboard-panel-storage') });
-initSkills(ctx);
-initWidgets(ctx);
+initSkills(ctx); initWidgets(ctx);
 const updateStatus = initUpdateStatus(ctx);
 // The interface size's one controller: the desktop keys work on every page, the slider lives in Settings.
 getInterfaceSize();
-
 initOnboardingOverlay();
-
 const disposeScrollFades = Array.from(document.querySelectorAll('.scroll-fade-y'), bindScrollFade);
 // Inside Telegram the host's chrome follows the shell (host_telegram.js); a no-op elsewhere.
 const telegramHost = createTelegramHost({ layers });
 telegramHost.bind();
 window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;
-    evolution.dispose();
-    updateStatus.dispose();
-    disposeStorage?.destroy();
+    evolution.dispose(); updateStatus.dispose(); disposeMemorySearch?.destroy(); disposeStorage?.destroy();
     projectsManager.destroy();
     disposeWorkItemReferences();
     workItems.destroy();
