@@ -695,15 +695,11 @@ def _reviewed_stage_cycle(
     )
     advisory_replay: Optional[Dict[str, Any]] = None
     if author_source is not None:
-        from ouroboros.tools.commit_gate import bind_author_commit_candidate
+        from ouroboros.tools.commit_gate import bind_author_commit_candidate, settle_author_preflight_block
         preflight = bind_author_commit_candidate(ctx, commit_message, pre_fingerprint)
         if preflight:
-            from ouroboros.commit_admission import preflight_evidence_unavailable
-            from ouroboros.tools.review import _handle_review_block_or_warning
-
-            ctx._last_review_block_reason = "infra_failure" if preflight_evidence_unavailable(preflight) else "preflight"
-            if refusal := _handle_review_block_or_warning(ctx, True, preflight, ""):
-                return {"status": "blocked", "message": refusal, "block_reason": ctx._last_review_block_reason}
+            if blocked_preflight := settle_author_preflight_block(ctx, commit_message, commit_start, preflight):
+                return blocked_preflight
         advisory_replay = {"advisory_replay": "Explicit current-author continuation; original reviewer facts retained.", "replay_reason": "author_finish"}
     if gate_outcome is not None:
         if "advisory_replay" in gate_outcome:

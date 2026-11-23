@@ -190,6 +190,36 @@ def test_no_current_test_proof_means_no_author_commit(candidate, monkeypatch):  
     assert sum(row.paid for row in load_state(ctx.drive_root).attempts) == 1
 
 
+def test_author_continuation_preflight_block_settles_reviewing_attempt(candidate, monkeypatch):  # noqa: F811
+    from ouroboros.tools import commit_gate, git_review_cycle
+    from ouroboros.tools.commit_gate import _record_commit_attempt
+
+    ctx = candidate
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+    git._reset_commit_review_state(ctx)
+    before = git._fingerprint_staged_diff(ctx.repo_dir)
+    _record_commit_attempt(ctx, "candidate", "reviewing", pre_review_fingerprint=before["fingerprint"], paid=True)
+    _record_commit_attempt(ctx, "candidate", "reviewed", phase="review_only", pre_review_fingerprint=before["fingerprint"])
+    source = load_state(ctx.drive_root).attempts[-1]
+    reference = {"surface": "commit", **{key: getattr(source, key) for key in ("repo_key", "task_id", "tool_name", "attempt", "pre_review_fingerprint")}}
+
+    git._reset_commit_review_state(ctx)
+    # Simulate _repo_commit_push recording an in-progress "reviewing" attempt and staging change.py.
+    (ctx.repo_dir / "change.py").write_text("value = 99\n", encoding="utf-8")
+    _record_commit_attempt(ctx, "candidate", "reviewing")
+    ctx._author_commit_source = source
+    ctx._author_commit_reference = reference
+    ctx._author_commit_decision = {"disposition": "accepted", "rationale": "Checked prior review."}
+    monkeypatch.setattr(commit_gate, "bind_author_commit_candidate", lambda *a: "⚠️ PREFLIGHT_BLOCKED: missing sync")
+    result = git_review_cycle._run_reviewed_stage_cycle(ctx, "candidate", 0.0, paths=["change.py"], require_release_tag=False)
+    assert result["status"] == "blocked" and result["block_reason"] == "preflight"
+    assert git.run_cmd(["git", "diff", "--cached", "--name-only"], cwd=ctx.repo_dir).strip() == ""
+    latest = load_state(ctx.drive_root).attempts[-1]
+    assert latest.status == "blocked" and latest.phase == "preflight" and latest.block_reason == "preflight"
+    # Subsequent commit_reviewed must not fail with REVIEWED_ATTEMPT_IN_PROGRESS.
+    assert commit_gate._check_overlapping_review_attempt(ctx) is None
+
+
 @pytest.mark.parametrize("signal", ["passed", "author_continued", "not_confirmed", "unknown"])
 def test_evolution_receipt_preserves_actual_review_authority(tmp_path, signal):
     from types import SimpleNamespace

@@ -299,8 +299,8 @@ def _record_lock(path: Any, data_dir: Optional[Any] = None, *, op: str, task_id:
     """Serialize changes to ONE copy's record across threads and processes (the
     portable file-lock SSOT, platform_layer). Never held for a tree walk, and
     never needed to create a different copy. The holder names itself, ``pid=``
-    first, so a dead holder is evicted at once and a live one never is; a
-    timeout is typed with the holder's facts. Not reentrant."""
+    first, so a dead holder is evicted at once and a live kernel holder never is;
+    a timeout is typed with the holder's facts. Not reentrant."""
     lock_path = _record_file(path, data_dir).with_suffix(".lock")
     metadata = f"pid={os.getpid()} task={task_id or '-'} op={op} since={utc_now_iso()} target={path}"
     started = time.monotonic()

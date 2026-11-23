@@ -1289,6 +1289,24 @@ def bind_author_commit_candidate(ctx: ToolContext, commit_message: str, pre_fing
                             neutral_allowed=_neutral_commit_allowed(ctx))
 
 
+def settle_author_preflight_block(ctx: ToolContext, commit_message: str, commit_start: float, preflight: str) -> Optional[Dict[str, Any]]:
+    """Record and return an author-continuation preflight block so the attempt never stays ``reviewing``."""
+    import time
+    from ouroboros.commit_admission import preflight_evidence_unavailable
+    from ouroboros.tools import git as git_mod
+    from ouroboros.tools.review import _handle_review_block_or_warning
+    ctx._last_review_block_reason = "infra_failure" if preflight_evidence_unavailable(preflight) else "preflight"
+    if not (refusal := _handle_review_block_or_warning(ctx, True, preflight, "")):
+        return None
+    if not bool(getattr(ctx, "_review_resume_pending", False)):
+        try:
+            git_mod.run_cmd(["git", "reset", "HEAD", "--", ":/"], cwd=ctx.repo_dir)
+        except Exception:
+            pass
+        git_mod._record_commit_attempt(ctx, commit_message, "blocked", block_reason=ctx._last_review_block_reason, block_details=refusal, duration_sec=time.time() - commit_start, phase="preflight")
+    return {"status": "blocked", "message": refusal, "block_reason": ctx._last_review_block_reason}
+
+
 def record_bound_commit_success(ctx: ToolContext, commit_message: str, started_at: float, before: dict, after: dict) -> None:
     """Persist the already-verified Git effect with its actual review/author facts.
 

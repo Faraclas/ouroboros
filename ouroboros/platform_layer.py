@@ -367,7 +367,7 @@ def acquire_exclusive_file_lock(
                     owner_pid = ([int(f[4:]) for f in fields if f.startswith("pid=") and f[4:].isdigit()] or [0])[-1]
                     stale = (time.time() - judged[2] / 1e9) > stale_sec
                     if owner_aware_stale and owner_pid > 0:
-                        stale = not pid_is_alive(owner_pid)  # Proven death needs no age grace.
+                        stale = True if not pid_is_alive(owner_pid) else (stale and enforced)  # Enforced tier probes unheld execv/live locks past stale_sec.
                     # Judge and evict the same inode under a kernel hold.
                     if stale and enforced:
                         try:
