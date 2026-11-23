@@ -748,20 +748,17 @@ def prune_task_artifact_bulk(
 ) -> Dict[str, Any]:
     """Re-verify eligibility under the per-task custody lock, write ``pruned_manifest.json``,
     and move/unlink evictable bulk for TASK_ID."""
-    from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
+    from ouroboros.task_custody import task_custody_lock
 
     root_path = pathlib.Path(root).resolve(strict=False)
     artifact_dir = root_path / "task_results" / "artifacts" / str(task_id)
     if not artifact_dir.is_dir() or artifact_dir.is_symlink():
         return {"task_id": task_id, "status": "absent", "removed": 0, "removed_bytes": 0, "moved_dirs": 0, "reason": ""}
 
-    lock_path = root_path / "task_results" / f"{task_id}.custody.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = acquire_exclusive_file_lock(lock_path, timeout_sec=0, owner_aware_stale=True)
-    if fd is None:
-        return {"task_id": task_id, "status": "kept", "removed": 0, "removed_bytes": 0, "moved_dirs": 0, "reason": "busy"}
+    with task_custody_lock(root_path, str(task_id), timeout_sec=0.0) as acquired:
+        if not acquired:
+            return {"task_id": task_id, "status": "kept", "removed": 0, "removed_bytes": 0, "moved_dirs": 0, "reason": "busy"}
 
-    try:
         cutoff_ts = (datetime.now(timezone.utc).timestamp() - max(0, int(grace_days)) * 86400) if grace_days > 0 else None
         rows = _task_retention_rows(root_path, [str(task_id)])
         verdict, inside_wait = _task_eligible_for_bulk_prune(
@@ -839,8 +836,6 @@ def prune_task_artifact_bulk(
             "failed": len(failed_relpaths),
             "reason": out_reason,
         }
-    finally:
-        release_exclusive_file_lock(lock_path, fd)
 
 
 def pruned_retention_entry(
