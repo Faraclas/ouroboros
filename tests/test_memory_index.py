@@ -251,6 +251,30 @@ def test_workpads_incremental_journals_and_tombstone_lifecycle(tmp_path):
     assert all(h.status == "CLOSED" for h in res3.hits)
 
 
+def test_journal_entries_sharing_one_address_never_crowd_out_the_brief(tmp_path):
+    """More short journal rows than the fetch window match a project name by their metadata; one hit
+    per address, collapsed before the fetch limit, keeps the closure brief and the workpad visible."""
+    _write_projects_registry(tmp_path, [{"id": "quasar-repair", "name": "Quasar Repair", "lifecycle": "tombstoned"}])
+    pdir = tmp_path / "projects" / "quasar-repair"
+    pdir.mkdir(parents=True)
+    (pdir / "workpad.md").write_text("# Quasar Repair\n" + "Long working notes about the repair. " * 40, encoding="utf-8")
+    (pdir / "closure_brief.md").write_text(
+        "---\ntitle: Quasar Repair closed\nsummary: Delivered fix.\n---\n# Quasar Repair\n" + "What happened. " * 60,
+        encoding="utf-8")
+    (pdir / "journal.jsonl").write_text("".join(
+        json.dumps({"ts": "2026-11-20T10:00:00Z", "kind": "checkpoint", "text": f"step {n}"}) + "\n" for n in range(150)),
+        encoding="utf-8")
+
+    res = memory_index.search_memory(tmp_path, "quasar repair", limit=3)
+    addresses = [h.canonical_address for h in res.hits]
+    assert len(addresses) == len(set(addresses)) == 3
+    assert "memory_read(node_id='closure_brief:quasar-repair')" in addresses
+    assert "workpad_read(project_id='quasar-repair')" in addresses
+    assert addresses.count("journal_read(project_id='quasar-repair')") == 1
+    readonly = memory_index.search_readonly(tmp_path, "quasar repair", limit=3)
+    assert [h.canonical_address for h in readonly.hits] == addresses
+
+
 # --- 4. Closure briefs (YAML frontmatter + memory_read node_id='closure_brief:<id>') -------------
 
 

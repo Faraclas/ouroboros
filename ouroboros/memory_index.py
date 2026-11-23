@@ -861,13 +861,20 @@ def _run_fts_query(conn: sqlite3.Connection, fts_expr: str, *, scope: str,
     if not include_archived:
         where.append("d.status NOT IN (%s)" % ",".join("?" for _ in EXCLUDED_DEFAULT_STATUSES))
         params.extend(sorted(EXCLUDED_DEFAULT_STATUSES))
+    # A hit names the next place to read: documents sharing one address (a project's journal
+    # entries) collapse to their best match BEFORE the fetch limit, so many short metadata-heavy
+    # entries can neither crowd out the brief or workpad nor shrink the candidate pool.
     sql = (
+        "WITH ranked AS (SELECT d.id AS id, d.canonical_address AS addr, bm25(docs_fts, 3.0, 2.0, 1.0) AS rank_score "
+        "FROM docs_fts JOIN docs d ON d.id = docs_fts.rowid WHERE " + " AND ".join(where) + "), "
+        "best AS (SELECT id, rank_score, ROW_NUMBER() OVER (PARTITION BY addr ORDER BY rank_score, id) AS rn "
+        "FROM ranked), top AS (SELECT id, rank_score FROM best WHERE rn = 1 ORDER BY rank_score ASC LIMIT ?) "
         "SELECT d.doc_key, d.family, d.kind, d.status, d.scope, d.date_ymd, d.canonical_address, "
-        "d.title, d.body, snippet(docs_fts, -1, '[', ']', '...', 24), bm25(docs_fts, 3.0, 2.0, 1.0) AS rank_score "
-        "FROM docs_fts JOIN docs d ON d.id = docs_fts.rowid WHERE " + " AND ".join(where)
-        + " ORDER BY rank_score ASC LIMIT ?"
+        "d.title, d.body, snippet(docs_fts, -1, '[', ']', '...', 24), top.rank_score "
+        "FROM top JOIN docs d ON d.id = top.id JOIN docs_fts ON docs_fts.rowid = top.id "
+        "WHERE docs_fts MATCH ? ORDER BY top.rank_score ASC"
     )
-    params.append(fetch_limit)
+    params.extend([fetch_limit, fts_expr])
     return conn.execute(sql, params).fetchall()
 
 

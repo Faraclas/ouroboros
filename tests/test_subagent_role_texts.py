@@ -20,6 +20,8 @@ ROLE_TEXT = (
     "Work from this assignment first — it is written to be enough; read memory or sources only to fill a "
     "gap it leaves, and name what you read in your report."
 )
+SEARCH_HINT = ("For a past decision, error or closed project without an address, memory_read(query=...) "
+               "searches by words.")
 DRAFT_RIGHT = ("You may also publish chronicle pages and parts as drafts in your own name; the integrating mind "
                "accepts or rejects them.")
 MEMORY_SENTENCE = "Knowledge notes and memory marks may be written in your own name"
@@ -85,9 +87,9 @@ def test_child_working_sources_line_is_the_role_text_and_a_root_has_none(tmp_pat
         text = _system_text(tmp_path / name, task)
         section = text[text.index("## Working sources"):].split("\n## ", 1)[0]
         # The pinned lowercase phrase (tests/test_recent_sections_per_task.py) stays inside the new line,
-        # and the draft right is its one added sentence, at the end.
+        # then the memory search hint, and the draft right at the end.
         assert ROLE_TEXT in section and "your own recent process" in section
-        assert section.rstrip().endswith(ROLE_TEXT + " " + DRAFT_RIGHT)
+        assert section.rstrip().endswith(ROLE_TEXT + " " + SEARCH_HINT + " " + DRAFT_RIGHT)
         for stale in ("not preloaded", "Your parent's selected discussion", "shared biography"):
             assert stale not in section
     root = _system_text(tmp_path / "root", {"id": "root0001", "type": "task", "text": "work"})

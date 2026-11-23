@@ -72,9 +72,11 @@ TYPED_HOST_FACTS: Mapping[str, str] = MappingProxyType({
 _TERMINAL = frozenset({"terminal_root_projection", "terminal_result_projection"})
 # The host's facts row; a ``task_summary`` without a kind is the old writer's model prose, never a status.
 _HOST_FACTS, _KINDLESS = frozenset({"host_task_facts"}), frozenset({"", None})
-# The delegated child's role text, carried verbatim, then its draft right: it publishes only drafts in its own name.
+# The delegated child's role text, carried verbatim: its search route for an address-less past, then its draft
+# right (it publishes only drafts in its own name).
 CHILD_ROLE_TEXT = ("Work from this assignment first — it is written to be enough; read memory or sources only to "
-                   "fill a gap it leaves, and name what you read in your report. " + CHILD_DRAFT_RIGHT)
+                   "fill a gap it leaves, and name what you read in your report. For a past decision, error or "
+                   "closed project without an address, memory_read(query=...) searches by words. " + CHILD_DRAFT_RIGHT)
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
