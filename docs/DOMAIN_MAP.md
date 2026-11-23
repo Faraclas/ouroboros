@@ -24,11 +24,11 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D14 | Skills & extensions | 70 | 0 |
 | D15 | Memory, knowledge, consciousness & self-evolution | 34 | 0 |
 | D16 | Observability, usage accounting & cost | 27 | 0 |
-| D17 | Projects, workspaces & task results | 60 | 0 |
+| D17 | Projects, workspaces & task results | 61 | 0 |
 | D18 | Launcher, packaging, platform & shared substrate | 37 | 0 |
 | D19 | Frozen contracts (ABI) | 12 | 0 |
 | D20 | Presence | 20 | 0 |
-| **total** | | **948** | **0** |
+| **total** | | **949** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -1088,6 +1088,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/project_admission.py`
 - `ouroboros/project_cleanup.py`
 - `ouroboros/project_cleanup_context.py`
+- `ouroboros/project_closure.py`
 - `ouroboros/project_completion_facts.py`
 - `ouroboros/project_dialogue.py`
 - `ouroboros/project_footprint.py`

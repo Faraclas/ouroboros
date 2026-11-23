@@ -539,6 +539,7 @@ D20 = "Presence"
 "ouroboros/project_sources.py" = "D17"
 "ouroboros/projects_registry.py" = "D17"
 "ouroboros/project_management.py" = "D17"
+"ouroboros/project_closure.py" = "D17"  # structured projects/<id>/closure_brief.md generation on close and tombstoned-project backfill
 "ouroboros/project_footprint.py" = "D17"
 "ouroboros/project_cleanup.py" = "D17"
 "ouroboros/project_cleanup_context.py" = "D17"

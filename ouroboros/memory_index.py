@@ -31,7 +31,7 @@ import yaml
 from ouroboros.chronicle_store import ChronicleStore, capture
 from ouroboros.knowledge import INDEX_FILE, KnowledgeAddress, read_knowledge_note, sanitize_topic
 from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
-from ouroboros.project_facts import explicit_project_id_ok
+from ouroboros.project_facts import explicit_project_id_ok, project_closure_brief_path
 
 log = logging.getLogger(__name__)
 
@@ -125,9 +125,7 @@ def lock_path(drive_root: Any) -> pathlib.Path:
 
 def closure_brief_path(drive_root: Any, project_id: str) -> pathlib.Path:
     """Path to a project's optional `closure_brief.md` under `<drive_root>/projects/<id>/`."""
-    if not explicit_project_id_ok(project_id):
-        raise ValueError(f"invalid project_id for closure_brief: {project_id!r}")
-    return pathlib.Path(drive_root) / "projects" / project_id / "closure_brief.md"
+    return project_closure_brief_path(project_id, drive_root=drive_root)
 
 
 @contextlib.contextmanager

@@ -283,6 +283,8 @@ def _project_store_reader_hint(parts: list) -> str:
                 f"journal_write(project_id='{pid}', kind=..., text=...) appends to it"),
             project_reflections_path(pid).relative_to(own).as_posix(): (
                 "reflection log", f"journal_read(project_id='{pid}', source='reflections')", ""),
+            project_closure_brief_path(pid).relative_to(own).as_posix(): (
+                "closure brief", f"memory_read(node_id='closure_brief:{pid}')", ""),
         }.get(rest)
         if part:
             noun, reader, writer = part
@@ -291,7 +293,8 @@ def _project_store_reader_hint(parts: list) -> str:
                     + ("; it writes it only as a root task placed in no project (such as Main)."
                        if writer else "; no tool writes it."))
     tools = ("knowledge_list/knowledge_read/knowledge_write (knowledge), workpad_read/workpad_write "
-             "(workpad) and journal_read/journal_write (journal; source='reflections' reads reflections)")
+             "(workpad), journal_read/journal_write (journal; source='reflections' reads reflections) "
+             "and memory_read(node_id='closure_brief:<id>') (closure brief)")
     if not rest:
         return f"Its scoped tools are {tools}."
     return f"No scoped reader or writer addresses this path; the store's scoped tools are {tools}."
@@ -317,10 +320,13 @@ def project_knowledge_dir(project_id: str) -> pathlib.Path:
     return pathlib.Path(DATA_DIR) / "projects" / sanitize_project_id(project_id) / "knowledge"
 
 
-def _project_store_root(project_id: str) -> pathlib.Path:
-    from ouroboros.config import DATA_DIR
-
-    return pathlib.Path(DATA_DIR) / "projects" / sanitize_project_id(project_id)
+def _project_store_root(project_id: str, drive_root: Any = None) -> pathlib.Path:
+    if drive_root is None:
+        from ouroboros.config import DATA_DIR
+        root = pathlib.Path(DATA_DIR)
+    else:
+        root = pathlib.Path(drive_root)
+    return root / "projects" / sanitize_project_id(project_id)
 
 
 def project_journal_path(project_id: str) -> pathlib.Path:
@@ -342,3 +348,10 @@ def project_reflections_path(project_id: str) -> pathlib.Path:
     """Durable per-project execution reflections (full text lives HERE for
     project-scoped roots; the canonical log carries a bounded pointer row)."""
     return _project_store_root(project_id) / "logs" / "task_reflections.jsonl"
+
+
+def project_closure_brief_path(project_id: str, drive_root: Any = None) -> pathlib.Path:
+    """Structured closure brief persisted under `projects/<id>/closure_brief.md`."""
+    if not explicit_project_id_ok(project_id):
+        raise ValueError(f"invalid project_id for closure_brief: {project_id!r}")
+    return _project_store_root(project_id, drive_root=drive_root) / "closure_brief.md"

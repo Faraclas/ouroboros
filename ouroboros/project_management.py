@@ -16,6 +16,11 @@ from typing import Any
 from ouroboros import projects_registry as registry
 from ouroboros.git_observation import host_git_env
 from ouroboros.platform_layer import subprocess_hidden_kwargs
+from ouroboros.project_closure import (
+    backfill_closed_project_briefs,
+    generate_closure_brief,
+    write_closure_brief,
+)
 from ouroboros.utils import utc_now_iso
 
 

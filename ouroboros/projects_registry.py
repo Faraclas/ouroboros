@@ -1153,6 +1153,7 @@ def complete_project_deletion(drive_root: Any, project_id: str) -> Optional[Dict
     pid = sanitize_project_id(project_id)
     if not pid:
         return None
+    completed: Optional[Dict[str, Any]] = None
     with _file_write_lock(_registry_path(drive_root)):
         data = _load(drive_root, strict=True, project_id=pid)
         for entry in data["projects"]:
@@ -1179,7 +1180,16 @@ def complete_project_deletion(drive_root: Any, project_id: str) -> Optional[Dict
                 "Project tombstoned: %s (history, bindings, folder and memory preserved)",
                 pid,
             )
-            return dict(entry)
+            completed = dict(entry)
+            break
+    if completed is not None:
+        try:
+            from ouroboros.project_closure import write_closure_brief
+
+            write_closure_brief(drive_root, pid, overwrite=False, sync_fts=True)
+        except Exception:
+            log.warning("closure_brief generation failed for tombstoned %s", pid, exc_info=True)
+        return completed
     return None
 
 
