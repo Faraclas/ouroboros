@@ -1329,6 +1329,11 @@ class ChronicleStore:
         with self._reading() as look:
             return look.get(record_id)
 
+    def interpreted_record(self, record: Mapping[str, Any]) -> Dict[str, Any]:
+        """Return one chronicle record interpreted with its current corrections, draft status and folds."""
+        with self._reading() as look:
+            return self._interpret(look, record)
+
     def rejected_input(self, room_id: Any, unit_key: str, input_sha256: str,
                        light_binding: Mapping[str, Any]) -> bool:
         """A rejected helper attempt at this exact input/route, including old published drafts.

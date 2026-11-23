@@ -450,6 +450,7 @@ D20 = "Presence"
 "ouroboros/memory.py" = "D15"
 "ouroboros/merge_receipts.py" = "D10"
 "ouroboros/memory_inventory.py" = "D15"  # open rows and the one folded rule of old memory, shared by the view and the writers
+"ouroboros/memory_index.py" = "D15"  # derived rebuildable SQLite FTS5 index over knowledge, chronicle, workpads/journals and closure briefs
 "ouroboros/memory_fallback.py" = "D15"  # signed acting drafts or candidates awaiting the mind's adoption
 "ouroboros/memory_sealing.py" = "D15"  # own unsealed work and separately attributed terminal links
 "ouroboros/memory_nomination_receipts.py" = "D15"

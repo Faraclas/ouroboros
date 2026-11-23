@@ -304,6 +304,10 @@ def _setup_job(name, data, monkeypatch):
 
         assert ChronicleStore(data).ensure_activated()["kind"] == "activation"  # its frontier at the stream's start
         dialogue_store.append(data, "chat", {"chat_id": 1, "direction": "in", "text": "after the frontier"})
+    elif name == "memory_index":
+        note = data / "memory" / "knowledge" / "sample.md"
+        note.parent.mkdir(parents=True, exist_ok=True)
+        note.write_text("# Sample\n\nIndexed knowledge body.\n", encoding="utf-8")
     elif name == "hot_facts":
         from ouroboros import store
 

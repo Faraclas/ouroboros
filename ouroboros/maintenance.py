@@ -305,6 +305,30 @@ def _tail_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[str, 
     return report
 
 
+def _memory_index_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], child: bool) -> bool:
+    """Derived FTS5 memory index is absent or top-level source watermarks moved since its last pass."""
+    from ouroboros.memory_index import maintenance_due
+
+    return maintenance_due(root, row, child=child)
+
+
+def _memory_index_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[str, Any]:
+    from ouroboros.memory_index import SCHEMA_VERSION, source_watermark, sync_index
+
+    try:
+        report = sync_index(root)
+    except Exception as exc:
+        if not _contention(exc):
+            maintenance_jobs.record(root, "memory_index", state="failed")
+        raise
+    mark = source_watermark(root)
+    maintenance_jobs.record(
+        root, "memory_index", state="done", schema_version=SCHEMA_VERSION,
+        watermark=mark, synced=report.synced, pruned=report.pruned, rebuilt=report.rebuilt,
+    )
+    return {"state": "done", "items": report.synced + report.pruned}
+
+
 def _hot_facts_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], child: bool) -> bool:
     """Rows written before the hot-fact columns (or by an older writer since) wait for a classification
     pass (``store_hot_facts.run_hot_facts``); a root without such rows has nothing to do. A failed pass
@@ -336,6 +360,7 @@ JOBS: Dict[str, tuple] = {
     "legacy_reconcile": (_legacy_due, _legacy_run),
     "dialogue_import": (_dialogue_due, _dialogue_run),  # the owner's history: newest segments first
     "memory_tail": (_tail_due, _tail_run),  # after the import: the tail's positions are settled
+    "memory_index": (_memory_index_due, _memory_index_run),  # derived FTS5 memory index catch-up
     "hot_facts": (_hot_facts_due, _hot_facts_run),
     "body_compaction": (store_body_dedup.due, store_body_dedup.run),
     "ended_plan_asks": (plan_collection_job.due, plan_collection_job.run),

@@ -32,9 +32,13 @@ over records other than legacy sections and its own drafts.
 JSON. Every mode bounds itself at the source to ``tool_result_limit`` and names
 its continuation on the second line (``next_after_seq``, ``next: from=…`` or
 ``next_start``); a single record or row larger than one page is reached by its
-own address. Once the chronicle is active, reading writes nothing to disk.
+own address. Once the chronicle is active, address reads write nothing to disk.
+``memory_read(query=...)`` lazily updates the derived ``state/memory_index.sqlite``
+index and searches across durable memory without requiring chronicle activation;
+``memory_read(node_id='closure_brief:<project_id>')`` reads a project's closure
+brief without activation, enforcing the same project-store actor scope as ``journal_read``.
 
-Each tool first makes sure the chronicle is activated: the first call on an
+Chronicle writes, marks and room/row/record reads first make sure the chronicle is activated: the first call on an
 install imports the legacy dialogue memory once (``chronicle_import``, no model
 call), and every later call finds the receipt and goes straight on. A call that
 meets another importer waits for it; when the import still has not completed
@@ -870,6 +874,38 @@ def _address_text(address: Any) -> str:
         return "?"
 
 
+def _project_read_allowance(ctx: Any, requested_project_id: str = "") -> Tuple[Optional[str], str]:
+    """Project-store read scope matching ``journal_read``: None for root actors (cross-project)."""
+    from ouroboros.tools.project_journal import _resolve_project_id, _scope_authority  # D15->D17 lazy-only
+
+    authority, _meta = _scope_authority(ctx)
+    if authority == "root":
+        return None, ""
+    pid, err = _resolve_project_id(ctx, requested_project_id, write=False)
+    if err:
+        return "", err
+    return pid, ""
+
+
+def _forbidden(ctx: Any, message: str) -> str:
+    return _publish_tool_result(ctx, ToolResult(
+        status="blocked", code="ACCESS_BLOCKED", text=f"{message} (memory_read)",
+        meta={"operation_outcome": "completed_no_effect"},
+    ))
+
+
+def _read_closure_brief(root: Path, project_id: str, start: int, limit: int) -> str:
+    from ouroboros.memory_index import closure_brief_path
+
+    path = closure_brief_path(root, project_id)
+    if not path.is_file():
+        raise ValueError(f"closure brief for project {project_id!r} not found")
+    raw = path.read_bytes()
+    head = f"[closure_brief {project_id}; project {project_id}; {len(raw)} bytes]"
+    return _window(head, raw.decode("utf-8", errors="replace"), start, limit,
+                   lambda end: f"memory_read(node_id='closure_brief:{project_id}', start={end})")
+
+
 def _read_node(root: Path, node_id: str, start: int, limit: int, revision: str = "") -> str:
     store = _existing_store(root)
     record = store.get(node_id) if store is not None else None
@@ -913,38 +949,93 @@ def _read_rooms(root: Path, store: ChronicleStore, start: int, limit: int) -> st
 @completed_local_read
 def _memory_read(ctx: Any, node_id: str = "", room_id: Any = None, after_seq: int = 0, rows: bool = False,
                  task_id: str = "", period: Any = None, source_ref: Any = None, start: int = 0, revision: str = "",
+                 query: str = "", scope: str = "", include_archived: bool = False, limit: Any = None,
                  **bounds: Any) -> str:
     unknown = sorted(set(bounds) - {"from", "to"})
     if unknown:
         return _arg_error(ctx, f"unknown argument(s): {', '.join(unknown)}")
+    has_query = query is not None and query != ""
+    if has_query:
+        if not isinstance(query, str) or not query.strip():
+            return _arg_error(ctx, "query must be a non-empty string")
+        if (node_id or source_ref or rows or (room_id is not None and str(room_id) != "")
+                or after_seq or revision or bounds or task_id or period or start):
+            return _arg_error(
+                ctx, "query is mutually exclusive with node_id, source_ref, rows=true, room_id, after_seq and revision"
+            )
+        if not isinstance(include_archived, bool):
+            return _arg_error(ctx, "include_archived must be a boolean")
+        if scope is not None and not isinstance(scope, str):
+            return _arg_error(ctx, "scope must be a string")
+        hit_limit = 10 if limit is None else limit
+        if isinstance(hit_limit, bool) or not isinstance(hit_limit, int) or not (1 <= hit_limit <= 50):
+            return _arg_error(ctx, "limit must be an integer between 1 and 50")
+        char_limit = tool_result_limit("memory_read")
+        try:
+            from ouroboros.memory_index import format_search_result, search_memory
+
+            allowed_project_id, scope_error = _project_read_allowance(ctx)
+            if scope_error:
+                return _forbidden(ctx, scope_error)
+            root = _root(ctx)
+            result = search_memory(
+                root, query, scope=str(scope or ""), include_archived=include_archived, limit=hit_limit,
+                allowed_project_id=allowed_project_id,
+            )
+            text = format_search_result(result, max_chars=char_limit)
+            meta = {
+                "memory_search_query": result.query,
+                "memory_search_scope": result.scope,
+                "memory_search_include_archived": result.include_archived,
+                "memory_search_limit": result.limit,
+                "memory_search_hits": result.hit_count,
+                "memory_search_elapsed_ms": result.elapsed_ms,
+                "memory_search_rebuilt": result.rebuilt,
+            }
+        except ValueError as exc:
+            return _arg_error(ctx, str(exc))
+        except (OSError, TimeoutError) as exc:
+            return _failure(ctx, exc)
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=text, meta=meta))
+    if scope or include_archived or limit is not None:
+        return _arg_error(ctx, "scope, include_archived and limit require query")
     if sum(bool(mode) for mode in (node_id, source_ref, rows)) > 1:
         return _arg_error(ctx, "choose one mode: node_id, source_ref, rows=true, or a room's records")
     if revision and not node_id:
         return _arg_error(ctx, "revision reads one record (node_id) as of that revision")
     if type(after_seq) is not int or after_seq < 0 or type(start) is not int or start < 0:
         return _arg_error(ctx, "after_seq and start are non-negative integers")
-    limit = tool_result_limit("memory_read")
+    char_limit = tool_result_limit("memory_read")
+    is_closure_brief = isinstance(node_id, str) and node_id.startswith("closure_brief:")
+    if is_closure_brief and revision:
+        return _arg_error(ctx, "closure_brief nodes do not support revision")
+    if is_closure_brief:
+        _allowed, scope_error = _project_read_allowance(ctx, str(node_id)[len("closure_brief:"):])
+        if scope_error:
+            return _forbidden(ctx, scope_error)
     try:
         root = _root(ctx)
-        store = None if source_ref else _activated(root)  # a retained source is verified on read, without the chronicle
+        store = None if (source_ref or is_closure_brief) else _activated(root)  # retained sources and closure briefs need no chronicle activation
         if source_ref:
-            text = _read_source(root, source_ref, start, limit)
+            text = _read_source(root, source_ref, start, char_limit)
         elif str(room_id) == "*":
-            text = _read_rooms(root, store, start, limit)
+            text = _read_rooms(root, store, start, char_limit)
         elif str(room_id) == "candidates":
             candidates = store.pending_candidates()
             body = "\n".join(f"- {r['id']}; room {r['room_id']}; signed by {draft_signer(r['author'])}; "
                 f"memory_read(node_id='{r['id']}'); chronicle_write(kind='decision', target_id='{r['id']}', accepted=true/false, reason='...')"
                 for r in candidates)
-            text = _window(f"Drafts awaiting a decision: {len(candidates)}", body, start, limit,
+            text = _window(f"Drafts awaiting a decision: {len(candidates)}", body, start, char_limit,
                            lambda n: f"memory_read(room_id='candidates', start={n})")
+        elif is_closure_brief:
+            text = _read_closure_brief(root, str(node_id)[len("closure_brief:"):], start, char_limit)
         elif node_id:
-            text = _read_node(root, str(node_id), start, limit, str(revision or ""))
+            text = _read_node(root, str(node_id), start, char_limit, str(revision or ""))
         elif rows:
             text = _read_rows(root, _room(ctx, root, room_id), {**bounds, "task_id": task_id, "period": period},
-                              start, limit)
+                              start, char_limit)
         else:
-            text = _read_records(root, _room(ctx, root, room_id), after_seq, limit)
+            text = _read_records(root, _room(ctx, root, room_id), after_seq, char_limit)
     except _NotActivated as exc:
         return _not_activated(ctx, exc)
     except chat_chain.RowAddressError as exc:
@@ -1092,7 +1183,7 @@ def chronicle_tools() -> List[ToolEntry]:
         "reason": {"type": "string", "description": "decision or selection: why."},
     }
     read = {
-        "node_id": {"type": "string", "description": "One record: as it acts now, its host stamp, coverage, original text, corrections and decisions."},
+        "node_id": {"type": "string", "description": "One record: as it acts now, its host stamp, coverage, original text, corrections and decisions. Also reads a project closure brief via 'closure_brief:<project_id>'."},
         "room_id": {**room, "description": room["description"] + " '*' lists every live room as one directory line (label, period, counts, reader); 'candidates' lists the helper drafts awaiting my decision."},
         "after_seq": {"type": "integer", "minimum": 0, "description": "Room records and active marks after this sequence (the previous page's next_after_seq)."},
         "rows": {"type": "boolean", "description": "true: the room's chat rows verbatim, one header line each, filtered by from/to, task_id, period, in stored order (the order from/to and next: from= follow). A room holding imported earlier messages reads by send time in its view and chat_history; here each stands where it was stored."},
@@ -1103,6 +1194,10 @@ def chronicle_tools() -> List[ToolEntry]:
         "source_ref": source,
         "start": {"type": "integer", "minimum": 0, "description": "Character position to continue a record, source or long row from (the previous page's next_start or start)."},
         "revision": {"type": "string", "description": "node_id: read the record as of this revision (its own id, or one of its correction ids, as an account's sources name them): the original and the corrections up to it; later ones are named, not shown."},
+        "query": {"type": "string", "description": "Full-text search across knowledge notes, chronicle records, project workpads/journals and closure briefs (mutually exclusive with node_id, source_ref, rows=true, room_id, after_seq, revision, task_id, period, start, from and to)."},
+        "scope": {"type": "string", "description": "query: optional scope filter (global, story, project:<id>, or room:<chat_id>)."},
+        "include_archived": {"type": "boolean", "description": "query: include archived, superseded, rejected and released records (default false)."},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "query: maximum number of ranked search hits to return (1–50, default 10)."},
     }
     mark = {
         "text": {"type": "string", "description": "What matters, in my own words."},
