@@ -37,7 +37,7 @@ export const STORAGE_GROUPS = [
 // `split` the engine's three parts (`projects` and `profiles` read by name: the server lists them whatever
 // their rank). A place this client does not know is shown by its id.
 const PLACE_WORDS = {
-    model_calls: { label: 'Model call records', why: 'The exact prompts and answers behind every decision. Kept; this screen cannot delete them.', parts: true },
+    model_calls: { label: 'Model call records', why: 'The exact prompts and answers behind every decision. Packed and retained for 14 days (held longer for active projects, open reviews, custody, or unresolved usage).', parts: true },
     engine: { label: 'Agent engine', why: 'Kept by the engine. Not a cache.', split: true },
     task_results: { label: 'Task results and files', why: 'Kept with each task.' },
     archives: { label: 'Archives', why: 'Kept. Rotated logs and backups.' },
@@ -63,6 +63,7 @@ const JOB_WORDS = {
     runtime_retirement: 'Retirement',
     custody_trash: 'Deleting moved folders',
     evidence_packing: 'Evidence packing',
+    observability_retention: 'Observability retention',
     record_compression: 'Compression',
     artifact_retention: 'Artifact retention',
 };

@@ -35,7 +35,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from ouroboros import (artifact_retention_job, delegate_capture_job, delegate_pending, maintenance_jobs,
-    maintenance_retirement, store_body_dedup,
+    maintenance_retirement, observability_retention, store_body_dedup,
                        plan_collection_job, record_compression, store, subagent_metrics)
 from ouroboros.startup_historical_audit import _REPORT_BYTES, finish_maintenance_job, spawn_maintenance_job
 
@@ -371,6 +371,7 @@ JOBS: Dict[str, tuple] = {
     "temp_sweep": (_temp_due, _temp_run),
     "sqlite_analyze": (_analyze_due, _analyze_run),
     "record_compression": (record_compression.due, record_compression.run),
+    "observability_retention": (observability_retention.due, observability_retention.run),  # before packing so evidence_packing's quiet revision stays last
     "evidence_packing": (_packing_due, _packing_run),  # last: its quiet fact follows every other write
 }
 JOB_NAMES = tuple(JOBS)

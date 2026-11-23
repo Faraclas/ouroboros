@@ -874,7 +874,7 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 425 -> 426: ``state/openrouter_models.json``, the OpenRouter catalogue every process adopts.
 # 427 -> 429: ``observability/calls/*/*``, scanned on the target before this pin moved, and
 # ``state/claudexor_route_health.json``, the engine's newest per-route failure shares (its section-2 row).
-EXPECTED_SCAN_PATHS = 436  # +state/memory_index.sqlite, state/memory_index.lock, projects/*/closure_brief.md (WI-2.1)
+EXPECTED_SCAN_PATHS = 437  # +observability/pruned_manifest.json (WI-3.2)
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

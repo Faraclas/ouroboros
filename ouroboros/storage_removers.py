@@ -27,7 +27,7 @@ from ouroboros import maintenance_jobs, store
 
 # place id -> its removers: the maintenance child's jobs that retire or shrink its bytes, and ``engine``.
 PLACE_REMOVERS: Dict[str, tuple] = {
-    "model_calls": ("evidence_packing",),
+    "model_calls": ("evidence_packing", "observability_retention"),
     "engine": ("engine",),
     "task_results": ("evidence_packing", "record_compression", "artifact_retention"),
     "archives": ("evidence_packing",),
@@ -47,7 +47,7 @@ _recent_lock = threading.Lock()
 class StorageRemover(TypedDict):
     """One remover of a place: a maintenance job's row or the engine's last retention pass."""
 
-    id: str  # engine | runtime_retirement | custody_trash | evidence_packing | record_compression | artifact_retention
+    id: str  # engine | runtime_retirement | custody_trash | evidence_packing | observability_retention | record_compression | artifact_retention
     state: str  # a job: pending | running | done | failed | never | unsupported | unavailable; the engine: completed | held | truncated | failed | none | unavailable | unsupported
     at: Optional[str]  # the job row's last write; the engine pass's end
     last_error: NotRequired[Dict[str, str]]  # a job whose last run threw: {class, at}, until a run returns normally

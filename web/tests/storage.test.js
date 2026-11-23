@@ -157,7 +157,7 @@ test('the summary names the total, the free space, the growth and the unreadable
 test('rows carry their size, growth, reason and the largest parts; growth never shows for a missing or zero delta', () => {
     const { places } = renderStorage(response({ count: count() }), { now: NOW });
     const row = (id) => places.split(/(?=data-storage-place=")/).find((chunk) => chunk.startsWith(`data-storage-place="${id}"`));
-    assert.match(row('model_calls'), /156 GB[\s\S]*\+20 GB[\s\S]*The exact prompts and answers behind every decision\. Kept; this screen cannot delete them\./);
+    assert.match(row('model_calls'), /156 GB[\s\S]*\+20 GB[\s\S]*The exact prompts and answers behind every decision\. Packed and retained for 14 days/);
     assert.match(row('model_calls'), /<summary>Largest parts<\/summary>[\s\S]*blobs[\s\S]*151 GB[\s\S]*and 3 more, 2\.0 GB/);
     assert.match(row('engine'), /Run history 76 GB · Account data 59 GB · Engine files 11 GB/);
     assert.match(row('archives'), /16 GB/);
@@ -262,6 +262,7 @@ test('each place says who removes it and how its last pass ended, unknown never 
         'Compression: 1,204 files compressed, 2.1 GB saved, in progress', 'an unfinished pass is said as such');
     assert.equal(removerLine([{ id: 'evidence_packing', state: 'never', at: null }], NOW), 'Evidence packing: not run yet');
     assert.equal(removerLine([{ id: 'artifact_retention', state: 'done', at }], NOW), 'Artifact retention: done');
+    assert.equal(removerLine([{ id: 'observability_retention', state: 'done', at }], NOW), 'Observability retention: done');
     assert.equal(removerLine(undefined, NOW), '');
 
     const view = renderStorage(response({ count: count(), removers: { engine: held, app_state: jobs, model_calls: [] } }), { now: NOW });

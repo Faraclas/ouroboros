@@ -69,9 +69,10 @@ GROUP_SERVICE_FOLDERS = "service_folders"
 GROUP_RESULT_PINS = "result_pins"
 GROUP_STALE_BACKUPS = "stale_backups"
 GROUP_SETTLED_ARTIFACT_BULK = "settled_artifact_bulk"
+GROUP_AGED_OBSERVABILITY = "aged_observability"
 GROUPS = (GROUP_WORK_FOLDERS, GROUP_WORKING_COPIES, GROUP_REVIEW_EVIDENCE, GROUP_REVIEW_CHECKOUTS,
           GROUP_LOST_COPIES, GROUP_SERVICE_FOLDERS, GROUP_RESULT_PINS, GROUP_STALE_BACKUPS,
-          GROUP_SETTLED_ARTIFACT_BULK)
+          GROUP_SETTLED_ARTIFACT_BULK, GROUP_AGED_OBSERVABILITY)
 LARGEST_ITEMS = 20
 # A retirer's typed reason -> the owner's reason (the client's sentences): results or messages
 # still being saved (late mail and call records that moved under the pass included: the next pass
@@ -563,9 +564,20 @@ class FreeSpace:
                 raise _Stopped()
             group = {"id": GROUP_SETTLED_ARTIFACT_BULK, "candidates": [], "in_use": bulk_in_use, "unreadable": bulk_unreadable}
             for b_item in bulk_items:
-                cand = _Candidate(GROUP_SETTLED_ARTIFACT_BULK, b_item["key"], b_item["path"], "settled_bulk",
-                                  inside_wait=b_item["inside_wait"], task=b_item["task_id"], row=b_item)
+                cand = _Candidate(GROUP_SETTLED_ARTIFACT_BULK, b_item["key"], b_item["path"], "settled_bulk", inside_wait=b_item["inside_wait"], task=b_item["task_id"], row=b_item)
                 cand.bytes, cand.unreadable = int(b_item["bytes"]), int(b_item.get("unreadable") or 0)
+                group["candidates"].append(cand)
+            groups.append(group)
+        if GROUP_AGED_OBSERVABILITY in self._offered:
+            from ouroboros.observability_retention import list_aged_observability_candidates
+            obs_items, obs_in_use, obs_unreadable = list_aged_observability_candidates(root, live=live, stop=self._closed)
+            if self._closed():
+                raise _Stopped()
+            group = {"id": GROUP_AGED_OBSERVABILITY, "candidates": [], "in_use": obs_in_use, "unreadable": obs_unreadable}
+            for o_item in obs_items:
+                cand = _Candidate(GROUP_AGED_OBSERVABILITY, o_item["key"], o_item["path"], "aged_obs", task=o_item.get("task_id") or "", row=o_item)
+                cand.bytes, cand.unreadable = int(o_item["bytes"]), int(o_item.get("unreadable") or 0)
+                cand.name = str(o_item["name"]) if o_item.get("name") else cand.name
                 group["candidates"].append(cand)
             groups.append(group)
         return groups
@@ -576,7 +588,7 @@ class FreeSpace:
         from ouroboros.startup_historical_audit import read_job_lines, spawn_maintenance_job
         from ouroboros.storage import PURPOSE
 
-        by_path = {str(item.path): item for item in candidates if item.layout not in ("pins", "settled_bulk")}
+        by_path = {str(item.path): item for item in candidates if item.layout not in ("pins", "settled_bulk", "aged_obs")}
         with self._lock:
             self._progress = {"done": 0, "total": len(candidates)}
         for item in candidates:
@@ -586,7 +598,7 @@ class FreeSpace:
                 item.bytes = _pins_size(item.row)
                 with self._lock:
                     self._progress["done"] += 1
-            elif item.layout == "settled_bulk":
+            elif item.layout in ("settled_bulk", "aged_obs"):
                 with self._lock:
                     self._progress["done"] += 1
         if not by_path:
@@ -639,7 +651,7 @@ class FreeSpace:
             self._size(root, repo_dir, candidates)
             for group in groups:
                 for item in sorted(group["candidates"], key=lambda item: -(item.bytes or 0))[:LARGEST_ITEMS]:
-                    if item.layout == "stale_backup" and item.row.get("name"):
+                    if item.layout in ("stale_backup", "aged_obs") and item.row.get("name") and not item.task:
                         item.name = str(item.row["name"])
                     else:
                         item.name = _title(root, item.task) if item.task else item.path.name
@@ -674,7 +686,8 @@ class FreeSpace:
                 free = {GROUP_WORK_FOLDERS: self._free_drives, GROUP_WORKING_COPIES: self._free_copies,
                         GROUP_REVIEW_EVIDENCE: self._free_seats, GROUP_REVIEW_CHECKOUTS: self._free_checkouts,
                         GROUP_RESULT_PINS: self._free_pins, GROUP_STALE_BACKUPS: self._free_stale_backups,
-                        GROUP_SETTLED_ARTIFACT_BULK: self._free_settled_bulk}.get(group["id"], self._free_leftovers)
+                        GROUP_SETTLED_ARTIFACT_BULK: self._free_settled_bulk,
+                        GROUP_AGED_OBSERVABILITY: self._free_aged_observability}.get(group["id"], self._free_leftovers)
                 free(root, group["candidates"], run)
         except _Stopped:
             run["stopped"] = True
@@ -884,10 +897,9 @@ class FreeSpace:
             self._settle(run, item, reason)
 
     def _free_stale_backups(self, root: pathlib.Path, candidates: List[_Candidate], run: Dict[str, Any]) -> None:
-        """Stale backup folders under backups/ and state/backup_dir* -> moved to custody_trash."""
+        """Move aged inactive backup directories into custody_trash."""
         from ouroboros import maintenance
         from ouroboros.artifact_retention import retire_stale_backup
-
         moved = False
         for item in candidates:
             if self._closed():
@@ -902,36 +914,38 @@ class FreeSpace:
             maintenance.child.request()
 
     def _free_settled_bulk(self, root: pathlib.Path, candidates: List[_Candidate], run: Dict[str, Any]) -> None:
-        """Evictable settled artifact bulk per task -> bounded pruned_manifest.json + custody_trash."""
+        """Prune settled bulk artifacts for previewed tasks, writing bounded tombstones."""
         from ouroboros import maintenance
         from ouroboros.artifact_retention import prune_task_artifact_bulk
-
         live, moved_any = self._probe(), False
         for item in candidates:
             if self._closed():
                 raise _Stopped()
             relpaths = [str(t["relpath"]) for t in (item.row.get("targets") or []) if isinstance(t, dict) and t.get("relpath")]
             try:
-                outcome = prune_task_artifact_bulk(
-                    root,
-                    item.task,
-                    live=live,
-                    reason="owner_storage_free",
-                    grace_days=0,
-                    only_relpaths=relpaths or None,
-                    stop=self._closed,
-                )
-                reason = str(outcome.get("reason") or "")
-                if outcome.get("removed"):
-                    moved_any = True
-                moved_dirs = bool(outcome.get("moved_dirs"))
+                outcome = prune_task_artifact_bulk(root, item.task, live=live, reason="owner_storage_free", grace_days=0, only_relpaths=relpaths or None, stop=self._closed)
+                reason, moved_dirs = str(outcome.get("reason") or ""), bool(outcome.get("moved_dirs"))
+                moved_any |= bool(outcome.get("removed"))
             except Exception:
                 log.warning("Settled artifact bulk for %s could not be pruned", item.task, exc_info=True)
-                reason = "other"
-                moved_dirs = False
+                reason, moved_dirs = "other", False
             self._settle(run, item, reason, moved=moved_dirs)
         if moved_any:
             maintenance.child.request()
+
+    def _free_aged_observability(self, root: pathlib.Path, candidates: List[_Candidate], run: Dict[str, Any]) -> None:
+        """Prune aged unheld observability packs, calls, and unreferenced blobs."""
+        from ouroboros.observability_retention import prune_observability_candidate
+        live = self._probe()
+        for item in candidates:
+            if self._closed():
+                raise _Stopped()
+            try:
+                reason = prune_observability_candidate(root, item.row, live=live, reason="owner_storage_free", stop=self._closed)
+            except Exception:
+                log.warning("Aged observability %s could not be pruned", item.key, exc_info=True)
+                reason = "other"
+            self._settle(run, item, reason, moved=False)
 
 
 def _release_pins(root: pathlib.Path, snapshot_id: str, live: Callable[[str], Optional[bool]]) -> str:
@@ -972,23 +986,8 @@ def _release_pins(root: pathlib.Path, snapshot_id: str, live: Callable[[str], Op
 free = FreeSpace()
 
 
-__all__ = [
-    "GROUPS",
-    "GROUP_LOST_COPIES",
-    "GROUP_RESULT_PINS",
-    "GROUP_REVIEW_CHECKOUTS",
-    "GROUP_REVIEW_EVIDENCE",
-    "GROUP_SERVICE_FOLDERS",
-    "GROUP_SETTLED_ARTIFACT_BULK",
-    "GROUP_STALE_BACKUPS",
-    "GROUP_WORKING_COPIES",
-    "GROUP_WORK_FOLDERS",
-    "FreeSpace",
-    "StorageFree",
-    "StorageFreeGroup",
-    "StorageFreeItem",
-    "StorageFreeKept",
-    "StorageFreeRequest",
-    "StorageFreeRun",
-    "free",
-]
+__all__ = ["GROUPS", "GROUP_AGED_OBSERVABILITY", "GROUP_LOST_COPIES", "GROUP_RESULT_PINS",
+           "GROUP_REVIEW_CHECKOUTS", "GROUP_REVIEW_EVIDENCE", "GROUP_SERVICE_FOLDERS",
+           "GROUP_SETTLED_ARTIFACT_BULK", "GROUP_STALE_BACKUPS", "GROUP_WORKING_COPIES",
+           "GROUP_WORK_FOLDERS", "FreeSpace", "StorageFree", "StorageFreeGroup",
+           "StorageFreeItem", "StorageFreeKept", "StorageFreeRequest", "StorageFreeRun", "free"]

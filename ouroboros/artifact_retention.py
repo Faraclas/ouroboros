@@ -536,6 +536,24 @@ def parse_epoch_seconds(value: Any) -> Optional[float]:
         return None
 
 
+def pending_row_hold(row: Dict[str, Any]) -> Tuple[str, str]:
+    """Shared task-row hold predicate for artifact and observability retention."""
+    for flag in (
+        "owes_synthesis",
+        "owes_terminal_projection",
+        "has_pending_promotion",
+        "delegated_runs_unreconciled",
+        "pending_drive",
+    ):
+        if int(row.get(flag) or 0) != 0:
+            return "open_custody", flag
+    if row.get("review_collection_pending") is None or int(row.get("review_collection_pending")) != 0:
+        return "open_review", "review_collection_pending"
+    if row.get("plan_collection_pending") is None or int(row.get("plan_collection_pending")) != 0:
+        return "open_custody", "plan_collection_pending"
+    return "", ""
+
+
 def task_eligible_for_bulk_prune(
     root: pathlib.Path,
     task_id: str,
@@ -567,20 +585,8 @@ def task_eligible_for_bulk_prune(
             return "unreadable", False
         if str(root_row.get("status") or "") not in FINAL_STATUSES or live(root_tid) is not False:
             return "in_use", False
-    for flag in (
-        "owes_synthesis",
-        "owes_terminal_projection",
-        "has_pending_promotion",
-        "delegated_runs_unreconciled",
-        "pending_drive",
-    ):
-        if int(row.get(flag) or 0) != 0:
-            return "in_use", False
-    # NULL means not yet classified (same convention as plan_collection_job.py) -> treat as pending.
-    for pending_col in ("review_collection_pending", "plan_collection_pending"):
-        val = row.get(pending_col)
-        if val is None or int(val) != 0:
-            return "in_use", False
+    if pending_row_hold(row)[0]:
+        return "in_use", False
     # Require any child execution drive to already be retired/gone so late copy-back cannot resurrect bulk.
     for drive_col in ("child_drive_root", "headless_child_drive_root"):
         raw_drive = str(row.get(drive_col) or "").strip()

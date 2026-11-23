@@ -450,6 +450,9 @@ def _index_segments(drive_root: Any) -> List[pathlib.Path]:
         return []
 
 
+index_segments = _index_segments
+
+
 def _rotate_index_if_needed(drive_root: Any) -> None:
     """Rotate a large hot index. Rows whose record no longer resolves are carried into
     the fresh hot index instead of being archived: an index may rotate only after

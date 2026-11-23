@@ -21,6 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from ouroboros.evidence_packs import PrunedByRetentionError  # noqa: F401 — typed retention exception
 from ouroboros.finalization_timing import (  # noqa: F401 — compatibility exports
     emit_finalization_timing, mark_last_answer, stamp_finalization_enqueue,
     task_timing, task_timing_scope, timed_phase, without_finalization_timing,
@@ -295,7 +296,15 @@ def write_blob(drive_root: pathlib.Path, payload: Any, *, kind: str = "json") ->
     path = _observability_root(pathlib.Path(drive_root)) / "blobs" / f"{digest}.{kind}.gz"
     path.parent.mkdir(parents=True, exist_ok=True)
     _chmod_private_dir(path.parent)
-    if not path.exists():
+    reused = False
+    if path.exists():
+        try:
+            os.utime(path, None)
+            _chmod_private(path)
+            reused = True
+        except FileNotFoundError:
+            reused = False
+    if not reused:
         tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
         try:
             with gzip.open(tmp, "wb", compresslevel=1) as fh:
@@ -319,8 +328,6 @@ def write_blob(drive_root: pathlib.Path, payload: Any, *, kind: str = "json") ->
                 except OSError:
                     pass
                 raise
-    else:
-        _chmod_private(path)
     return {
         "sha256": digest,
         "path": str(path),
@@ -461,6 +468,7 @@ def read_call_manifest_ref(
         from ouroboros.evidence_packs import blob_bytes, call_manifest_bytes
         from ouroboros.source_retention import manifest_version_ref
 
+        pruned_error: Optional[Exception] = None
         try:
             raw = call_manifest_bytes(
                 pathlib.Path(drive_root), safe_task, call_id,
@@ -468,7 +476,9 @@ def read_call_manifest_ref(
             )
         except PermissionError:
             raise
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
+            if isinstance(exc, PrunedByRetentionError):
+                pruned_error = exc
             try:
                 raw = blob_bytes(
                     pathlib.Path(drive_root), manifest_version_ref(pathlib.Path(drive_root), expected_sha),
@@ -476,8 +486,10 @@ def read_call_manifest_ref(
                 )
             except PermissionError:
                 raise
+            except PrunedByRetentionError:
+                raise
             except FileNotFoundError:
-                raise original_error
+                raise pruned_error or original_error
     manifest = json.loads(raw.decode("utf-8"))
     if not isinstance(manifest, dict) or str(manifest.get("task_id") or "") != str(task_id) or str(manifest.get("call_id") or "") != call_id:
         raise ValueError("observability call manifest task/call identity mismatch")
@@ -496,7 +508,9 @@ class ObservabilityPromotionSourceError(ValueError):
 
 def _promotion_source_error(exc: Exception) -> ObservabilityPromotionSourceError:
     message = str(exc)
-    if isinstance(exc, FileNotFoundError):
+    if isinstance(exc, PrunedByRetentionError):
+        reason = "pruned_by_retention"
+    elif isinstance(exc, FileNotFoundError):
         reason = "source_missing"
     elif "size or sha256 verification" in message:
         reason = "digest_mismatch"
@@ -666,6 +680,8 @@ def _is_task_source_ref(value: Any) -> bool:
 
 def _task_source_failure_reason(exc: Exception) -> str:
     message = str(exc)
+    if isinstance(exc, PrunedByRetentionError):
+        return "pruned_by_retention"
     if isinstance(exc, FileNotFoundError):
         return "source_missing"
     if "size verification" in message or "sha256 verification" in message:

@@ -29,7 +29,7 @@ UNLINK_SECTION_GAP_SEC = 0.15  # between sections: longer than a waiting writer'
 PUBLICATION_WAIT_SEC = 90.0  # a manifest's contention budget for the publication lock (not a stale-owner bound)
 FORMAT_VERSION = 2
 SUPPORTED_FORMAT_VERSIONS = frozenset({1, 2})
-INDEX_SCHEMA_VERSION = 3
+INDEX_SCHEMA_VERSION = 4
 CODEC, PRESET = "xz", 1
 MIN_DICT_SIZE, MAX_DICT_SIZE = 4096, 64 << 20
 CHECKPOINTS_REL = pathlib.PurePosixPath("source_handles/context_checkpoints")
@@ -49,6 +49,9 @@ CREATE TABLE handles (task_id TEXT NOT NULL, rel_path TEXT NOT NULL, sha256 TEXT
 CREATE TABLE call_manifests (task_id TEXT NOT NULL, call_id TEXT NOT NULL, sha256 TEXT NOT NULL,
   generation INTEGER NOT NULL, PRIMARY KEY (task_id, call_id, generation));
 CREATE TABLE swept (task_id TEXT PRIMARY KEY, stamps TEXT NOT NULL);
+CREATE TABLE pruned_tasks (task_id TEXT PRIMARY KEY, pruned_at TEXT NOT NULL, reason TEXT NOT NULL);
+CREATE TABLE pruned_members (sha256 TEXT NOT NULL, kind TEXT NOT NULL, task_id TEXT NOT NULL,
+  pruned_at TEXT NOT NULL, reason TEXT NOT NULL, PRIMARY KEY (sha256, kind));
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 _READ_CHUNK = 1 << 20
@@ -65,6 +68,27 @@ class EvidenceCorrupt(ValueError):
 class SidecarCorrupt(OSError):
     """Unreadable pack authority; restore and its preflight must refuse."""
 
+
+class PrunedByRetentionError(FileNotFoundError):
+    """``pruned_by_retention``: observability evidence was pruned by 14-day rolling retention."""
+
+    def __init__(self, message: str, *, entry: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(message)
+        self.entry = dict(entry) if isinstance(entry, dict) else {}
+
+
+def _pruned_handle(root: Any, task_id: str, rel_path: str, *, info_only: bool, include_pruned: bool) -> Any:
+    from ouroboros.observability_retention import pruned_handle_result
+    return pruned_handle_result(root, task_id, rel_path, info_only=info_only, include_pruned=include_pruned)
+
+
+def close_pack_readers(paths: List[pathlib.Path]) -> None:
+    with _READERS_LOCK:
+        for path in paths:
+            reader = _READERS.pop(str(path), None)
+            if reader is not None and reader._stream is not None:
+                with contextlib.suppress(OSError):
+                    reader._stream.close()
 
 
 def packs_dir(root: Any) -> pathlib.Path:
@@ -327,9 +351,11 @@ def _index_rows(conn: sqlite3.Connection, pack_path: pathlib.Path, sidecar: Dict
                          (task_id, str(member["path"]).removesuffix(".json"), member["sha256"], generation))
 
 
-def _index_wait(wait_sec: float = INDEX_WAIT_SEC) -> float:
+def index_wait(wait_sec: float = INDEX_WAIT_SEC) -> float:
     return store.bounded_wait(min(wait_sec, INDEX_WAIT_SEC))
 
+def index_valid(path: pathlib.Path, tier: str, *, wait_sec: float = INDEX_WAIT_SEC) -> bool:
+    return _index_valid(path, tier, wait_sec=wait_sec)
 
 def _rebuild_index(root: pathlib.Path, path: pathlib.Path, tier: str, *, wait_sec: float = INDEX_WAIT_SEC) -> None:
     """Build privately, refresh changed sidecars unlocked, then publish a still-current snapshot."""
@@ -344,6 +370,8 @@ def _rebuild_index(root: pathlib.Path, path: pathlib.Path, tier: str, *, wait_se
             with store.transaction(conn, write=True):
                 conn.execute("INSERT INTO meta VALUES ('schema_version', ?)", (str(INDEX_SCHEMA_VERSION),))
                 conn.execute("INSERT INTO meta VALUES ('built_at', ?)", (utc_now_iso(),))
+                from ouroboros.observability_retention import hydrate_pruned_index_rows
+                hydrate_pruned_index_rows(root, conn)
         while True:
             added, removed = names - indexed, indexed - names
             errors: list = []
@@ -365,8 +393,8 @@ def _rebuild_index(root: pathlib.Path, path: pathlib.Path, tier: str, *, wait_se
                     conn.execute("INSERT OR REPLACE INTO meta VALUES ('sidecar_errors', ?)",
                                  (json.dumps(list(faults.values())),))
             indexed = names
-            with store.name_lock(root, INDEX_LOCK_NAME, timeout_sec=_index_wait(wait_sec)):
-                if _index_valid(path, tier, wait_sec=_index_wait(wait_sec)):
+            with store.name_lock(root, INDEX_LOCK_NAME, timeout_sec=index_wait(wait_sec)):
+                if _index_valid(path, tier, wait_sec=index_wait(wait_sec)):
                     return  # another builder published; keep its subsequent writes too
                 names = _sidecar_names(root)
                 if names == indexed:
@@ -392,7 +420,7 @@ def open_index(root: Any, *, write: bool = False, wait_sec: float = INDEX_WAIT_S
     """
     root = pathlib.Path(root)
     path, tier = packs_dir(root) / INDEX_NAME, index_tier(root)
-    wait_sec = _index_wait(wait_sec)
+    wait_sec = index_wait(wait_sec)
     while True:
         with store.name_lock(root, INDEX_LOCK_NAME, timeout_sec=wait_sec):
             if _index_valid(path, tier, wait_sec=wait_sec):
@@ -580,6 +608,10 @@ def call_manifest_bytes(root: Any, task_id: str, call_id: str, *, expected_sha: 
     """Read one packed call manifest by ``(task_id, call_id[, expected_sha])`` with verification."""
     placements = _task_call_manifests(pathlib.Path(root), str(task_id), str(call_id), str(expected_sha or ""))
     if not placements:
+        from ouroboros.observability_retention import pruned_blob_entry, pruned_task_entry
+        entry = pruned_task_entry(root, str(task_id)) or (pruned_blob_entry(root, expected_sha) if expected_sha else None)
+        if entry is not None:
+            raise PrunedByRetentionError(f"pruned_by_retention: observability call manifest {task_id}/{call_id}.json", entry=entry)
         raise FileNotFoundError(f"observability call manifest missing: {task_id}/{call_id}.json")
     failure: Optional[Exception] = None
     for pack_path, member in placements:
@@ -606,6 +638,10 @@ def manifest_bytes_by_sha(root: Any, digest: str, *, max_bytes: Optional[int] = 
     """Read one packed ``call_manifest`` member by its exact content ``sha256``."""
     placements = _placements(pathlib.Path(root), sha256=str(digest), kind=CALL_MANIFEST)
     if not placements:
+        from ouroboros.observability_retention import pruned_blob_entry
+        entry = pruned_blob_entry(root, str(digest))
+        if entry is not None:
+            raise PrunedByRetentionError(f"pruned_by_retention: observability call manifest sha {digest}", entry=entry)
         raise FileNotFoundError(f"observability call manifest sha missing: {digest}")
     failure: Optional[Exception] = None
     for pack_path, member in placements:
@@ -748,6 +784,11 @@ def blob_bytes(root: Any, ref: Any, *, expected_kind: Optional[str] = None, max_
                     failure = exc
                 except OSError:
                     failure = EvidenceCorrupt(f"evidence_corrupt: unreadable pack {located[0].name}")
+        if failure is None or isinstance(failure, FileNotFoundError):
+            from ouroboros.observability_retention import pruned_blob_entry
+            entry = pruned_blob_entry(root, sha256)
+            if entry is not None:
+                raise PrunedByRetentionError(f"pruned_by_retention: observability blob {sha256}.{kind}.gz", entry=entry)
         raise failure or FileNotFoundError(str(root / "observability" / "blobs" / f"{sha256}.{kind}.gz"))
     finally:
         # The kept error's traceback holds this frame: kept past an exit, it is a cycle retaining the callers'
@@ -761,7 +802,8 @@ def _handle_path(root: Any, task_id: str, rel_path: str) -> pathlib.Path:
     return task_artifact_dir_path(root, task_id, create=False).joinpath(*pathlib.PurePosixPath(rel_path).parts)
 
 
-def _confined_handle(root: Any, task_id: str, rel_path: str, anchor: Any, *, info_only: bool = False) -> Any:
+def _confined_handle(root: Any, task_id: str, rel_path: str, anchor: Any, *, info_only: bool = False,
+                     include_pruned: bool = False) -> Any:
     """Preserve admitted roots' placement authority; confine their payload opens.
 
     Physical scratch custody alone never admits a pathname-opened SQLite index.
@@ -810,6 +852,9 @@ def _confined_handle(root: Any, task_id: str, rel_path: str, anchor: Any, *, inf
                     if info_only else member_bytes(*located, anchor=anchor))
         if failure is not None:
             raise failure
+        pruned = _pruned_handle(root, task_id, rel_path, info_only=info_only, include_pruned=include_pruned)
+        if pruned is not None:
+            return pruned
         if info_only:
             return None
         raise FileNotFoundError(str(loose))
@@ -849,6 +894,9 @@ def _confined_handle(root: Any, task_id: str, rel_path: str, anchor: Any, *, inf
             held.__exit__(None, None, None)
     if failure is not None:
         raise failure
+    pruned = _pruned_handle(root, task_id, rel_path, info_only=info_only, include_pruned=include_pruned)
+    if pruned is not None:
+        return pruned
     if info_only:
         return None
     raise FileNotFoundError(str(loose))
@@ -871,14 +919,17 @@ def handle_bytes(root: Any, task_id: str, rel_path: str, *, anchor: Any = None) 
         pass
     located = _locate(pathlib.Path(root), task_id=str(task_id), rel_path=rel.as_posix())
     if located is None:
+        if failure is None:
+            _pruned_handle(root, str(task_id), rel.as_posix(), info_only=False, include_pruned=False)
         raise failure or FileNotFoundError(str(loose))
     return member_bytes(*located)
 
 
-def handle_info(root: Any, task_id: str, rel_path: str, *, anchor: Any = None) -> Optional[Dict[str, Any]]:
+def handle_info(root: Any, task_id: str, rel_path: str, *, anchor: Any = None,
+                include_pruned: bool = False) -> Optional[Dict[str, Any]]:
     """Verified placement metadata; ``None`` only for absence, corruption stays explicit."""
     if anchor is not None:
-        return _confined_handle(root, task_id, rel_path, anchor, info_only=True)
+        return _confined_handle(root, task_id, rel_path, anchor, info_only=True, include_pruned=include_pruned)
     rel = pathlib.PurePosixPath(str(rel_path))
     loose = _handle_path(root, task_id, rel.as_posix())
     failure = None
@@ -894,6 +945,8 @@ def handle_info(root: Any, task_id: str, rel_path: str, *, anchor: Any = None) -
         located = _locate(pathlib.Path(root), task_id=str(task_id), rel_path=rel.as_posix())
         if located is not None:
             return {"size": int(located[1]["size"]), "sha256": located[1]["sha256"], "loose": False}
+        if include_pruned and failure is None:
+            return _pruned_handle(root, str(task_id), rel.as_posix(), info_only=True, include_pruned=True)
     if failure is not None:
         raise failure
     return None
@@ -1032,20 +1085,20 @@ def task_packable(txn: store.Txn, task_id: str) -> bool:
 
 
 
-def _walk_blob_refs(value: Any, out: List[Tuple[str, str, int]], seen: set) -> None:
+def walk_blob_refs(value: Any, out: List[Tuple[str, str, int]], seen: set) -> None:
     if isinstance(value, dict):
         try:
             sha256, kind, size = blob_ref_fields(value)
         except ValueError:
             for item in value.values():
-                _walk_blob_refs(item, out, seen)
+                walk_blob_refs(item, out, seen)
             return
         if size >= 0 and (kind, sha256) not in seen:
             seen.add((kind, sha256))
             out.append((kind, sha256, size))
     elif isinstance(value, list):
         for item in value:
-            _walk_blob_refs(item, out, seen)
+            walk_blob_refs(item, out, seen)
 
 
 def note_manifest_publication(root: Any, manifest: dict, *, extra_refs: Any = ()) -> None:
@@ -1058,9 +1111,9 @@ def note_manifest_publication(root: Any, manifest: dict, *, extra_refs: Any = ()
     with os.fdopen(fd, "ab") as journal:
         refs: list = []
         seen: set = set()
-        _walk_blob_refs(manifest, refs, seen)
+        walk_blob_refs(manifest, refs, seen)
         if extra_refs:
-            _walk_blob_refs(list(extra_refs), refs, seen)
+            walk_blob_refs(list(extra_refs), refs, seen)
         journal.write("".join(sha + "\n" for _, sha, _ in refs).encode("ascii"))
 
 
@@ -1106,13 +1159,13 @@ def manifest_blob_refs(root: Any, task_id: str) -> List[Tuple[str, str, int]]:
             first = created.timestamp() if created else (mtime if mtime is not None else 0.0)
             manifests.append((first, name, value))
     for _, _, value in sorted(manifests):
-        _walk_blob_refs(value, out, seen)
+        walk_blob_refs(value, out, seen)
         if isinstance(value, dict) and value.get("call_type") == "physical_stream":
             outer_ref = value.get("redacted_projection_ref") or value.get("full_payload_ref")
             if isinstance(outer_ref, dict):
                 with contextlib.suppress(OSError, ValueError, EvidenceCorrupt):
                     outer_payload = json.loads(blob_bytes(root, outer_ref, expected_kind="json", max_bytes=1 << 20).decode("utf-8"))
-                    _walk_blob_refs(outer_payload, out, seen)
+                    walk_blob_refs(outer_payload, out, seen)
     return out
 
 
@@ -1223,7 +1276,7 @@ def write_pack(root: Any, task_id: str, generation: int, members: List[Dict[str,
             os.fsync(handle.fileno())
         replace_atomic(tmp_pack, pack_path)
         store.fsync_directory(directory)
-        with store.name_lock(root, INDEX_LOCK_NAME, timeout_sec=_index_wait()):
+        with store.name_lock(root, INDEX_LOCK_NAME, timeout_sec=index_wait()):
             replace_atomic(tmp_sidecar, sidecar_path)  # serialize publication with index revalidation
             store.fsync_directory(directory)
     finally:

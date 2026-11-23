@@ -813,6 +813,7 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
         "skill_publish_github.py typed ambiguous remote effect; task receipt veto remains separate",
     ),
     "unexpected_publish_error": (False, "tools/skill_publish.py recoverable typed tool failure; never a task terminal"),
+    "index_not_built": (False, "gateway/memory.py HTTP 503 memory search reason; never a task terminal"),
 }
 
 _REASON_CODE_LITERAL = re.compile(r"""reason_code(?:=|["']\s*:\s*)\s*["']([a-z0-9_]+)["']""")

@@ -148,7 +148,7 @@ ouroboros/ — agent core and shared runtime (§6)
   loop_tool_execution.py, tool_call_log.py, late_tool_results.py — tool dispatch, results, per-invocation counting
   deadline_utils.py — deadline parsing and the transport-vs-logical wait seam
   observability.py, source_retention.py — private CAS: equal histories stored once, gzip-1, hardlinks (§10)
-  evidence_packs.py, evidence_packer.py — per-task xz packs (maintenance job, §5); verified addressed reads, missing ≠ `evidence_corrupt` (PERSISTENCE)
+  evidence_packs.py, evidence_packer.py, observability_retention.py — xz packs, 14d (§5); missing ≠ `evidence_corrupt` ≠ `pruned_by_retention`
   finalization_timing.py — final-event phase fields and `task_finalization_timing` (§6)
   process_logging.py — logging bootstrap, stdlib `log_observation_gap`; server alone writes `server.log`, launcher caps its pipe into `agent_stdout.log`
   model_send_seal.py — the invariant `model-visible ⟺ logged` for `model_send` (docs/MODEL_SEND_OBSERVABILITY.md)

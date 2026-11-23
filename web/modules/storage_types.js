@@ -97,7 +97,7 @@
  * leftovers no background pass removes (reviewers' files, ownerless review copies, unrecorded copies,
  * leftover environments and test-run records, Git marks of results never applied).
  * @typedef {Object} StorageFreeGroup
- * @property {string} id  // work_folders | working_copies | review_evidence | review_checkouts | lost_copies | service_folders | result_pins | stale_backups | settled_artifact_bulk
+ * @property {string} id  // work_folders | working_copies | review_evidence | review_checkouts | lost_copies | service_folders | result_pins | stale_backups | settled_artifact_bulk | aged_observability
  * @property {number} count
  * @property {number} inside_wait  // finished less than retention_days ago
  * @property {number} in_use  // live, pending, unknown or non-terminal: offered nowhere, named here
@@ -155,7 +155,7 @@
 /**
  * One remover of a place, read fresh: a maintenance job's row or the engine's last retention pass.
  * @typedef {Object} StorageRemover
- * @property {string} id  // engine | runtime_retirement | custody_trash | evidence_packing | record_compression | artifact_retention
+ * @property {string} id  // engine | runtime_retirement | custody_trash | evidence_packing | observability_retention | record_compression | artifact_retention
  * @property {string} state  // a job: pending | running | done | failed | never | unsupported | unavailable; the engine: completed | held | truncated | failed | none | unavailable | unsupported
  * @property {string|null} at  // the job row's last write; the engine pass's end
  * @property {{class: string, at: string}=} last_error  // a job whose last run threw, until a run returns normally

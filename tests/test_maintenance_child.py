@@ -321,6 +321,11 @@ def _setup_job(name, data, monkeypatch):
         art = data / "task_results" / "artifacts" / "settled"
         art.mkdir(parents=True, exist_ok=True)
         (art / "small.txt").write_text("ok\n", encoding="utf-8")
+    elif name == "observability_retention":
+        write_task_result(data, "settled", "completed", result="answer")
+        calls = data / "observability" / "calls" / "settled"
+        calls.mkdir(parents=True, exist_ok=True)
+        (calls / "call_1.json").write_text('{"call_id":"call_1","task_id":"settled"}', encoding="utf-8")
 
 
 @pytest.mark.parametrize("name", maintenance.JOB_NAMES)

@@ -465,6 +465,7 @@ D20 = "Presence"
 "ouroboros/copilot_catalog_estimate.py" = "D02"
 "ouroboros/copilot_responses_stream.py" = "D02"
 "ouroboros/observability.py" = "D16"
+"ouroboros/observability_retention.py" = "D16"  # 14-day rolling observability retention, holds, and pruned_manifest tombstones
 "ouroboros/finalization_timing.py" = "D16"
 "ouroboros/process_logging.py" = "D16"
 "ouroboros/source_retention.py" = "D16"

@@ -66,6 +66,7 @@ _APPLICATION_ID = {TIER_ENFORCED: 0x4F555345, TIER_NAME: 0x4F55534E}
 _OPEN_STATES = ("reserved", "dispatched", "unresolved")
 _OPEN_PREDICATE = ("(state IN ('reserved','dispatched','unresolved') "
                    "OR (state='settled' AND settle_reason='abandoned'))")
+OPEN_ATTEMPT_PREDICATE = _OPEN_PREDICATE
 # ``Txn.task_attempt_page``: newest first by the immutable, unique ``seq_first`` (``seq`` moves on every write).
 _TASK_PAGE_SQL = ("SELECT attempt_id, state, settle_reason, model, provider, ts_reserved, ts_dispatched, "
                   "ts_final, ts_last FROM attempts INDEXED BY attempts_task "

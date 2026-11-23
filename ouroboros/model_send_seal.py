@@ -597,7 +597,11 @@ def _reconcile_seal_directions(
             manifest = read_call_manifest_ref(root, ref, task_id=str(row.get("task_id") or ""))
             if isinstance(manifest, dict):
                 seal = manifest.get("model_send_seal")
-        except Exception:
+        except Exception as exc:
+            from ouroboros.evidence_packs import PrunedByRetentionError
+            if isinstance(exc, PrunedByRetentionError):
+                report["pruned_by_retention_attempts"] = report.get("pruned_by_retention_attempts", 0) + 1
+                continue
             seal = None
         if not isinstance(seal, dict):
             report["unlogged_attempts"] += 1

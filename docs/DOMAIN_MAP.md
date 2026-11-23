@@ -23,12 +23,12 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D13 | Safety, guards & runtime mode | 11 | 0 |
 | D14 | Skills & extensions | 70 | 0 |
 | D15 | Memory, knowledge, consciousness & self-evolution | 34 | 0 |
-| D16 | Observability, usage accounting & cost | 27 | 0 |
+| D16 | Observability, usage accounting & cost | 28 | 0 |
 | D17 | Projects, workspaces & task results | 61 | 0 |
 | D18 | Launcher, packaging, platform & shared substrate | 37 | 0 |
 | D19 | Frozen contracts (ABI) | 12 | 0 |
 | D20 | Presence | 20 | 0 |
-| **total** | | **951** | **0** |
+| **total** | | **952** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -773,6 +773,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 
 ### D11 — Gateway, server & Web UI
 
+- `ouroboros/artifact_retention_job.py`
 - `ouroboros/chat_references.py`
 - `ouroboros/client_surface.py`
 - `ouroboros/gateway/__init__.py`
@@ -811,9 +812,9 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/gateway/main_decisions.py`
 - `ouroboros/gateway/management_contracts.py`
 - `ouroboros/gateway/marketplace.py`
-- `ouroboros/gateway/memory.py`
 - `ouroboros/gateway/mcp.py`
 - `ouroboros/gateway/mcp_import_contracts.py`
+- `ouroboros/gateway/memory.py`
 - `ouroboros/gateway/model_route_contracts.py`
 - `ouroboros/gateway/models.py`
 - `ouroboros/gateway/onboarding.py`
@@ -861,7 +862,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/gateway/work_projection.py`
 - `ouroboros/gateway/work_status.py`
 - `ouroboros/gateway/ws.py`
-- `ouroboros/artifact_retention_job.py`
 - `ouroboros/maintenance.py`
 - `ouroboros/maintenance_retirement.py`
 - `ouroboros/notice_receipts.py`
@@ -1057,6 +1057,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/finalization_timing.py`
 - `ouroboros/model_send_seal.py`
 - `ouroboros/observability.py`
+- `ouroboros/observability_retention.py`
 - `ouroboros/physical_attempt_context.py`
 - `ouroboros/process_logging.py`
 - `ouroboros/source_retention.py`

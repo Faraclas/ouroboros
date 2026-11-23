@@ -449,18 +449,25 @@ def _query_data(ctx: ToolContext, *, op: str, db="current", query="", kind="", i
             # Local (caller or selected child) bytes first; the owner plane only when they are proven
             # absent there, never after a denied or corrupt read. Each loose or pack file opened stays
             # in its plane; an owner-plane file is itself admitted, not the digest's logical name.
+            from ouroboros.evidence_packs import PrunedByRetentionError
             missed = []
+            pruned_err: Optional[PrunedByRetentionError] = None
             for plane, plane_root in [(plane, root), *([(owner, canonical)] if canonical != root else [])]:
                 try:
                     raw = read_blob_ref(plane_root, dict(sha256=sha256, kind=blob_kind, encoding="gzip"),
                                         expected_kind=blob_kind, max_bytes=sql.MAX_BYTES, raw_bytes=True,
                                         admit=lambda physical: _plane_path(ctx, plane, plane_root, physical, root))
                     break
+                except PrunedByRetentionError as exc:
+                    pruned_err = pruned_err or exc
+                    missed.append(plane)
                 except FileNotFoundError:
                     missed.append(plane)
                 except PermissionError as exc:
                     raise PermissionError("".join(f"blob not found in the {p} plane; " for p in missed) + str(exc)) from None
             else:
+                if pruned_err is not None:
+                    raise pruned_err
                 raise FileNotFoundError("blob not found in the " + " or ".join(missed) + " plane" + _BLOB_KIND_HINT)
             value = json.loads(raw) if blob_kind == "json" else {"hex": raw.hex()} if blob_kind == "bin" else raw.decode("utf-8")
             source.update(sha256=sha256, blob_kind=blob_kind)
@@ -543,9 +550,18 @@ def _query_data(ctx: ToolContext, *, op: str, db="current", query="", kind="", i
                 result["saved"] = dict(path=receipt["path"], sha256=receipt["sha256"], size=receipt["bytes"],
                                        source=source, reconstructed=reconstructed)
     except (ValueError, TypeError, KeyError, IndexError, OSError, RuntimeError, RecursionError) as exc:
-        code = "access_denied" if isinstance(exc, PermissionError) else "not_found" if isinstance(exc, FileNotFoundError) else "query_failed"
-        result = dict(status="blocked" if code == "access_denied" else "unavailable" if code == "not_found" else "error",
-                      code=code, message=str(exc))
+        from ouroboros.evidence_packs import PrunedByRetentionError
+        if isinstance(exc, PermissionError):
+            code, status = "access_denied", "blocked"
+        elif isinstance(exc, PrunedByRetentionError):
+            code, status = "pruned_by_retention", "unavailable"
+        elif isinstance(exc, FileNotFoundError):
+            code, status = "not_found", "unavailable"
+        else:
+            code, status = "query_failed", "error"
+        result = dict(status=status, code=code, message=str(exc))
+        if isinstance(exc, PrunedByRetentionError) and exc.entry:
+            result["pruned"] = exc.entry
     if plane and result["status"] != "ok":  # a refusal or gap names the plane it concerns, like a result
         result.setdefault("plane", plane)
     text = _canonical(result).decode("utf-8")

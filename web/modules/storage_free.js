@@ -67,6 +67,12 @@ export const FREE_GROUPS = {
         unit: ['{n} task', '{count} tasks'],
         saved: true,
     },
+    aged_observability: {
+        label: 'Aged model call records (>14 days)',
+        loss: 'Packed evidence, loose call manifests, and unreferenced blobs older than 14 days for finished tasks with no active project, review, custody, or unresolved cost holds. A compact tombstone stays so readers recognize expired records.',
+        unit: ['{n} item', '{count} items'],
+        saved: true,
+    },
 };
 
 /** The server's typed kept reasons in the owner's words. */
