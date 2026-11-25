@@ -11,7 +11,7 @@ import { createRoomModel } from './room_model.js';
 import { openProjectCleanup, appendCleanupHistory } from './project_cleanup.js';
 
 // Installation-local labels/policy, not a core lifecycle rule or a name heuristic.
-export const MANAGED_PROJECT_IDS = Object.freeze(['viper-interface', 'viper-discord', 'viper-model-transport']);
+export const MANAGED_PROJECT_IDS = Object.freeze(['viper-interface', 'viper-discord']);
 export const canCloseProject = project => project?.id !== 'viper-interface' && project?.cleanup_allowed !== false;
 export const projectLifecycle = project => ({ active: 'active', tombstoned: 'closed', deleting: 'closing' }[project?.lifecycle] || 'unknown');
 const projectPrefix = id => `/api/projects/${encodeURIComponent(id)}/`;

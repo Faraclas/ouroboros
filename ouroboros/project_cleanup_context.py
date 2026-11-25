@@ -14,7 +14,7 @@ from ouroboros.platform_layer import pid_provably_gone
 NESTED_SCAN_DEPTH = 8
 NESTED_SCAN_ENTRIES = 4096
 
-MANAGED_PROJECT_IDS = frozenset({'viper-interface', 'viper-discord', 'viper-model-transport'})
+MANAGED_PROJECT_IDS = frozenset({'viper-interface', 'viper-discord'})
 
 
 def lease_live(lease):
