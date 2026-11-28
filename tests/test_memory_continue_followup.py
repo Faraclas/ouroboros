@@ -235,8 +235,26 @@ def test_owner_continue_sends_two_local_notes_review_readers_and_exact_dialogue(
     assert f"get_task_result(task_id={ctx.task_id!r}, include_authority=True)" in note["content"]
     payload = json.loads(_get_task_result(successor, ctx.task_id, include_authority=True))
     assert payload["authority"][review_history_view.SELECTED_VIEW_FIELD] == pointer
-    assert payload["authority"]["task_contract"] and payload["authority"]["plan_review_state"]
-    assert CURRENT in json.dumps(payload["authority"]["plan_review_state"])
+    assert payload["authority"]["task_contract"]
+    # The resolved legacy plan_review_state exceeds the 128k inline authority budget, so
+    # include_authority=True moves it whole into omitted_fields with an explicit reread recipe.
+    assert payload["partial"] is True
+    assert payload["omission_reason"] == "authority_exceeds_inline_budget"
+    assert "plan_review_state" not in payload["authority"]
+    omitted = {entry["field"]: entry for entry in payload["omitted_fields"]}
+    assert "plan_review_state" in omitted
+    reread_args = omitted["plan_review_state"]["source"]["arguments"]
+    assert reread_args["task_id"] == ctx.task_id
+    assert reread_args["authority_fields"] == ["plan_review_state"]
+    assert reread_args["source_only"] is True
+    plan_meta = json.loads(_get_task_result(successor, **reread_args))
+    assert plan_meta["authority_source"]["complete_chars"] == omitted["plan_review_state"]["complete_chars"]
+    assert plan_meta["authority_source"]["complete_sha256"] == omitted["plan_review_state"]["complete_sha256"]
+    plan_state = json.loads(_get_task_result(
+        successor, ctx.task_id, authority_fields=["plan_review_state"],
+    ))["authority"]["plan_review_state"]
+    assert plan_state
+    assert CURRENT in json.dumps(plan_state)
     covered = [read_actor_source_bytes(ctx.drive_root, ctx.task_id, item["source_ref"]).decode("utf-8")
                for item in selected["covered"]]
     assert covered and any(RATIONALE in source for source in covered), "the exact decision source stays readable"
