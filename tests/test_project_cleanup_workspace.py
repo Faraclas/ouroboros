@@ -104,3 +104,58 @@ def test_nested_terminal_workspace_needs_its_own_selection(setup, tmp_path):
     result = execute(list(tokens), tokens)
     assert [row['path'] for row in result['results']] == [str(child), str(parent)]
     assert all(row['status'] == 'removed' for row in result['results']) and not parent.exists()
+
+
+def test_parent_task_id_copy_owned_in_ui_and_agent_and_moved_away_excluded(world, tmp_path, monkeypatch):
+    from pathlib import Path
+    from ouroboros import subagent_worktrees as wt
+    data, repos, ctx, tools = world
+    wt_root = tmp_path / 'subagent_worktrees'
+    monkeypatch.setenv('OUROBOROS_SUBAGENT_WORKTREE_ROOT', str(wt_root))
+    monkeypatch.setattr('supervisor.queue.task_settlement_liveness', lambda _tid: False)
+    r.create_project(data, 'alpha', name='Alpha')
+    r.create_project(data, 'beta', name='Beta')
+    write_task_result(data, 'parent-work', 'completed', project_id='alpha')
+    # Child copies have NO own project_id; only parent_task_id links them to alpha.
+    handle = wt.provision_worktree(
+        repo_dir=repos[0], task_id='child-only', parent_task_id='parent-work',
+        worktree_root=wt_root, data_dir=data, source_is_system_repo=False)
+    handle_ui = wt.provision_worktree(
+        repo_dir=repos[0], task_id='child-ui', parent_task_id='parent-work',
+        worktree_root=wt_root, data_dir=data, source_is_system_repo=False)
+    handle_moved = wt.provision_worktree(
+        repo_dir=repos[0], task_id='child-moved', parent_task_id='parent-work',
+        worktree_root=wt_root, data_dir=data, source_is_system_repo=False)
+    for cid in ('child-only', 'child-ui', 'child-moved'):
+        write_task_result(data, cid, 'completed')  # no project_id on child record itself
+    # Moved-away negative control: child-moved is bound to beta before alpha closes.
+    r.bind_task_to_project(data, 'child-moved', 'beta', origin={'absent': 'system'})
+    r.begin_project_deletion(data, 'alpha'); r.complete_project_deletion(data, 'alpha')
+    app = Starlette(routes=collect_routes(data_dir=data))
+    app.state.drive_root = data; app.state.repo_dir = ctx.repo_dir
+    with TestClient(app) as client:
+        ui_plan = client.get('/api/projects/alpha/cleanup/plan').json()
+        ui_by_path = {t['path']: t for t in ui_plan['targets']}
+        assert not ui_by_path[handle.path]['protection'] and ui_by_path[handle.path]['copy_record']
+        assert ui_by_path[handle.path]['action'] == 'remove_if_selected'
+        assert ui_by_path[handle_moved.path]['protection'] == 'another_copy_or_copy_ancestor'
+        # Agent tool also protects child-moved and retires child-only via parent_task_id ownership.
+        tool_plan = json.loads(tools.execute_result('project_cleanup', {'project_id': 'alpha'}).text)
+        tool_by_path = {t['path']: t for t in tool_plan['targets']}
+        assert tool_by_path[handle_moved.path]['protection'] == 'another_copy_or_copy_ancestor'
+        t_row = tool_by_path[handle.path]
+        assert not t_row['protection'] and t_row['action'] == 'remove_if_selected'
+        tok = t_row['warning']['token'] if t_row['warning'] else t_row['selection_token']
+        exec_res = json.loads(tools.execute_result('project_cleanup', {
+            'project_id': 'alpha', 'action': 'execute', 'selections': [t_row['id']],
+            'paths': [t_row['path'], t_row['identity']['resolved_path'], t_row['risk']['facts']['common_dir']],
+            'confirmations': {t_row['id']: tok}}).text)
+        assert exec_res['results'][0]['status'] == 'removed' and not Path(handle.path).exists()
+        # Web UI retires child-ui (also owned only via parent_task_id).
+        ui_row2 = next(t for t in client.get('/api/projects/alpha/cleanup/plan').json()['targets'] if t['path'] == handle_ui.path)
+        assert not ui_row2['protection'] and ui_row2['action'] == 'remove_if_selected'
+        tok2 = ui_row2['warning']['token'] if ui_row2['warning'] else ui_row2['selection_token']
+        ui_rm = client.post('/api/projects/alpha/cleanup', json={
+            'mode': 'complete', 'selections': [ui_row2['id']], 'confirmations': {ui_row2['id']: tok2}})
+        assert ui_rm.status_code == 200 and ui_rm.json()['results'][0]['status'] == 'removed'
+        assert not Path(handle_ui.path).exists() and Path(handle_moved.path).exists()

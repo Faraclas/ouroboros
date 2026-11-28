@@ -15,15 +15,13 @@ def _project_resources(ctx: ToolContext, action: str, project_id: str,
         list_project_resources,
     )
     from ouroboros.tool_access_paths import canonical_data_root
-    from ouroboros.tool_access import active_tool_profile
-    from ouroboros.tools.project_journal import _resolve_project_id, _scope_authority
+    from ouroboros.tools.project_journal import _resolve_project_id
 
+    from ouroboros.tools.project_cleanup import _is_ordinary_root, _subagent_copy_access
     if action not in {"list", "add", "detach", "footprint", "record", "inspect"}:
         return _publish_tool_result(ctx, ToolResult(
             status="error", code="TOOL_ARG_ERROR", text="action must be list, add, detach, footprint, record or inspect"))
-    authority, _metadata = _scope_authority(ctx)
-    if action not in {"list", "footprint", "inspect"} and (authority != "root" or active_tool_profile(ctx) in {
-            "acting_subagent", "local_readonly_subagent"}):
+    if action not in {"list", "footprint", "inspect"} and not _is_ordinary_root(ctx):
         return _publish_tool_result(ctx, ToolResult(
             status="blocked", code="ACCESS_BLOCKED",
             text="Only an ordinary root may change project resource associations; children report to their parent."))
@@ -45,12 +43,16 @@ def _project_resources(ctx: ToolContext, action: str, project_id: str,
             selected = str(pathlib.Path(path if action == 'record' else target_path(root, pid, resource_id)).expanduser())
             if action == 'record':
                 path = selected
-            try:
-                physical_root = _root_containing_absolute_path(ctx, "read_file", selected) or "active_workspace"
-                binding = build_resolved_resource_binding(ctx, root=physical_root, operation="read", path=selected)
-                observation_error = block_reason_for_path(ctx, binding.target_path, "read_bytes", binding) or ''
-            except (OSError, ValueError) as exc:
-                observation_error = str(exc)
+            copy_verdict = _subagent_copy_access(ctx, 'read', selected) if action == 'inspect' else None
+            if copy_verdict is not None:
+                observation_error = copy_verdict
+            else:
+                try:
+                    physical_root = _root_containing_absolute_path(ctx, "read_file", selected) or "active_workspace"
+                    binding = build_resolved_resource_binding(ctx, root=physical_root, operation="read", path=selected)
+                    observation_error = block_reason_for_path(ctx, binding.target_path, "read_bytes", binding) or ''
+                except (OSError, ValueError) as exc:
+                    observation_error = str(exc)
             if observation_error:
                 if action == 'inspect':
                     return _publish_tool_result(ctx, ToolResult(status='blocked', code='ACCESS_BLOCKED', text=observation_error))
@@ -99,7 +101,7 @@ def resource_tool_entries() -> list[ToolEntry]:
             "footprint reads scoped historical observations; record declares one generated or touched target "
             "(including outside cwd), not a recursive inventory. Call before a change for before-facts; "
             "project_created is an attributed agent declaration, not host proof. Unreadable targets may be declared without observation; no rights are granted. Tool add never probes the path. inspect reads one recorded "
-            "resource/footprint id for local Git cleanup risks; no fetch, preservation or deletion. "
+            "resource/footprint id for local Git cleanup risks (ordinary roots may also inspect recorded subagent_worktrees copies via copy custody without widening file tools); no fetch, preservation or deletion. "
             "Legacy and opaque shell effects stay unknown; observations confer no deletion authority. Use the separate Safety-checked project_cleanup tool for cleanup planning/execution."),
         "parameters": {"type": "object", "properties": {
             "action": {"type": "string", "enum": ["list", "add", "detach", "footprint", "record", "inspect"]},

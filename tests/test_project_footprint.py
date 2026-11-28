@@ -183,3 +183,42 @@ def test_real_private_copy_producer_contract_is_consumed(tmp_path):
     assert target['base_sha'] == handle.base_sha
     assert f.inspect_target(root, 'alpha', target['id'])['arrangement'] == 'linked'
     assert record_files == {p: p.read_bytes() for p in record_files}
+
+
+def test_tool_inspect_recorded_private_copy_preserves_record_confinement(tmp_path, monkeypatch):
+    from ouroboros.contracts.task_constraint import TaskConstraint
+    from ouroboros.subagent_worktrees import provision_worktree
+    from ouroboros.task_results import write_task_result
+    from ouroboros.tools.project_resources import _project_resources
+    from ouroboros.tools.registry import ToolContext
+    root = tmp_path / 'data'
+    home = tmp_path / 'home'; home.mkdir()
+    workspace = tmp_path / 'work'; workspace.mkdir()
+    copies_root = tmp_path / 'copies'
+    monkeypatch.setenv('OUROBOROS_USER_FILES_ROOT', str(home))
+    monkeypatch.setenv('OUROBOROS_SUBAGENT_WORKTREE_ROOT', str(copies_root))
+    source = repo(tmp_path)
+    r.create_project(root, 'alpha', working_dir=str(workspace))
+    write_task_result(root, 'copy-task', 'completed', project_id='alpha')
+    handle = provision_worktree(repo_dir=source, task_id='copy-task', worktree_root=copies_root, data_dir=root, source_is_system_repo=False)
+    target = next(row for row in f.generated_targets(root, 'alpha')['targets'] if row['source'] == 'private_copy_record')
+    ctx = ToolContext(repo_dir=Path(__file__).parents[1], drive_root=root, task_id='root-inspector',
+                      workspace_root=workspace, workspace_mode='external', is_direct_chat=True)
+    ctx.project_id = 'alpha'; ctx.task_metadata = {'delegation_role': 'root'}
+    inspected = json.loads(_project_resources(ctx, 'inspect', 'alpha', resource_id=target['id']))
+    assert inspected['arrangement'] == 'linked' and inspected['status'] == 'repository'
+    # Recording an unrecorded directory inside copies_root must NOT acquire read/inspect authority.
+    unrecorded = copies_root / 'copies.noindex' / 'unrecorded'; unrecorded.mkdir(parents=True)
+    rec = json.loads(_project_resources(ctx, 'record', 'alpha', path=str(unrecorded), origin='project_created'))
+    assert rec['observation'] is None and rec['observation_error']
+    assert 'Unrecorded path' in _project_resources(ctx, 'inspect', 'alpha', resource_id=rec['id'])
+    # Subagents remain blocked from inspecting sibling/unassigned copies under OUROBOROS_SUBAGENT_WORKTREE_ROOT,
+    # while an acting_subagent inspecting its OWN active_workspace copy keeps its existing read access.
+    ctx.is_direct_chat = False; ctx.task_metadata = {'parent_task_id': 'parent', 'delegation_role': 'subagent'}
+    ctx.task_constraint = TaskConstraint(mode='local_readonly_subagent')
+    assert 'ordinary root' in _project_resources(ctx, 'inspect', 'alpha', resource_id=target['id'])
+    ctx.workspace_root = Path(handle.path)
+    ctx.workspace_mode = 'self_worktree'
+    ctx.task_constraint = TaskConstraint(mode='acting_subagent', surface='self_worktree', write_root=handle.path)
+    own_inspected = json.loads(_project_resources(ctx, 'inspect', 'alpha', resource_id=target['id']))
+    assert own_inspected['arrangement'] == 'linked' and own_inspected['status'] == 'repository'

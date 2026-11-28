@@ -199,7 +199,14 @@ def _plan(drive_root, project_id, mode, system_repo_dir, projects, authorize=Non
             for copy, copy_identity in copy_identities:
                 relation = overlap(observed, copy_identity)
                 owner = copy.get('task_id')
-                owned = owner in facts_context['task_ids'] or owner == f'project_{project_id}'
+                parent = copy.get('parent_task_id')
+                owner_binding = facts_context['bindings'].get(owner)
+                moved_away = isinstance(owner_binding, dict) and owner_binding.get('project_id') != project_id
+                owned = (not moved_away) and (
+                    owner in facts_context['task_ids']
+                    or (bool(parent) and parent in facts_context['task_ids'])
+                    or owner == f'project_{project_id}'
+                )
                 if relation == 'same' and owned:
                     copy_record = copy
                 elif relation:
@@ -350,9 +357,63 @@ def _remove(target):
         path.unlink()
 
 
+def _copy_source_git_dir(copy_record):
+    if not isinstance(copy_record, dict):
+        return None
+    git_dir = copy_record.get('git_dir')
+    if isinstance(git_dir, str) and git_dir.strip():
+        return pathlib.Path(git_dir).expanduser().resolve(strict=False)
+    # Legacy records lack git_dir; repo_dir/.git fails safe to generic authorize() if source was linked.
+    source = copy_record.get('repo_dir') or copy_record.get('target_root')
+    if isinstance(source, str) and source.strip():
+        return (pathlib.Path(source).expanduser() / '.git').resolve(strict=False)
+    return None
+
+
+def _linked_common_dir_denial(target, authorize, common_dir_authorize=None):
+    common_dir = target.get('risk', {}).get('facts', {}).get('common_dir')
+    if not common_dir:
+        return authorize(common_dir) if authorize else ''
+    expected = _copy_source_git_dir(target.get('copy_record'))
+    resolved_common = pathlib.Path(common_dir).expanduser().resolve(strict=False)
+    if expected is not None and resolved_common == expected:
+        return common_dir_authorize(common_dir) if common_dir_authorize else ''
+    return authorize(common_dir) if authorize else ''
+
+
+def _risk_only_removed_batch_siblings(prev_risk, curr_risk, removed_paths, removed_branches):
+    if not removed_paths or prev_risk.get('arrangement') != 'linked' or curr_risk.get('arrangement') != 'linked':
+        return False
+    prev_facts, curr_facts = prev_risk.get('facts') or {}, curr_risk.get('facts') or {}
+    prev_trees, curr_trees = prev_facts.get('worktrees'), curr_facts.get('worktrees')
+    if not isinstance(prev_trees, list) or not isinstance(curr_trees, list):
+        return False
+    if [w for w in prev_trees if w not in removed_paths] != curr_trees:
+        return False
+    common = curr_facts.get('common_dir')
+    common_key = str(pathlib.Path(common).expanduser().resolve(strict=False)) if common else ''
+    max_branch_drop = removed_branches.get(common_key, 0)
+    prev_bwu, curr_bwu = prev_facts.get('branches_without_upstream'), curr_facts.get('branches_without_upstream')
+    if prev_bwu != curr_bwu:
+        if not (isinstance(prev_bwu, int) and isinstance(curr_bwu, int) and 0 <= prev_bwu - curr_bwu <= max_branch_drop):
+            return False
+    prev_cnirt, curr_cnirt = prev_facts.get('commits_not_in_remote_tracking'), curr_facts.get('commits_not_in_remote_tracking')
+    if prev_cnirt != curr_cnirt:
+        if not (max_branch_drop > 0 and isinstance(prev_cnirt, int) and isinstance(curr_cnirt, int)
+                and 0 <= curr_cnirt <= prev_cnirt):
+            return False
+    normalized_facts = {
+        **prev_facts,
+        'worktrees': curr_trees,
+        'branches_without_upstream': curr_bwu,
+        'commits_not_in_remote_tracking': curr_cnirt,
+    }
+    return {**prev_risk, 'facts': normalized_facts} == curr_risk
+
+
 def cleanup_execute(drive_root, project_id, mode, selections, confirmations, decided_by,
-                    system_repo_dir=None, *, authorize=None, read_authorize=None, pending_request=None,
-                    select_all_eligible=False, excluded_ids=(), targets_sha256=''):
+                    system_repo_dir=None, *, authorize=None, read_authorize=None, common_dir_authorize=None,
+                    pending_request=None, select_all_eligible=False, excluded_ids=(), targets_sha256=''):
     """Replan, confirm current warnings, persist intent, then remove selected paths.
 
     authorize is the tool caller's existing physical read/write authority check;
@@ -413,7 +474,7 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
             if not reason and authorize:
                 reason = authorize(target['path']) or ''
                 if not reason and target['risk'].get('arrangement') == 'linked':
-                    reason = authorize(target['risk']['facts']['common_dir']) or ''
+                    reason = _linked_common_dir_denial(target, authorize, common_dir_authorize) or ''
             reasons[tid] = reason
         # A selected parent must not swallow a retained child, including a child
         # refused for a stale confirmation. Iterate until ancestor retention settles.
@@ -438,6 +499,7 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
         project['cleanup_history'] = [*history, intent]
         registry._save(drive_root, data)  # reconstruction is durable BEFORE deleting its checkout
     results = []
+    removed_siblings, removed_branches = set(), {}
     history_error = ''
     try:
         for tid, target in sorted(((tid, t) for tid, t in targets.items() if tid in effective_selections),
@@ -464,7 +526,10 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
                             status, reason = 'changed_since_confirmation', 'target_identity_changed'
                         elif now['retain_reason']:
                             status, reason = 'refused', now['retain_reason']
-                        elif confirmation_reason(now):
+                        elif confirmation_reason(now) and not (
+                                not confirmation_reason(target)
+                                and _risk_only_removed_batch_siblings(
+                                    target['risk'], now['risk'], removed_siblings, removed_branches)):
                             status, reason = 'changed_since_confirmation', 'risk_or_selection_changed'
                         elif any(child['id'] != tid and _preview_overlap(now['identity'], child['identity']) in {'same', 'contains'}
                                  and (child['id'] not in effective_selections or child['retain_reason'] or reasons.get(child['id'])
@@ -474,7 +539,10 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
                             status, reason = 'refused', 'contains_retained_target'
                         elif custody.contains_mount(now['identity']['resolved_path'], mounts):
                             status, reason = 'refused', 'mount_point_or_contains_mount'
-                        elif authorize and authorize(now['path']):
+                        elif authorize and (
+                                authorize(now['path'])
+                                or (now['risk'].get('arrangement') == 'linked'
+                                    and _linked_common_dir_denial(now, authorize, common_dir_authorize))):
                             status, reason = 'refused', 'physical_access_changed'
                     if not reason:
                         if not now['exists']:
@@ -494,6 +562,12 @@ def cleanup_execute(drive_root, project_id, mode, selections, confirmations, dec
                                 _remove(now)
                             if not reason and (pathlib.Path(now['path']).exists() or pathlib.Path(now['path']).is_symlink()):
                                 status, reason = 'partially_removed', 'target_survived_removal'
+                            elif not reason:
+                                removed_siblings.update((now['path'], now['identity']['resolved_path']))
+                                common = (now.get('risk') or {}).get('facts', {}).get('common_dir')
+                                if common and (now.get('copy_record') or {}).get('branch'):
+                                    key = str(pathlib.Path(common).expanduser().resolve(strict=False))
+                                    removed_branches[key] = removed_branches.get(key, 0) + 1
                 except Exception as exc:
                     # rmtree may have removed some entries before raising. Never
                     # report an untouched failure (or success) for that outcome.
