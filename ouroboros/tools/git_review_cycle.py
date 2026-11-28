@@ -374,84 +374,87 @@ def _finalize_blocked_review(
         return f"{combined_msg}\n\n---\n{warning}"
     return combined_msg
 
-def _review_cycle_infra_failure(
-    ctx: ToolContext,
-    commit_message: str,
-    commit_start: float,
-    message: str,
-) -> Dict[str, Any]:
+def _review_cycle_infra_failure(ctx: ToolContext, commit_message: str, commit_start: float, message: str) -> Dict[str, Any]:
     """Record and return one fail-closed stage-cycle infrastructure result."""
     if not bool(getattr(ctx, "_review_resume_pending", False)):
         _git()._record_commit_attempt(
-            ctx,
-            commit_message,
-            "failed",
-            block_reason="infra_failure",
-            block_details=message,
-            duration_sec=time.time() - commit_start,
+            ctx, commit_message, "failed", block_reason="infra_failure",
+            block_details=message, duration_sec=time.time() - commit_start,
         )
     return {"status": "failed", "message": message}
 
 
 def _stage_candidate_for_review(
-    ctx: ToolContext,
-    commit_message: str,
-    commit_start: float,
-    *,
-    paths: Optional[List[str]],
-    came_from_detached_checkout: bool,
+    ctx: ToolContext, commit_message: str, commit_start: float, *,
+    paths: Optional[List[str]], came_from_detached_checkout: bool,
 ) -> tuple[List[str], Optional[List[str]], Optional[Dict[str, Any]]]:
     """Stage the candidate and return its paths without invoking any reviewer."""
-    def git_failure(action: str, exc: Exception):
-        return [], None, _git()._review_cycle_infra_failure(
+    def git_failure(action: str, exc: Exception, *, preserve_index: bool = False):
+        error = _git()._review_cycle_infra_failure(
             ctx, commit_message, commit_start, _publish_git_error(
                 ctx, f"⚠️ GIT_ERROR ({action}): {_sanitize_git_error(str(exc))}",
             ),
         )
+        return [], None, ({**error, "preserve_index": True} if preserve_index else error)
 
     if not bool(getattr(ctx, "_review_resume_pending", False)):
         from ouroboros.commit_admission import auto_sync_release_metadata_if_needed
 
-        synced = auto_sync_release_metadata_if_needed(
-            ctx, pathlib.Path(ctx.repo_dir), pathlib.Path(ctx.drive_root), paths,
-        )
-        if paths is not None and synced:
-            paths = sorted(set(paths) | set(synced))
         if paths is not None:
             try:
                 safe_paths = [_git().safe_relpath(path) for path in paths if str(path).strip()]
                 required = set()
                 for parent in _merge_heads(pathlib.Path(ctx.repo_dir)):
                     required.update(_git().run_cmd(
-                        ["git", "diff", "--no-renames", "--name-only", "-z", f"HEAD...{parent}"],
-                        cwd=ctx.repo_dir,
+                        ["git", "diff", "--no-renames", "--name-only", "-z", f"HEAD...{parent}"], cwd=ctx.repo_dir,
                     ).split("\0"))
                 missing = required - {""} - set(safe_paths)
                 if missing:
-                    # Share attribution's index/worktree/untracked path universe.
                     from ouroboros.mutation_attribution import _git_status_paths
                     missing.intersection_update(_git_status_paths(pathlib.Path(ctx.repo_dir), pathspec=sorted(missing), include_ignored=True))
                 if missing:
-                    return [], None, _git()._review_cycle_infra_failure(
+                    return [], None, {**_git()._review_cycle_infra_failure(
                         ctx, commit_message, commit_start,
-                        "⚠️ GIT_PARTIAL_MERGE_BLOCKED: include all merged paths in paths before committing: "
-                        + ", ".join(sorted(missing)),
-                    )
+                        "⚠️ GIT_PARTIAL_MERGE_BLOCKED: include all merged paths in paths before committing: " + ", ".join(sorted(missing)),
+                    ), "preserve_index": True}
             except Exception as exc:
-                return [], None, _git()._review_cycle_infra_failure(
-                    ctx, commit_message, commit_start, f"⚠️ PATH_ERROR: {_sanitize_git_error(str(exc))}"
-                )
-            # A staged deletion is already absent from the index's pathspec
-            # universe. Keep its tree change without asking Git to add it again.
+                return [], None, {**_git()._review_cycle_infra_failure(
+                    ctx, commit_message, commit_start, f"⚠️ PATH_ERROR: {_sanitize_git_error(str(exc))}",
+                ), "preserve_index": True}
+            # Inspect the live index before staging: refuse unrelated staged entries without resetting them,
+            # and keep staged deletions intact without asking Git to add absent paths.
             try:
-                deleted = set(_git().run_cmd(
-                    ["git", "diff", "--cached", "--no-renames", "--diff-filter=D", "--name-only", "-z"], cwd=ctx.repo_dir,
-                ).split("\0"))
+                staged_raw = _git().run_cmd(
+                    ["git", "diff", "--cached", "--no-renames", "--name-status", "-z"], cwd=ctx.repo_dir,
+                )
             except Exception as exc:
-                return git_failure("staged-deletions", exc)
+                return git_failure("staged-index", exc, preserve_index=True)
+            fields = staged_raw.split("\0")
+            staged_pairs = [(st, p) for st, p in zip(fields[0::2], fields[1::2]) if p]
+            allowed_staged = set(safe_paths)
+            if "VERSION" in allowed_staged:
+                from ouroboros.tools.release_sync import VERSION_CARRIER_SPANS
+                allowed_staged |= {str(p) for p in VERSION_CARRIER_SPANS}
+            unrelated = sorted({p for _st, p in staged_pairs} - allowed_staged)
+            if unrelated:
+                msg = (
+                    "⚠️ GIT_ATTRIBUTION_BLOCKED: unrelated paths are already staged in the Git index "
+                    f"outside selected paths ({', '.join(unrelated)}). Preserve or unstage those "
+                    "entries before committing; commit_reviewed will not silently reset or commit them."
+                )
+                _git()._record_commit_attempt(
+                    ctx, commit_message, "blocked", block_reason="mutation_attribution",
+                    block_details=msg, duration_sec=time.time() - commit_start, phase="preflight",
+                )
+                return [], None, {"status": "blocked", "block_reason": "mutation_attribution", "message": msg, "preserve_index": True}
+            synced = auto_sync_release_metadata_if_needed(ctx, pathlib.Path(ctx.repo_dir), pathlib.Path(ctx.drive_root), safe_paths)
+            if synced:
+                safe_paths = paths = sorted(set(safe_paths) | {_git().safe_relpath(p) for p in synced if str(p).strip()})
+            deleted = {p for st, p in staged_pairs if st == "D"}
             add_cmd = ["git", "add"] + [path for path in safe_paths if path not in deleted
                 or (pathlib.Path(ctx.repo_dir) / path).exists() or (pathlib.Path(ctx.repo_dir) / path).is_symlink()]
         else:
+            auto_sync_release_metadata_if_needed(ctx, pathlib.Path(ctx.repo_dir), pathlib.Path(ctx.drive_root), None)
             _git()._ensure_gitignore(ctx.repo_dir)
             add_cmd = ["git", "add", "-A"]
         try:
@@ -985,6 +988,7 @@ def _run_non_committing_review_cycle(
     finally:
         try:
             if not (_git()._review_custody_pending(ctx)
+                    or bool((locals().get("outcome") or {}).get("preserve_index"))
                     or (bool(getattr(ctx, "_review_resume_pending", False))
                         and (locals().get("outcome") or {}).get("status") != "passed")):
                 _git().run_cmd(["git", "reset", "HEAD", "--", ":/"], cwd=ctx.repo_dir)

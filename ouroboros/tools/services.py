@@ -1162,7 +1162,9 @@ def get_tools() -> List[ToolEntry]:
                     "default": "",
                     "description": (
                         "Omit for active_workspace; use system_repo[/subdir] for Ouroboros. "
-                        "Docker backend aliases inside active_workspace are accepted; skill payload services are not supported."
+                        "task_drive, artifact_store, user_files (Deliverables; user_files/<subdir> for non-runtime home subdirs) "
+                        "and authorized absolute cwd forms, including Docker backend aliases inside active_workspace, are accepted; "
+                        "skill payload services are not supported."
                     ),
                 },
                 "name": {"type": "string", "default": "service"},

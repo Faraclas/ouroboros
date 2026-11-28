@@ -203,3 +203,50 @@ def test_every_short_view_keeps_current_handoff_disclosures(tmp_path, view, unch
     answer_hash = value["answer_sha256"]
     answer = json.loads(results._get_task_result(ctx, "child", view="answer", known_result_sha256=answer_hash))
     assert "answer" in answer and not answer.get("result_unchanged")
+
+
+def test_full_outcome_summary_bounds_huge_artifact_bundle_and_swarm_receipt_without_hiding_failures(tmp_path):
+    """Plain get_task_result/view=full bounds massive artifact_bundle/swarm_receipt while keeping failures and evidence counts exact."""
+    artifacts = [{
+        "kind": "task_artifact", "name": f"file-{i:03d}.txt", "path": f"/tmp/child/file-{i:03d}.txt",
+        "size": i + 1, "sha256": f"{i:064x}",
+        "status": "failed" if i == 350 else "ready",
+        "errors": ["copy failed"] if i == 350 else [],
+    } for i in range(400)]
+    bundle = {"schema_version": 1, "status": "failed", "artifacts": artifacts, "errors": ["1 failed"]}
+    swarm = {
+        "root_task_id": "child", "state": "closed", "parallelism": {"peak": 3},
+        "cost": {"total_usd": 2.0, "known_final_usd": 2.0,
+                 "attempts": [{"attempt": i, "model": "m", "tokens": i} for i in range(400)]},
+        "supervisor_context_pressure": [{"round": i, "tokens": i * 500, "note": "x" * 80} for i in range(200)],
+    }
+    _write(tmp_path, artifact_status="failed", artifacts=artifacts, artifact_bundle=bundle, swarm_receipt=swarm)
+    ctx = _ctx(tmp_path)
+
+    full_text = results._get_task_result(ctx, "child")
+    assert full_text == results._get_task_result(ctx, "child", view="full")
+    assert len(full_text) < 40_000
+    summary_raw = full_text.split("[SUBTASK_OUTCOME]\n", 1)[1].split("\n[/SUBTASK_OUTCOME]", 1)[0]
+    summary = json.loads(summary_raw)
+
+    ab = summary["artifact_bundle"]
+    assert ab["status"] == "failed" and ab["artifacts_total"] == 400 and ab["artifacts_omitted"] == 380
+    assert len(ab["artifacts"]) == 20
+    assert ab["artifacts"][0]["name"] == "file-350.txt" and ab["artifacts"][0]["status"] == "failed"
+    assert ab["full_source"] == {"tool": "get_task_result", "arguments": {
+        "task_id": "child", "authority_fields": ["artifact_bundle"], "source_only": True}}
+
+    sr = summary["swarm_receipt"]
+    assert sr["root_task_id"] == "child" and sr["parallelism"] == {"peak": 3}
+    assert sr["cost"]["total_usd"] == 2.0 and "attempts" not in sr["cost"]
+    assert "cost.attempts" in sr["omitted_sections"] and sr["omitted_sections"]["cost.attempts"]["count"] == 400
+    assert "supervisor_context_pressure" in sr["omitted_sections"]
+    assert sr["omitted_sections"]["supervisor_context_pressure"]["count"] == 200
+    assert sr["full_source"] == {"tool": "get_task_result", "arguments": {
+        "task_id": "child", "authority_fields": ["swarm_receipt"], "source_only": True}}
+
+    # view=evidence must preserve the TRUE 400-artifact count, not the capped 20-item slice.
+    evidence = json.loads(results._get_task_result(ctx, "child", view="evidence"))
+    assert evidence["artifact_facts"]["artifact_count"] == 400
+    assert evidence["artifact_facts"]["artifacts_omitted"] == 390
+    assert len(evidence["artifact_facts"]["artifacts"]) == 10

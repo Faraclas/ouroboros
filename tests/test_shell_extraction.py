@@ -129,8 +129,10 @@ def test_shell_catalog_schema_bytes_and_handler_owners_are_stable():
     # tool-reuse sprint (20.10): run_script says the selected cwd is not on Python's
     # import path and that a reusable script lives in a skill payload run with run_command.
     # Rolled for current-byte capture: explicit eligible outputs need no same-run write.
+    # Rolled for 0bdaef87: both cwd descriptions clarify user_files (Deliverables;
+    # user_files/<subdir> for non-runtime home subdirs).
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "a92485821fa34c72f5cfbb4656e714fb80310a4025bcbe076ecb5573b5585121"
+        "ab5becec482d6f9a235a4924fd58252d2e607e204b2dbebe94e65a92e9b65b39"
     )
     original = json.loads(schema_bytes)
     for schema in original:
@@ -147,7 +149,7 @@ def test_shell_catalog_schema_bytes_and_handler_owners_are_stable():
     # sentence and its local-POSIX limit), so this derived digest rolled with the one above.
     assert hashlib.sha256(json.dumps(original, sort_keys=True, ensure_ascii=False,
                                     separators=(",", ":")).encode()).hexdigest() == (
-        "4ba056c5559b6d6766712f1235ad06d7dc2d36fd76a3103a5b3d6896cdecd0f6"
+        "60a7353172991f5b5818688647c14420477e6c989a69cacc5e0a1a926ded092c"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)

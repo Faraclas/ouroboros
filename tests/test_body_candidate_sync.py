@@ -292,7 +292,7 @@ def test_advanced_merge_preserves_authored_protected_boundary(candidate, monkeyp
     assert git(repo, "rev-parse", "MERGE_HEAD") == accepted
 
 
-@pytest.mark.parametrize("action", ["add", "status", "staged-status", "staged-names", "staged-deletions"])
+@pytest.mark.parametrize("action", ["add", "status", "staged-status", "staged-names", "staged-index"])
 @pytest.mark.parametrize("resuming", [False, True])
 def test_staging_git_failure_keeps_publication_and_original_error(candidate, monkeypatch, action, resuming):  # noqa: F811
     import time
@@ -308,8 +308,8 @@ def test_staging_git_failure_keeps_publication_and_original_error(candidate, mon
     def command(argv, **kw):
         if argv[1] == "rev-parse":
             return str(ctx.repo_dir / ".git" / "MERGE_HEAD")
-        if "--diff-filter=D" in argv:
-            if action == "staged-deletions":
+        if "--no-renames" in argv and "-z" in argv:
+            if action == "staged-index":
                 raise RuntimeError("primary")
             return ""
         if argv[1] == "add" and action == "add":
@@ -330,11 +330,12 @@ def test_staging_git_failure_keeps_publication_and_original_error(candidate, mon
     paths, snapshot, error = owner._stage_candidate_for_review(
         ctx, "fixture", time.time(), paths=["change.py"], came_from_detached_checkout=False,
     )
-    if resuming and action in {"add", "staged-deletions"}:
+    if resuming and action in {"add", "staged-index"}:
         assert error is None and paths == ["change.py"] and not observed
     else:
         assert paths == [] and snapshot is None and error["status"] == "failed"
         assert error["message"] == f"⚠️ GIT_ERROR ({action}): primary"
+        assert bool(error.get("preserve_index")) is (action == "staged-index")
         assert observed == (["publish"] if resuming else ["publish", "record"])
 
 
@@ -416,12 +417,24 @@ def test_merge_path_selection_keeps_noncontent_changes_and_foreign_dirt(candidat
     assert "GIT_PARTIAL_MERGE_BLOCKED" in refused["message"]
     if kind == "restore":
         (repo / "change.py").write_bytes(b"restored = True\n")
-    classified, _, error = owner._stage_candidate_for_review(
+    classified, _, blocked = owner._stage_candidate_for_review(
         ctx, "shape", time.time(), paths=paths, came_from_detached_checkout=False)
-    assert error is None and expected <= set(classified)
+    assert classified == [] and blocked is not None and blocked["status"] == "blocked"
+    assert "GIT_ATTRIBUTION_BLOCKED" in blocked["message"] and "foreign.txt" in blocked["message"]
+    assert blocked.get("preserve_index") is True
+    assert git(repo, "write-tree") == index
     assert git(repo, "rev-parse", "HEAD") == authored
     assert git(repo, "rev-parse", "MERGE_HEAD") == incoming
     assert git(repo, "show", ":foreign.txt") == "preexisting work"
+    # Once foreign.txt is unstaged (still dirty in the worktree), attributed merge staging succeeds without it.
+    git(repo, "reset", "HEAD", "--", "foreign.txt")
+    classified, _, error = owner._stage_candidate_for_review(
+        ctx, "shape", time.time(), paths=paths, came_from_detached_checkout=False)
+    assert error is None and set(classified) == expected
+    assert "foreign.txt" not in set(git(repo, "diff", "--cached", "--name-only").splitlines())
+    assert git(repo, "rev-parse", "HEAD") == authored
+    assert git(repo, "rev-parse", "MERGE_HEAD") == incoming
+    assert (repo / "foreign.txt").read_bytes() == b"preexisting work\n"
 
 
 @pytest.mark.parametrize("filename", ["peer.txt", "peer[1].txt"])
@@ -730,3 +743,214 @@ def test_import_path_observation_failure_precedes_git_effect(history, monkeypatc
     assert git(candidate, "write-tree") == before
     assert git(candidate, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False) == ""
     assert not (candidate / "incoming.txt").exists()
+
+
+@pytest.mark.parametrize("shape", ["add", "modify", "staged_unstaged_split", "mode", "delete", "rename"])
+def test_preexisting_staged_foreign_entry_refused_without_reset_across_shapes(candidate, monkeypatch, shape):  # noqa: F811
+    from ouroboros.mutation_attribution import attributed_git_candidates, capture_mutation_baseline
+    from ouroboros.task_results import write_task_result
+    from ouroboros.tools import git as owner
+
+    ctx, repo = candidate, candidate.repo_dir
+    ctx.branch_dev = git(repo, "branch", "--show-current")
+    (repo / "VERSION").write_bytes(b"1.0.0\n")
+    (repo / "foreign.txt").write_bytes(b"base foreign\n")
+    git(repo, "add", "VERSION", "change.py", "foreign.txt")
+    git(repo, "commit", "-m", "base with foreign")
+    head_before = git(repo, "rev-parse", "HEAD")
+    if shape == "add":
+        (repo / "foreign_new.txt").write_bytes(b"preexisting new\n")
+        git(repo, "add", "foreign_new.txt")
+        expected_foreign = ["foreign_new.txt"]
+    elif shape == "modify":
+        (repo / "foreign.txt").write_bytes(b"staged foreign\n")
+        git(repo, "add", "foreign.txt")
+        expected_foreign = ["foreign.txt"]
+    elif shape == "staged_unstaged_split":
+        (repo / "foreign.txt").write_bytes(b"staged hunk\n")
+        git(repo, "add", "foreign.txt")
+        (repo / "foreign.txt").write_bytes(b"worktree edit\n")
+        expected_foreign = ["foreign.txt"]
+    elif shape == "mode":
+        git(repo, "config", "core.filemode", "false")
+        git(repo, "update-index", "--chmod=+x", "foreign.txt")
+        expected_foreign = ["foreign.txt"]
+    elif shape == "delete":
+        git(repo, "rm", "foreign.txt")
+        expected_foreign = ["foreign.txt"]
+    else:
+        git(repo, "mv", "foreign.txt", "foreign_renamed.txt")
+        expected_foreign = ["foreign.txt", "foreign_renamed.txt"]
+    write_task_result(ctx.drive_root, ctx.task_id, "running")
+    capture_mutation_baseline(ctx.drive_root, ctx.task_id, [{"surface_type": "system_repo", "host_root": str(repo)}])
+    (repo / "change.py").write_bytes(b"value = 42\n")
+    index_before = git(repo, "write-tree")
+    monkeypatch.setattr("ouroboros.commit_admission.auto_sync_release_metadata_if_needed",
+                        lambda *a, **kw: pytest.fail("must not auto-sync before refusing foreign staged entries"))
+    monkeypatch.setattr(owner, "_run_parallel_review", lambda *a, **kw: pytest.fail("foreign staged must not reach review"))
+    refused = owner._repo_commit_push(ctx, "Task commit", skip_advisory_review=True, skip_tests=True)
+    assert "GIT_ATTRIBUTION_BLOCKED" in refused
+    for path in expected_foreign:
+        assert path in refused
+    assert git(repo, "rev-parse", "HEAD") == head_before
+    assert git(repo, "write-tree") == index_before
+    # Non-committing review cycle must also preserve preexisting staged entries in its finally block.
+    review_only = owner._run_non_committing_review_cycle(ctx, "Review only", paths=["change.py"], skip_advisory_review=True)
+    assert review_only["status"] == "blocked" and "GIT_ATTRIBUTION_BLOCKED" in review_only["message"]
+    assert git(repo, "write-tree") == index_before
+    if shape == "staged_unstaged_split":
+        assert git(repo, "show", ":foreign.txt") == "staged hunk"
+        assert (repo / "foreign.txt").read_bytes() == b"worktree edit\n"
+    elif shape == "mode":
+        assert git(repo, "ls-files", "--stage", "--", "foreign.txt").startswith("100755 ")
+    elif shape == "delete":
+        assert git(repo, "diff", "--cached", "--diff-filter=D", "--name-only") == "foreign.txt"
+    elif shape == "rename":
+        assert set(git(repo, "diff", "--cached", "--no-renames", "--name-only").splitlines()) == {"foreign.txt", "foreign_renamed.txt"}
+    evidence = attributed_git_candidates(ctx.drive_root, ctx.task_id, repo)
+    assert evidence["blockers"] == []
+    assert evidence["candidates"] == ["change.py"]
+    assert evidence["excluded_preexisting_dirty"] == sorted(expected_foreign)
+
+
+@pytest.mark.parametrize("shape", ["untracked", "modify", "delete", "mode"])
+def test_preexisting_unstaged_foreign_work_stays_outside_committed_tree(candidate, monkeypatch, shape):  # noqa: F811
+    import os
+    from ouroboros.mutation_attribution import attributed_git_candidates, capture_mutation_baseline
+    from ouroboros.review_ledger import CouplingOutcome
+    from ouroboros.task_results import write_task_result
+    from ouroboros.tools import git as owner
+
+    ctx, repo = candidate, candidate.repo_dir
+    ctx.branch_dev = git(repo, "branch", "--show-current")
+    (repo / "VERSION").write_bytes(b"1.0.0\n")
+    (repo / "foreign.txt").write_bytes(b"base foreign\n")
+    git(repo, "add", "VERSION", "change.py", "foreign.txt")
+    git(repo, "commit", "-m", "base with foreign")
+    if shape == "untracked":
+        (repo / "foreign_untracked.txt").write_bytes(b"owner draft\n")
+        expected_foreign = ["foreign_untracked.txt"]
+    elif shape == "modify":
+        (repo / "foreign.txt").write_bytes(b"owner edit\n")
+        expected_foreign = ["foreign.txt"]
+    elif shape == "delete":
+        (repo / "foreign.txt").unlink()
+        expected_foreign = ["foreign.txt"]
+    else:
+        os.chmod(repo / "foreign.txt", 0o755)
+        expected_foreign = ["foreign.txt"]
+    write_task_result(ctx.drive_root, ctx.task_id, "running")
+    capture_mutation_baseline(ctx.drive_root, ctx.task_id, [{"surface_type": "system_repo", "host_root": str(repo)}])
+    (repo / "change.py").write_bytes(b"value = 7\n")
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
+    monkeypatch.setattr(owner, "_run_review_preflight_tests", lambda *a, **kw: None)
+    monkeypatch.setattr(owner, "_post_commit_result", lambda *a, **kw: None)
+    monkeypatch.setattr(owner, "_auto_push", lambda *a, **kw: "")
+
+    def reviewer(_ctx, _msg, **kw):
+        from ouroboros.review_dispatch import invoke_review_paid_stamp
+        invoke_review_paid_stamp(ctx._review_paid_stamp)
+        assert git(repo, "diff", "--cached", "--name-only").splitlines() == ["change.py"]
+        ctx._last_triad_raw_results = [{"slot_id": "critic", "status": "responded", "parsed": [], "raw_text": "[]"}]
+        return None, CouplingOutcome(verdict="PASS", status="responded"), "", []
+
+    monkeypatch.setattr(owner, "_run_parallel_review", reviewer)
+    result = owner._repo_commit_push(ctx, "Task only", skip_advisory_review=True)
+    assert result.startswith("OK: committed"), result
+    assert git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").splitlines() == ["change.py"]
+    evidence = attributed_git_candidates(ctx.drive_root, ctx.task_id, repo)
+    assert evidence["blockers"] == [] and evidence["excluded_preexisting_dirty"] == expected_foreign
+    if shape == "untracked":
+        assert (repo / "foreign_untracked.txt").read_bytes() == b"owner draft\n"
+    elif shape == "modify":
+        assert (repo / "foreign.txt").read_bytes() == b"owner edit\n"
+    elif shape == "delete":
+        assert not (repo / "foreign.txt").exists()
+
+
+def test_resumed_review_consumers_keep_foreign_staged_work_out_of_commits(candidate, monkeypatch):  # noqa: F811
+    import json
+    from ouroboros.mutation_attribution import capture_mutation_baseline
+    from ouroboros.review_ledger import CouplingOutcome
+    from ouroboros.task_results import write_task_result
+    from ouroboros.tools import git as owner
+
+    ctx, repo = candidate, candidate.repo_dir
+    ctx.branch_dev = git(repo, "branch", "--show-current")
+    (repo / "VERSION").write_bytes(b"1.0.0\n")
+    git(repo, "add", "VERSION", "change.py")
+    git(repo, "commit", "-m", "base")
+    (repo / "foreign.txt").write_bytes(b"owner wip\n")
+    write_task_result(ctx.drive_root, ctx.task_id, "running")
+    capture_mutation_baseline(ctx.drive_root, ctx.task_id, [{"surface_type": "system_repo", "host_root": str(repo)}])
+    (repo / "change.py").write_bytes(b"value = 9\n")
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+    monkeypatch.setattr(owner, "_run_review_preflight_tests", lambda *a, **kw: None)
+    monkeypatch.setattr(owner, "_post_commit_result", lambda *a, **kw: None)
+    monkeypatch.setattr(owner, "_auto_push", lambda *a, **kw: "")
+
+    mode = {"pending": True}
+
+    def reviewer(inner, _msg, **kw):
+        from ouroboros.review_custody import prepare_frozen_review_reconciliation
+        from ouroboros.review_dispatch import invoke_review_paid_stamp
+        if inner._review_reconcile_only:
+            prepare_frozen_review_reconciliation(inner, inner._pending_review_attempt)
+        else:
+            invoke_review_paid_stamp(inner._review_paid_stamp)
+        if mode["pending"]:
+            inner._last_triad_raw_results = [{
+                "slot_id": "triad-one", "operation_id": "pending-op", "model_id": "test/model",
+                "status": "error", "operation_state": "in_flight", "late_result_pending": True,
+                "pending_invocation_id": "inv-1", "error": "still pending",
+            }]
+            return "review pending", None, "review_late_result_pending", []
+        inner._last_triad_raw_results = [{
+            "slot_id": "triad-one", "operation_id": "pending-op", "model_id": "test/model",
+            "status": "responded", "parsed": [], "raw_text": "[]",
+        }]
+        return None, CouplingOutcome(verdict="PASS", status="responded"), "", []
+
+    monkeypatch.setattr(owner, "_run_parallel_review", reviewer)
+    # 1. Start a pending review while foreign.txt is unstaged; index retains only change.py.
+    first = owner._repo_commit_push(ctx, "Resumed commit", skip_advisory_review=True)
+    assert "reviewers are still running" in first, first
+    pending_ref = json.loads(first.split("\n", 1)[1])["review_reference"]
+    assert git(repo, "diff", "--cached", "--name-only").splitlines() == ["change.py"]
+    # 2. If foreign.txt is staged while pending, both automatic retry and explicit reference collection refuse without resetting index.
+    git(repo, "add", "foreign.txt")
+    polluted_index = git(repo, "write-tree")
+    refused_retry = owner._repo_commit_push(ctx, "Resumed commit", skip_advisory_review=True)
+    assert "REVIEWED_ATTEMPT_IN_PROGRESS" in refused_retry, refused_retry
+    assert git(repo, "write-tree") == polluted_index
+    refused_collect = owner._repo_commit_push(ctx, "Resumed commit", review_reference=pending_ref)
+    assert "REVIEW_BINDING_BLOCKED" in refused_collect, refused_collect
+    assert git(repo, "write-tree") == polluted_index
+    assert git(repo, "show", ":foreign.txt") == "owner wip"
+    # 3. Unstaging foreign.txt restores the exact pending index; collection settles to advisory handback.
+    git(repo, "reset", "HEAD", "--", "foreign.txt")
+    mode["pending"] = False
+    settled = owner._repo_commit_push(ctx, "Resumed commit", review_reference=pending_ref)
+    assert settled.startswith("Review outcome returned before commit."), settled
+    settled_ref = json.loads(settled.split("\n", 1)[1])["review_reference"]
+    # 4. If foreign.txt is staged before author continuation, continuation refuses without resetting or committing.
+    git(repo, "add", "foreign.txt")
+    head_before = git(repo, "rev-parse", "HEAD")
+    staged_before = git(repo, "write-tree")
+    refused_cont = owner._repo_commit_push(
+        ctx, "Resumed commit", review_reference=settled_ref,
+        author_disposition={"disposition": "accepted", "rationale": "Inspected."},
+    )
+    assert "GIT_ATTRIBUTION_BLOCKED" in refused_cont and "foreign.txt" in refused_cont
+    assert git(repo, "rev-parse", "HEAD") == head_before
+    assert git(repo, "write-tree") == staged_before
+    assert git(repo, "show", ":foreign.txt") == "owner wip"
+    # 5. Once unstaged, author continuation commits only change.py and preserves unstaged foreign.txt.
+    git(repo, "reset", "HEAD", "--", "foreign.txt")
+    landed = owner._repo_commit_push(
+        ctx, "Resumed commit", review_reference=settled_ref,
+        author_disposition={"disposition": "accepted", "rationale": "Inspected."},
+    )
+    assert landed.startswith("OK: committed"), landed
+    assert git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").splitlines() == ["change.py"]
+    assert (repo / "foreign.txt").read_bytes() == b"owner wip\n"

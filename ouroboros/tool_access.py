@@ -266,7 +266,22 @@ def _process_root_candidates(
     if hasattr(ctx, "drive_root"):
         for drive in _task_root_drives(ctx):
             _add_task_roots(drive)
-        candidates.append(("user_files", resource_root_path(ctx, "user_files"), "user_files", ""))
+        user_home = resource_root_path(ctx, "user_files")
+        candidates.append(("user_files", user_home, "user_files", ""))
+        if decide_tool_access(profile=profile, root="user_files", operation=operation).allow:
+            try:
+                deliverables = _deliverables_root().resolve(strict=False)
+            except Exception:
+                deliverables = None
+            if (
+                deliverables is not None
+                and not (
+                    path_is_relative_to(deliverables, user_home)
+                    or _path_is_relative_to_casefold(deliverables, user_home)
+                )
+                and not user_files_path_block_reason(ctx, deliverables)
+            ):
+                candidates.append(("user_files", deliverables, "user_files", ""))
     if include_skill:
         base, source, selected_name = _skill_payload_base(
             ctx,
@@ -283,6 +298,23 @@ def _process_root_candidates(
     ]
 
 
+def _user_files_process_cwd_path(ctx: Any) -> pathlib.Path | None:
+    """Side-effect-free exact cwd path admitted for ``user_files``, or ``None``.
+
+    Bare ``cwd='user_files'`` resolves to the configured Deliverables root; if
+    that fails validation, fall back to the home root only when home itself is
+    admitted. Never advertise a path that ``_select_process_target`` will refuse.
+    """
+    for candidate_fn in (_deliverables_root, _user_files_root):
+        try:
+            candidate = candidate_fn().resolve(strict=False)
+            if not user_files_path_block_reason(ctx, candidate):
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
 def _side_effect_free_process_roots(
     ctx: Any,
     operation: Operation,
@@ -292,13 +324,22 @@ def _side_effect_free_process_roots(
     include_skill: bool = False,
 ) -> list[tuple[str, pathlib.Path]]:
     """Project the shared process inventory without materializing any root."""
-    return [
-        (label, root)
-        for label, root, _source, _name in _process_root_candidates(
-            ctx, operation, bucket=bucket, skill_name=skill_name,
-            include_skill=include_skill,
-        )
-    ]
+    projected: list[tuple[str, pathlib.Path]] = []
+    user_files_seen = False
+    for label, root, _source, _name in _process_root_candidates(
+        ctx, operation, bucket=bucket, skill_name=skill_name,
+        include_skill=include_skill,
+    ):
+        if label == "user_files":
+            if user_files_seen:
+                continue
+            user_files_seen = True
+            effective = _user_files_process_cwd_path(ctx)
+            if effective is not None:
+                projected.append((label, effective))
+            continue
+        projected.append((label, root))
+    return projected
 
 
 def filesystem_affordance_map(ctx: Any, *, runtime_mode: str = "") -> dict[str, Any]:
@@ -350,12 +391,15 @@ def filesystem_affordance_map(ctx: Any, *, runtime_mode: str = "") -> dict[str, 
         "invisible_roots": sorted(_ALL_ROOTS - set(policy)),
         "root_paths": root_paths,
         "default_shell_cwd": shell_roots[0][0] if shell_roots else "",
-        "allowed_shell_cwd_roots": [label for label, _root in shell_roots],
+        "allowed_shell_cwd_roots": list(dict.fromkeys(label for label, _root in shell_roots)),
         "default_service_cwd": service_roots[0][0] if service_roots else "",
-        "allowed_service_cwd_roots": [label for label, _root in service_roots],
+        "allowed_service_cwd_roots": list(dict.fromkeys(label for label, _root in service_roots)),
         "git_readonly_subcommands": git_readonly_subcommands,
         "light_gated_roots": sorted(light_gated_roots),
     }
+    user_files_cwd = next((str(root) for label, root in shell_roots if label == "user_files"), "")
+    if user_files_cwd and user_files_cwd != root_paths.get("user_files"):
+        result["user_files_shell_cwd"] = user_files_cwd
     if "active_workspace" in policy:
         result["default_root"] = "active_workspace"
     if "skill_payload" in policy:
@@ -563,9 +607,13 @@ def _select_process_target(
                 continue
             if label == "user_files" and not reserved_subdir:
                 deliverables = _deliverables_root()
+                selected_result = _finish((label, deliverables, _source, _name), deliverables)
                 if materialize:
-                    deliverables.mkdir(parents=True, exist_ok=True)
-                return _finish(record, deliverables)
+                    try:
+                        selected_result[2].mkdir(parents=True, exist_ok=True)
+                    except OSError as exc:
+                        raise ValueError(f"could not create {label} cwd {selected_result[2]}: {exc}") from exc
+                return selected_result
             target = (base / safe_relpath(reserved_subdir or ".")).resolve(strict=False)
             if not path_is_relative_to(target, base):
                 raise ValueError(f"cwd escapes {label}")
@@ -580,23 +628,32 @@ def _select_process_target(
     )
     if aliased := docker_process_alias_target(ctx, operation, text, candidate_records, physical_candidates[0]):
         return _finish(*aliased)  # Identity mounts and unmapped host paths use normal roots below.
+    last_rejection: ValueError | None = None
     for target in physical_candidates:
         for record in candidate_records:
             label, base, _source, _name = record
             if path_is_relative_to(target, base):
                 try:
                     return _finish(record, target)
-                except ValueError:
+                except ValueError as exc:
+                    last_rejection = exc
                     continue
     # External-workspace host scratch remains an exact user-files path, not `/`.
     if is_external_workspace(ctx) and decide_tool_access(
         profile=profile, root="user_files", operation=operation,
     ).allow:
         for target in physical_candidates:
-            if not target.is_absolute() or user_files_path_block_reason(ctx, target):
+            if not target.is_absolute():
+                continue
+            reason = user_files_path_block_reason(ctx, target)
+            if reason:
+                if last_rejection is None:
+                    last_rejection = ValueError(reason)
                 continue
             record = ("user_files", target, "user_files", "")
             return _finish(record, target, scoped_allowed=[*allowed, ("user_files", target)])
+    if last_rejection is not None:
+        raise ValueError(f"cwd is outside allowed roots: {last_rejection}") from last_rejection
     raise ValueError("cwd is outside allowed roots")
 
 
@@ -733,15 +790,27 @@ def build_resolved_resource_binding(
             skill_name=skill_name,
             materialize=True,
         )
+        base_path = pathlib.Path(base).resolve(strict=False)
+        target_path = pathlib.Path(target).resolve(strict=False)
+        logical_base_path = None
+        if selected_root == "user_files":
+            try:
+                deliverables = _deliverables_root()
+                if path_is_relative_to(target_path, deliverables) or _path_is_relative_to_casefold(target_path, deliverables):
+                    logical_base_path = _user_files_root().resolve(strict=False)
+                    base_path = deliverables.resolve(strict=False)
+            except (OSError, TypeError, ValueError, RuntimeError):
+                pass
         return ResolvedResourceBinding(
             profile=active_tool_profile(ctx),
             root=selected_root,
             operation=operation,
-            base_path=pathlib.Path(base).resolve(strict=False),
-            target_path=pathlib.Path(target).resolve(strict=False),
+            base_path=base_path,
+            target_path=target_path,
             source=source,
             skill_name=selected_name,
             state_drive_root=canonical_data_root(ctx),
+            logical_base_path=logical_base_path,
         )
 
     normalized = normalize_root(root)

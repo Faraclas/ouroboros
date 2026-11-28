@@ -238,3 +238,149 @@ def test_unknown_authority_fields_error_lists_available_keys(tmp_path):
     assert "unknown authority_fields" in result.text
     assert "available:" in result.text
     assert "task_contract" in result.text
+
+
+def _bulk_artifacts(count: int, *, fail_index: int = -1) -> list[dict]:
+    rows = []
+    for i in range(count):
+        failed = i == fail_index
+        rows.append({
+            "kind": "task_artifact",
+            "name": f"nested/run-{i:04d}/result.json",
+            "path": f"/tmp/artifacts/child/nested/run-{i:04d}/result.json",
+            "size": 1024 + i,
+            "sha256": f"{i:064x}",
+            "status": "failed" if failed else "ready",
+            "errors": ["checksum mismatch"] if failed else [],
+        })
+    return rows
+
+
+def test_oversized_include_authority_omits_bulk_supporting_history_with_exact_reread_recipes(tmp_path):
+    """Replicate the fc400bc641284452 failure class: duplicated artifacts/artifact_bundle + bulky swarm_receipt."""
+    from ouroboros.outcomes import artifact_bundle_from_result
+    from ouroboros.tools.task_result_views import AUTHORITY_INLINE_MAX_CHARS
+
+    ctx = _ctx(tmp_path)
+    arts = _bulk_artifacts(600, fail_index=510)
+    bundle = artifact_bundle_from_result({"artifacts": arts, "artifact_status": "failed"})
+    swarm = {
+        "root_task_id": "child",
+        "state": "closed",
+        "parallelism": {"peak": 4},
+        "cost": {
+            "total_usd": 1.5,
+            "known_final_usd": 1.5,
+            "attempts": [{"attempt": i, "model": "m", "tokens": i * 100} for i in range(500)],
+        },
+        "supervisor_context_pressure": [{"round": i, "tokens": i * 1000, "note": "p" * 200} for i in range(600)],
+    }
+    contract = {"objective": "preserve governing scope", "constraints": "never silently truncate"}
+    write_task_result(
+        ctx.drive_root,
+        "child",
+        "cancelled",
+        result="same answer",
+        terminal_origin="model_final",
+        parent_task_id="parent",
+        root_task_id="parent",
+        reason_code="server_shutdown",
+        cancel_origin={"actor": "host", "reason": "server_shutdown"},
+        task_contract=contract,
+        owner_mailbox={"rows": ["owner direction kept whole"]},
+        plan_record={"goal": "keep governing plan inline"},
+        artifacts=arts,
+        artifact_status="failed",
+        artifact_bundle=bundle,
+        swarm_receipt=swarm,
+    )
+    canonical = _canonical(ctx)
+    full_chars = len(_json(canonical))
+    assert full_chars > AUTHORITY_INLINE_MAX_CHARS
+
+    result, payload = _read(ctx, include_authority=True)
+    assert result.status == "ok"
+    assert payload["partial"] is True
+    assert payload["omission_reason"] == "authority_exceeds_inline_budget"
+    assert payload["full_authority_chars"] == full_chars
+    assert payload["inline_budget_chars"] == AUTHORITY_INLINE_MAX_CHARS
+    assert len(result.text) < AUTHORITY_INLINE_MAX_CHARS + 16_000
+    assert not valid_task_result_authority_source(payload["source"], "child")
+
+    # Governing context, failures, permissions and conclusion stay inline whole.
+    kept = payload["authority"]
+    assert kept["task_contract"] == contract
+    assert kept["owner_mailbox"] == {"rows": ["owner direction kept whole"]}
+    assert kept["plan_record"] == {"goal": "keep governing plan inline"}
+    assert kept["cancel_origin"] == {"actor": "host", "reason": "server_shutdown"}
+    assert kept["artifact_status"] == "failed"
+    assert kept["result"] == "same answer"
+
+    # Bulky supporting-history fields move whole into omitted_fields with exact recipes.
+    omitted = {row["field"]: row for row in payload["omitted_fields"]}
+    assert {"artifacts", "artifact_bundle", "swarm_receipt"}.issubset(omitted)
+    assert "artifacts" not in kept and "artifact_bundle" not in kept and "swarm_receipt" not in kept
+    assert set(kept) | set(omitted) == set(canonical)
+
+    # Following an omitted field's recipe recovers its exact size, digest and JSON range.
+    art_entry = omitted["artifact_bundle"]
+    expected_bundle_text = _json({"artifact_bundle": canonical["artifact_bundle"]})
+    assert art_entry["complete_chars"] == len(expected_bundle_text)
+    assert art_entry["complete_sha256"] == hashlib.sha256(expected_bundle_text.encode()).hexdigest()
+    args = {k: v for k, v in art_entry["source"]["arguments"].items() if k != "task_id"}
+    _, meta = _read(ctx, **args)
+    assert meta["status"] == "available" and "authority" not in meta
+    assert meta["authority_source"]["complete_chars"] == len(expected_bundle_text)
+    assert meta["authority_source"]["complete_sha256"] == art_entry["complete_sha256"]
+    _, page = _read(ctx, **args, source_start_char=0, source_end_char=512)
+    assert page["authority_source"]["text"] == expected_bundle_text[:512]
+
+    # Explicit authority_fields still returns the exact field whole on demand.
+    _, explicit = _read(ctx, authority_fields=["swarm_receipt"])
+    assert explicit["authority"]["swarm_receipt"] == canonical["swarm_receipt"]
+
+
+def test_oversized_governing_field_still_bounds_without_silent_truncation(tmp_path):
+    """Any field exceeding the budget (even a governing one) omits whole instead of silently truncating."""
+    from ouroboros.tools.task_result_views import AUTHORITY_INLINE_MAX_CHARS
+
+    ctx = _ctx(tmp_path)
+    huge_contract = {"objective": "bounded", "constraints": "C" * (AUTHORITY_INLINE_MAX_CHARS + 20_000)}
+    _write(ctx, task_contract=huge_contract)
+    result, payload = _read(ctx, include_authority=True)
+    assert result.status == "ok" and payload["partial"] is True
+    assert "task_contract" not in payload["authority"]
+    assert payload["authority"]["result"] == "same answer"
+    omitted = {row["field"]: row for row in payload["omitted_fields"]}
+    assert "task_contract" in omitted
+    assert omitted["task_contract"]["complete_chars"] > AUTHORITY_INLINE_MAX_CHARS
+
+
+def test_oversized_include_authority_preserves_presence_scope_and_ranged_reads(tmp_path, monkeypatch):
+    import ouroboros.presence_authority as presence
+
+    ctx = _ctx(tmp_path)
+    _write(ctx, artifacts=_bulk_artifacts(600))
+    monkeypatch.setattr(presence, "presence_caller_binding", lambda _ctx: "binding")
+    monkeypatch.setattr(presence, "presence_work_refusal", lambda *_a, **_kw: "")
+    monkeypatch.setattr(presence, "presence_effective_refusal", lambda *_a, **_kw: "")
+
+    result, payload = _read(ctx, include_authority=True, presence_scope="own_binding")
+    assert result.status == "ok" and payload["partial"] is True
+    assert payload["source"]["arguments"]["presence_scope"] == "own_binding"
+    assert all(row["source"]["arguments"]["presence_scope"] == "own_binding" for row in payload["omitted_fields"])
+
+    # Ranged include_authority without source_only=True returns the requested range instead of dumping everything.
+    ranged_res, ranged = _read(ctx, include_authority=True, source_start_char=0, source_end_char=128)
+    assert ranged_res.status == "ok" and "authority" not in ranged
+    assert len(ranged["authority_source"]["text"]) == 128
+
+
+def test_combined_source_read_bounds_oversized_authority_while_keeping_requested_source(tmp_path):
+    ctx = _ctx(tmp_path)
+    _write(ctx, artifacts=_bulk_artifacts(600))
+    result, payload = _read(ctx, include_completion_source=True)
+    assert result.status == "ok" and payload["partial"] is True
+    assert "completion_source" in payload
+    assert "artifacts" not in payload["authority"]
+    assert any(row["field"] == "artifacts" for row in payload["omitted_fields"])

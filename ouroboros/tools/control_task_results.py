@@ -67,10 +67,14 @@ def disclosable_effort_fact(data: Dict[str, Any]) -> Dict[str, str]:
             "source": str(fact["source"] or "")}
 
 
-def _subtask_outcome_summary(data: Dict[str, Any], receipts: list | None = None) -> str:
+def _subtask_outcome_summary(
+    data: Dict[str, Any], receipts: list | None = None, *, presence_scope: str = "",
+) -> str:
     from ouroboros.delegate_output import project_task_output_readers
+    from ouroboros.tools.task_result_views import bound_outcome_artifact_bundle, bound_outcome_swarm_receipt
 
     data = project_task_output_readers(data)
+    tid_for_source = str(data.get("task_id") or data.get("id") or "")
     ledger = data.get("verification_ledger") if isinstance(data.get("verification_ledger"), dict) else {}
     summary: Dict[str, Any] = {
         "outcome_axes": normalize_outcome_axes(data),
@@ -78,7 +82,9 @@ def _subtask_outcome_summary(data: Dict[str, Any], receipts: list | None = None)
     if isinstance(data.get("execution_observation"), dict):
         summary["execution_observation"] = dict(data["execution_observation"])
     if isinstance(data.get("swarm_receipt"), dict):
-        summary["swarm_receipt"] = data["swarm_receipt"]
+        summary["swarm_receipt"] = bound_outcome_swarm_receipt(
+            data["swarm_receipt"], task_id=tid_for_source, presence_scope=presence_scope,
+        )
     # R5: current custody beside historical axes, on full get_task_result/wait_task
     # only; the compact wait_tasks contract stays pinned. Frozen delegated_runs_*
     # counters remain historical (Q2=B); the envelope's trigger/open_run_ids show
@@ -148,7 +154,9 @@ def _subtask_outcome_summary(data: Dict[str, Any], receipts: list | None = None)
     if _effort := disclosable_effort_fact(data):
         summary["effort"] = _effort
     if isinstance(data.get("artifact_bundle"), dict):
-        summary["artifact_bundle"] = data.get("artifact_bundle")
+        summary["artifact_bundle"] = bound_outcome_artifact_bundle(
+            data["artifact_bundle"], task_id=tid_for_source, presence_scope=presence_scope,
+        )
     if ledger:
         # An omitted-to-artifact stub carries no entries; its summary is the
         # count authority, and for a full ledger the two always agree.
@@ -234,9 +242,9 @@ def get_task_result_entry() -> ToolEntry:
             "manifest_sha256": {"type": "string", "description": "Exact retained manifest digest for call_id. Omit ranges for source length/hash; provide both bounds for text."},
             "known_result_sha256": {"type": "string", "description": "Conditional child_result_sha256 identity in every view; summary/evidence still refresh dynamic facts."},
             "view": {"type": "string", "enum": ["answer", "summary", "evidence", "full"], "description": "Optional semantic result view. Omitted/full preserves the legacy response exactly. Short views retain answer identity, terminal origin, outcome, host notice, and capability facts; summary adds current cost/custody/retry; evidence adds only authorized current-projection recipes. Cannot be combined with include_authority, authority_fields, or source selectors (omit view or use full)."},
-            "include_authority": {"type": "boolean", "default": False, "description": "Return the exact selected result, task contract, origin, artifact references, and current plan-review authority."},
+            "include_authority": {"type": "boolean", "default": False, "description": "Return exact terminal authority (result, contract, origin, plans, artifacts). Oversized authority (>128k chars) omits bulky supporting-history fields first (then non-core, then governing fields) whole into omitted_fields with sizes, hashes, and authority_fields/source_only reread recipes; use authority_fields=[] for a field index."},
             "authority_fields": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Explicit exact top-level keys of the same current authority projection; [] returns only its field index (use [] to list available keys). Unknown names error. Selected values are whole; every omitted key has size/hash and a reread recipe. Not a full-authority source even with include_authority. Omit for legacy behavior."},
-            "source_only": {"type": "boolean", "default": False, "description": "Explicitly omit the authority body from a source read. With authority_fields (or include_authority), return selection metadata, then use source_start_char/source_end_char over that selection's exact JSON. Existing source calls without this flag keep their legacy combined response."},
+            "source_only": {"type": "boolean", "default": False, "description": "Explicitly omit the authority body from a source read. With authority_fields (or include_authority), return selection metadata, then use source_start_char/source_end_char over that selection's exact JSON. Other source calls without this flag (except ranged include_authority, which returns the bounded selection) keep their legacy combined response."},
             "authority_projection_sha256": {"type": "string", "default": "", "description": "Expected current authority-projection digest from this reader's explicit fields/source-only response, NOT the continuation envelope's authority_sha256 or child_result_sha256. Drift returns authority_identity_mismatch without values/text; rereads are immutable=false."},
             "include_work_order_source": {"type": "boolean", "default": False, "description": "Return the canonical work-order source projection; provide both source_start_char and source_end_char for the exact bounded range."},
             "include_completion_source": {"type": "boolean", "default": False,
@@ -332,7 +340,7 @@ def _get_task_result(
     notice = promotion_intent_notice(task_id, data)
     if notice:
         return _publish_tool_result(ctx, ToolResult(status="unavailable", code="LEGACY_UNAVAILABLE", text=notice))
-    if authority_fields is not None or source_only and include_authority and not other_source:
+    if authority_fields is not None or (source_only or source_start_char is not None or source_end_char is not None) and include_authority and not other_source:
         from ouroboros.tools.task_result_views import authority_selection_response
 
         return authority_selection_response(ctx, data, status_drive_root, locals())
@@ -388,11 +396,20 @@ def _get_task_result(
         return text
     if bool(include_authority) or bool(include_work_order_source) or bool(include_completion_source) or bool(include_focus_source):
         from ouroboros.agent_startup_checks import task_result_authority_projection
+        from ouroboros.tools.task_result_views import bounded_authority_payload
 
         authority = {} if source_only else task_result_authority_projection(data, drive_root=status_drive_root)
+        bounded = None if source_only else bounded_authority_payload(
+            authority, str(task_id), presence_scope=str(presence_scope or ""),
+        )
+        if bounded is not None and not other_source:
+            return json_dumps(bounded, ensure_ascii=False, sort_keys=True)
         payload: Dict[str, Any] = {
-            "status": "available", **({} if source_only else {"authority": authority}),
+            "status": "available", **({} if source_only else {"authority": bounded["authority"] if bounded is not None else authority}),
             "source": {"tool": "get_task_result", "task_id": str(task_id)},
+            **({k: bounded[k] for k in ("partial", "authority_projection_sha256", "selected_fields", "omitted_fields",
+                                        "omission_reason", "full_authority_chars", "inline_budget_chars")}
+               if bounded is not None else {}),
         }
         if bool(include_work_order_source):
             from ouroboros.subagent_work_order import (
@@ -464,7 +481,7 @@ def _get_task_result(
         )
     except Exception:
         receipts = []
-    outcome_summary = _subtask_outcome_summary(data, receipts=receipts)
+    outcome_summary = _subtask_outcome_summary(data, receipts=receipts, presence_scope=str(presence_scope or ""))
     from ouroboros.tools.join_ledger import _child_result_sha256
 
     child_result_sha256 = _child_result_sha256(data)

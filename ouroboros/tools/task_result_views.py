@@ -9,6 +9,43 @@ from ouroboros.utils import json_dumps
 
 RESULT_VIEWS = ("answer", "summary", "evidence", "full")
 _EVIDENCE_ARTIFACT_LIMIT = 10
+AUTHORITY_INLINE_MAX_CHARS = 128_000
+_OUTCOME_ARTIFACT_LIMIT = 20
+_OUTCOME_SWARM_RECEIPT_MAX_CHARS = 16_000
+_OUTCOME_SWARM_SECTION_MAX_CHARS = 4_000
+_SUPPORTING_HISTORY_FIELDS = frozenset({
+    "artifact_bundle",
+    "artifacts",
+    "swarm_receipt",
+    "verification_receipts",
+    "mutation_evidence",
+    "service_observations",
+    "activity_assessments",
+})
+_GOVERNING_AUTHORITY_FIELDS = frozenset({
+    "task_id",
+    "status",
+    "reason_code",
+    "terminal_origin",
+    "terminal_host_notice",
+    "outcome_axes",
+    "task_contract",
+    "task_contract_malformed",
+    "origin_message_ref",
+    "origin_message_text",
+    "cancel_origin",
+    "artifact_status",
+    "artifact_error",
+    "capability_delta",
+    "plan_review_source_gap",
+    "result",
+    "owner_mailbox",
+    "held_owner_messages",
+    "unread_mailbox",
+    "retired_tool_invocations",
+    "process_scope",
+    "project_reauthorization",
+})
 
 
 def validate_authority_selection(fields: Any, source_only: Any, digest: Any) -> None:
@@ -83,7 +120,9 @@ def authority_selection_response(ctx: Any, data: Dict[str, Any], drive_root: Any
 
 
 def authority_selection(authority: Dict[str, Any], task_id: str, fields: Any, *, source_only: bool,
-                        digest: str, start: Any, end: Any, presence_scope: str = "") -> Dict[str, Any]:
+                        digest: str, start: Any, end: Any, presence_scope: str = "",
+                        _full_text: str | None = None,
+                        _field_texts: Mapping[str, str] | None = None) -> Dict[str, Any]:
     """Exact mechanical view of the SAME current authority, never a new dossier/store.
 
     All digests/ranges describe sorted ensure_ascii=False JSON in Unicode code
@@ -96,7 +135,7 @@ def authority_selection(authority: Dict[str, Any], task_id: str, fields: Any, *,
     def encode(value):
         return json_dumps(value, ensure_ascii=False, sort_keys=True)
 
-    full_text = encode(authority)
+    full_text = encode(authority) if _full_text is None else _full_text
     projection_sha = hashlib.sha256(full_text.encode("utf-8")).hexdigest()
     keys = sorted(authority) if fields is None else fields
     missing = [key for key in keys if key not in authority]
@@ -129,13 +168,122 @@ def authority_selection(authority: Dict[str, Any], task_id: str, fields: Any, *,
     for key, value in authority.items():
         if key in selected:
             continue
-        field_text = encode({key: value})
+        field_text = _field_texts[key] if _field_texts is not None and key in _field_texts else encode({key: value})
         omitted.append({"field": key, "complete_chars": len(field_text),
             "bytes": len(field_text.encode("utf-8")),
             "complete_sha256": hashlib.sha256(field_text.encode("utf-8")).hexdigest(),
             "source": {**source, "arguments": {**arguments, "authority_fields": [key]}}})
     payload["omitted_fields"] = sorted(omitted, key=lambda row: row["field"])
     return payload
+
+
+def _authority_omission_order(key: str, chars: int) -> tuple[int, int, str]:
+    """Supporting-history carriers omit first, other non-core fields next, governing fields last."""
+    tier = 0 if key in _SUPPORTING_HISTORY_FIELDS else 2 if key in _GOVERNING_AUTHORITY_FIELDS else 1
+    return (tier, -chars, key)
+
+
+def bounded_authority_payload(
+    authority: Dict[str, Any], task_id: str, *, presence_scope: str = "",
+    max_chars: int = AUTHORITY_INLINE_MAX_CHARS,
+) -> Dict[str, Any] | None:
+    """Return None when ``authority`` fits ``max_chars``; else omit oversized fields whole with exact recipes."""
+    def encode(value: Any) -> str:
+        return json_dumps(value, ensure_ascii=False, sort_keys=True)
+
+    full_text = encode(authority)
+    if len(full_text) <= max_chars:
+        return None
+    field_texts = {key: encode({key: value}) for key, value in authority.items()}
+    remaining = set(authority)
+    est_chars = len(full_text)
+    ordered = sorted(authority, key=lambda key: _authority_omission_order(key, len(field_texts[key])))
+    idx = 0
+    while idx < len(ordered) and est_chars > max_chars:
+        key = ordered[idx]
+        remaining.remove(key)
+        est_chars -= len(field_texts[key])
+        idx += 1
+    while remaining and len(encode({k: authority[k] for k in remaining})) > max_chars and idx < len(ordered):
+        remaining.remove(ordered[idx])
+        idx += 1
+    payload = authority_selection(
+        authority, task_id, sorted(remaining), source_only=False, digest="",
+        start=None, end=None, presence_scope=presence_scope,
+        _full_text=full_text, _field_texts=field_texts,
+    )
+    payload.update(
+        omission_reason="authority_exceeds_inline_budget",
+        full_authority_chars=len(full_text),
+        inline_budget_chars=max_chars,
+    )
+    return payload
+
+
+def _authority_field_source(task_id: str, field: str, presence_scope: str = "") -> Dict[str, Any]:
+    args: Dict[str, Any] = {"task_id": task_id, "authority_fields": [field], "source_only": True}
+    if presence_scope:
+        args["presence_scope"] = presence_scope
+    return {"tool": "get_task_result", "arguments": args}
+
+
+def bound_outcome_artifact_bundle(
+    bundle: Dict[str, Any], *, task_id: str = "", presence_scope: str = "",
+    limit: int = _OUTCOME_ARTIFACT_LIMIT,
+) -> Dict[str, Any]:
+    """Keep small artifact bundles verbatim; cap huge ones failure-first with an exact reread recipe."""
+    artifacts = bundle.get("artifacts")
+    if not isinstance(artifacts, list) or len(artifacts) <= limit:
+        return bundle
+
+    def _is_notable(item: Any) -> bool:
+        if not isinstance(item, Mapping):
+            return True
+        return str(item.get("status") or "").strip().lower() in {"failed", "missing", "pruned_by_retention"} or bool(item.get("errors"))
+
+    ordered = [item for item in artifacts if _is_notable(item)] + [item for item in artifacts if not _is_notable(item)]
+    projected = {**bundle, "artifacts": ordered[:limit], "artifacts_total": len(artifacts), "artifacts_omitted": len(artifacts) - limit}
+    if task_id:
+        projected["full_source"] = _authority_field_source(task_id, "artifact_bundle", presence_scope)
+    return projected
+
+
+def bound_outcome_swarm_receipt(
+    receipt: Dict[str, Any], *, task_id: str = "", presence_scope: str = "",
+    max_chars: int = _OUTCOME_SWARM_RECEIPT_MAX_CHARS,
+) -> Dict[str, Any]:
+    """Keep small swarm receipts verbatim; omit bulky per-round/per-attempt history with an exact reread recipe."""
+    if len(json_dumps(receipt, ensure_ascii=False, default=str)) <= max_chars:
+        return receipt
+    projected: Dict[str, Any] = {}
+    omitted: Dict[str, Any] = {}
+    for key, value in receipt.items():
+        chars = len(json_dumps(value, ensure_ascii=False, default=str))
+        if chars <= _OUTCOME_SWARM_SECTION_MAX_CHARS:
+            projected[key] = value
+        elif isinstance(value, Mapping):
+            sub_kept: Dict[str, Any] = {}
+            for subkey, subval in value.items():
+                sub_chars = len(json_dumps(subval, ensure_ascii=False, default=str))
+                if sub_chars <= _OUTCOME_SWARM_SECTION_MAX_CHARS:
+                    sub_kept[subkey] = subval
+                else:
+                    entry: Dict[str, Any] = {"chars": sub_chars}
+                    if isinstance(subval, (list, dict)):
+                        entry["count"] = len(subval)
+                    omitted[f"{key}.{subkey}"] = entry
+            if sub_kept:
+                projected[key] = sub_kept
+        else:
+            entry = {"chars": chars}
+            if isinstance(value, (list, dict)):
+                entry["count"] = len(value)
+            omitted[key] = entry
+    if omitted:
+        projected["omitted_sections"] = omitted
+    if task_id:
+        projected["full_source"] = _authority_field_source(task_id, "swarm_receipt", presence_scope)
+    return projected
 
 
 def retained_call_source(ctx, root, data, task_id, call_id, digest, start, end):
@@ -237,12 +385,13 @@ def _compact_artifact_facts(value: Any) -> Dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
     artifacts = list(value.get("artifacts") or []) if isinstance(value.get("artifacts"), list) else []
+    total_artifacts = value["artifacts_total"] if type(value.get("artifacts_total")) is int else len(artifacts)
     errors = value.get("errors") if isinstance(value.get("errors"), list) else []
     out: Dict[str, Any] = {
         **({"schema_version": value["schema_version"]} if "schema_version" in value else {}),
         "status": str(value.get("status") or "unknown"),
-        "artifact_count": len(artifacts),
-        "artifacts_omitted": max(0, len(artifacts) - _EVIDENCE_ARTIFACT_LIMIT),
+        "artifact_count": total_artifacts,
+        "artifacts_omitted": max(0, total_artifacts - min(len(artifacts), _EVIDENCE_ARTIFACT_LIMIT)),
         "error_count": len(errors),
         "artifacts": [],
     }

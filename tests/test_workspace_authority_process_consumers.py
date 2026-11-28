@@ -464,3 +464,226 @@ def test_system_service_record_discloses_target_and_stays_task_scoped(
         assert pathlib.Path(invalidations[-1]["mutation_root"]) == system.resolve()
     finally:
         _stop_service(ctx, name="binding-service")
+
+
+def test_user_files_shell_and_service_cwd_align_with_external_deliverables_and_home_runtime(
+    tmp_path, monkeypatch,
+):
+    """0bdaef87 regression: container layout with runtime under $HOME and external Deliverables."""
+    from subprocess import CompletedProcess
+
+    from ouroboros.tool_access import filesystem_affordance_map, shell_cwd_block_message
+
+    home = tmp_path / "home"
+    repo = home / "ouroboros"
+    data = home / "data"
+    desktop = home / "Desktop"
+    deliverables = tmp_path / "workspaces" / "Deliverables"
+    deliverables_sub = deliverables / "sub"
+    unrelated = tmp_path / "workspaces" / "other"
+    for path in (repo, data, desktop, deliverables_sub, unrelated):
+        path.mkdir(parents=True)
+    monkeypatch.setenv("OUROBOROS_USER_FILES_ROOT", str(home))
+    monkeypatch.setenv("OUROBOROS_DELIVERABLES_ROOT", str(deliverables))
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "pro")
+
+    ctx = ToolContext(
+        repo_dir=repo,
+        system_repo_dir=repo,
+        drive_root=data,
+        is_direct_chat=True,
+        task_id="user-files-cwd-align",
+    )
+
+    for op in ("shell", "service"):
+        roots = _side_effect_free_process_roots(ctx, op)
+        user_entries = [path for label, path in roots if label == "user_files"]
+        assert user_entries == [deliverables.resolve()], (op, roots)
+
+        bare = build_resolved_resource_binding(ctx, operation=op, process_cwd="user_files")
+        assert (bare.root, bare.target_path, bare.base_path, bare.logical_base_path) == (
+            "user_files", deliverables.resolve(), deliverables.resolve(), home.resolve(),
+        )
+        direct = build_resolved_resource_binding(ctx, operation=op, process_cwd=str(deliverables))
+        assert (direct.root, direct.target_path, direct.base_path, direct.logical_base_path) == (
+            "user_files", deliverables.resolve(), deliverables.resolve(), home.resolve(),
+        )
+        sub = build_resolved_resource_binding(ctx, operation=op, process_cwd=str(deliverables_sub))
+        assert (sub.root, sub.target_path) == ("user_files", deliverables_sub.resolve())
+        home_sub = build_resolved_resource_binding(ctx, operation=op, process_cwd="user_files/Desktop")
+        assert (home_sub.root, home_sub.target_path) == ("user_files", desktop.resolve())
+        abs_sub = build_resolved_resource_binding(ctx, operation=op, process_cwd=str(desktop))
+        assert (abs_sub.root, abs_sub.target_path) == ("user_files", desktop.resolve())
+
+        with pytest.raises(ValueError, match="outside allowed roots") as exc_info:
+            build_resolved_resource_binding(ctx, operation=op, process_cwd=str(home))
+        assert "overlaps the Ouroboros repo/runtime workspace" in str(exc_info.value)
+
+        msg = shell_cwd_block_message(ctx, str(home), operation=op, error=exc_info.value)
+        assert f"user_files={deliverables.resolve()}" in msg
+        assert f"user_files={home.resolve()}" not in msg
+
+        for blocked in (
+            str(data),
+            "user_files/data",
+            "user_files/.ssh",
+            str(deliverables / ".git"),
+            str(unrelated),
+        ):
+            with pytest.raises(ValueError):
+                build_resolved_resource_binding(ctx, operation=op, process_cwd=blocked)
+
+    affordance = filesystem_affordance_map(ctx)
+    assert affordance["root_paths"]["user_files"] == str(home.resolve())
+    assert affordance["user_files_shell_cwd"] == str(deliverables.resolve())
+    assert affordance["allowed_shell_cwd_roots"].count("user_files") == 1
+    assert affordance["allowed_service_cwd_roots"].count("user_files") == 1
+
+    calls = []
+    monkeypatch.setattr("ouroboros.tools.shell_process.load_settings", lambda: {})
+    monkeypatch.setattr(
+        "ouroboros.tools.shell._tracked_subprocess_run",
+        lambda cmd, **kwargs: (calls.append(kwargs["cwd"]) or CompletedProcess(cmd, 0, "ok\n", "")),
+    )
+    ok_label = _run_shell(ctx, ["pwd"], cwd="user_files")
+    ok_abs = _run_shell(ctx, ["pwd"], cwd=str(deliverables))
+    refused_home = _run_shell(ctx, ["pwd"], cwd=str(home))
+    assert "SHELL_CWD_BLOCKED" not in ok_label
+    assert "SHELL_CWD_BLOCKED" not in ok_abs
+    assert calls == [str(deliverables.resolve()), str(deliverables.resolve())]
+    assert "SHELL_CWD_BLOCKED" in refused_home
+    assert "overlaps the Ouroboros repo/runtime workspace" in refused_home
+    assert f"user_files={deliverables.resolve()}" in refused_home
+    assert f"user_files={home.resolve()}" not in refused_home
+
+    refused_service = _start_service(ctx, [sys.executable, "-c", "pass"], name="blocked-home", cwd=str(home))
+    assert "SHELL_CWD_BLOCKED" in refused_service
+    assert f"user_files={deliverables.resolve()}" in refused_service
+    assert f"user_files={home.resolve()}" not in refused_service
+
+
+def test_misconfigured_deliverables_root_stays_blocked_and_unmaterialized_for_user_files_cwd(
+    tmp_path, monkeypatch,
+):
+    home = tmp_path / "home"
+    repo = home / "ouroboros"
+    data = home / "data"
+    repo.mkdir(parents=True)
+    data.mkdir(parents=True)
+    leak = data / "Deliverables"
+    monkeypatch.setenv("OUROBOROS_USER_FILES_ROOT", str(home))
+    monkeypatch.setenv("OUROBOROS_DELIVERABLES_ROOT", str(leak))
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "pro")
+
+    ctx = ToolContext(
+        repo_dir=repo,
+        system_repo_dir=repo,
+        drive_root=data,
+        is_direct_chat=True,
+        task_id="misconfigured-deliverables",
+    )
+
+    with pytest.raises(ValueError, match="overlaps the Ouroboros repo/runtime workspace"):
+        build_resolved_resource_binding(ctx, operation="shell", process_cwd="user_files")
+    assert not leak.exists(), "refused user_files cwd must not materialize a blocked directory"
+    with pytest.raises(ValueError):
+        build_resolved_resource_binding(ctx, operation="shell", process_cwd=str(leak))
+    assert all(label != "user_files" for label, _path in _side_effect_free_process_roots(ctx, "shell"))
+
+    # A Deliverables root containing the runtime drives (e.g. parent / root) is also refused.
+    monkeypatch.setenv("OUROBOROS_DELIVERABLES_ROOT", str(tmp_path))
+    with pytest.raises(ValueError):
+        build_resolved_resource_binding(ctx, operation="shell", process_cwd="user_files")
+    with pytest.raises(ValueError):
+        build_resolved_resource_binding(ctx, operation="shell", process_cwd=str(tmp_path / "other"))
+    assert all(label != "user_files" for label, _path in _side_effect_free_process_roots(ctx, "shell"))
+
+
+def test_acting_subagent_cannot_use_user_files_or_external_deliverables_as_shell_cwd(
+    tmp_path, monkeypatch,
+):
+    from ouroboros.contracts.task_constraint import TaskConstraint
+    from ouroboros.tool_access import filesystem_affordance_map
+    from ouroboros.tool_capabilities import ACTING_SUBAGENT_MODE
+
+    home = tmp_path / "home"
+    worktree = tmp_path / "worktree"
+    deliverables = tmp_path / "workspaces" / "Deliverables"
+    for path in (home / "Desktop", worktree, deliverables):
+        path.mkdir(parents=True)
+    monkeypatch.setenv("OUROBOROS_USER_FILES_ROOT", str(home))
+    monkeypatch.setenv("OUROBOROS_DELIVERABLES_ROOT", str(deliverables))
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "pro")
+
+    ctx = ToolContext(
+        repo_dir=home / "ouroboros",
+        system_repo_dir=home / "ouroboros",
+        drive_root=home / "data",
+        workspace_root=worktree,
+        workspace_mode="self_worktree",
+        task_id="acting-child-no-broaden",
+        task_constraint=TaskConstraint(mode=ACTING_SUBAGENT_MODE, surface="self_worktree"),
+    )
+    affordance = filesystem_affordance_map(ctx)
+    assert affordance["allowed_shell_cwd_roots"] == ["active_workspace"]
+    assert "user_files_shell_cwd" not in affordance
+    for op in ("shell", "service"):
+        for cwd in ("user_files", str(deliverables), str(home / "Desktop")):
+            with pytest.raises(ValueError):
+                build_resolved_resource_binding(ctx, operation=op, process_cwd=cwd)
+
+
+def test_desktop_layout_keeps_ouroboros_soft_parent_blocked_while_advertising_deliverables_cwd(
+    tmp_path, monkeypatch,
+):
+    from ouroboros.tool_access import shell_cwd_block_message
+
+    home = tmp_path / "home"
+    repo = home / "Ouroboros" / "repo"
+    data = home / "Ouroboros" / "data"
+    desktop = home / "Desktop"
+    sibling = home / "Ouroboros" / "other"
+    for path in (repo, data, desktop, sibling):
+        path.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.delenv("OUROBOROS_USER_FILES_ROOT", raising=False)
+    monkeypatch.setenv("OUROBOROS_DELIVERABLES_ROOT", "")
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "pro")
+
+    ctx = ToolContext(repo_dir=repo, system_repo_dir=repo, drive_root=data, is_direct_chat=True, task_id="desktop")
+    expected_deliverables = (home / "Ouroboros" / "Deliverables").resolve()
+    assert [path for label, path in _side_effect_free_process_roots(ctx, "shell") if label == "user_files"] == [
+        expected_deliverables,
+    ]
+    assert build_resolved_resource_binding(ctx, operation="shell", process_cwd="user_files").target_path == expected_deliverables
+    assert build_resolved_resource_binding(ctx, operation="shell", process_cwd=str(desktop)).target_path == desktop.resolve()
+    with pytest.raises(ValueError, match="overlaps the Ouroboros repo/runtime workspace"):
+        build_resolved_resource_binding(ctx, operation="shell", process_cwd=str(sibling))
+    with pytest.raises(ValueError, match="overlaps the Ouroboros repo/runtime workspace") as exc_info:
+        build_resolved_resource_binding(ctx, operation="shell", process_cwd=str(home))
+    msg = shell_cwd_block_message(ctx, str(home), operation="shell", error=exc_info.value)
+    assert f"user_files={expected_deliverables}" in msg
+    assert f"user_files={home.resolve()}." not in msg
+    assert f"user_files={home.resolve()}," not in msg
+
+
+def test_isolated_home_outside_runtime_allows_both_deliverables_and_home_shell_cwd(
+    tmp_path, monkeypatch,
+):
+    home = tmp_path / "ouroboros" / "home"
+    repo = tmp_path / "ouroboros" / "body" / "repo"
+    data = tmp_path / "ouroboros" / "data"
+    deliverables = tmp_path / "ouroboros" / "work" / "Deliverables"
+    for path in (home, repo, data, deliverables):
+        path.mkdir(parents=True)
+    monkeypatch.setenv("OUROBOROS_USER_FILES_ROOT", str(home))
+    monkeypatch.setenv("OUROBOROS_DELIVERABLES_ROOT", str(deliverables))
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "pro")
+
+    ctx = ToolContext(repo_dir=repo, system_repo_dir=repo, drive_root=data, is_direct_chat=True, task_id="managed")
+    assert build_resolved_resource_binding(ctx, operation="shell", process_cwd="user_files").target_path == deliverables.resolve()
+    assert build_resolved_resource_binding(ctx, operation="shell", process_cwd=str(deliverables)).target_path == deliverables.resolve()
+    assert build_resolved_resource_binding(ctx, operation="shell", process_cwd=str(home)).target_path == home.resolve()
+

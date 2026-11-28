@@ -138,15 +138,6 @@ def user_files_path_block_reason(
         return ""
     home = _tool_access()._user_files_root()
     outside_home = not _tool_access().path_is_relative_to(resolved, home) and not _tool_access()._path_is_relative_to_casefold(resolved, home)
-    # External-workspace tasks may reach host scratch outside home (/tmp, /build,
-    # sibling checkouts). The runtime-overlap guard BELOW still runs on the full
-    # path, so the Ouroboros repo/data drive stays protected even when home
-    # confinement is lifted.
-    from ouroboros.tool_access_reads import read_allows_outside_home
-    if outside_home:
-        outside_home_allowed = read_allows_outside_home(ctx) if read_only else _tool_access().is_external_workspace(ctx)
-        if not outside_home_allowed:
-            return f"path is outside user home {home}"
 
     # The Ouroboros runtime/control surface is the system repo PLUS every data
     # drive the task touches: the parent drive (ctx.drive_root) and any child /
@@ -173,14 +164,20 @@ def user_files_path_block_reason(
         protected_roots.append(root)
         hard_protected_roots.append(root)
         parent = root.parent.resolve(strict=False)
-        if root.name in {"repo", "data"} and _tool_access().path_is_relative_to(parent, home):
+        if (
+            root.name in {"repo", "data"}
+            and _tool_access().path_is_relative_to(parent, home)
+            and not _tool_access().path_is_relative_to(home, parent)
+            and not _tool_access()._path_is_relative_to_casefold(home, parent)
+        ):
             # The workspace PARENT is a SOFT boundary (keeps user_files out of ~/Ouroboros at large);
-            # it is deliberately NOT a hard root, so the Deliverables sibling under it stays allowed.
+            # it is deliberately NOT a hard root, so the Deliverables sibling under it stays allowed,
+            # and strictly below home so <home>/data never marks all of <home> as protected.
             protected_roots.append(parent)
     # The configured Deliverables container is an INTENDED user-output root, allowed past the
-    # workspace-overlap guard — but ONLY when it is a genuine sibling: a misconfigured
-    # OUROBOROS_DELIVERABLES_ROOT that overlaps or contains a HARD data/repo/budget drive must NOT
-    # open a bypass. The outside-home, credential, and hidden-name checks still apply regardless.
+    # outside-home and soft-parent overlap guards — but ONLY when it is a genuine sibling: a
+    # misconfigured OUROBOROS_DELIVERABLES_ROOT that overlaps or contains a HARD data/repo/budget
+    # drive must NOT open a bypass. Credential and VCS mutation-shape checks still apply regardless.
     in_deliverables = False
     try:
         _deliverables = _tool_access()._deliverables_root()
@@ -195,6 +192,15 @@ def user_files_path_block_reason(
             in_deliverables = True
     except Exception:
         in_deliverables = False
+    # External-workspace tasks may reach host scratch outside home (/tmp, /build,
+    # sibling checkouts); safe configured Deliverables (e.g. container /workspaces/Deliverables)
+    # is also an intended user_files container. Hard runtime guards still run below.
+    if outside_home and not in_deliverables:
+        from ouroboros.tool_access_reads import read_allows_outside_home
+
+        outside_home_allowed = read_allows_outside_home(ctx) if read_only else _tool_access().is_external_workspace(ctx)
+        if not outside_home_allowed:
+            return f"path is outside user home {home}"
     if not in_deliverables:
         for protected in protected_roots:
             overlaps_protected = _tool_access().path_is_relative_to(resolved, protected) or _tool_access()._path_is_relative_to_casefold(resolved, protected)
